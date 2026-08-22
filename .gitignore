@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+
+# build / deploy output
+dist/
+.output/
+.vercel/
+.nitro/
+.tanstack/
+.vinxi/
+
+# local / sandbox
+.env
+.env.*
+!.env.example
+*.local
+.node_modules.lock
+.project_id
+
+# qa / generated
+screenshots/
+artifacts/
+
+# logs & OS
+*.log
+.DS_Store
+Thumbs.db
+
+# editor
+.idea/
+.vscode/
+*.swp
