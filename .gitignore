@@ -30,3 +30,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# local data (PGLite 持久化目录、分析记录等)
+data/

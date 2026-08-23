@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { mapHqbResponse } from "../src/lib/server/knowledge.ts";
+import { mapHqbResponse } from "../src/lib/server/knowledge-map.ts";
 
 const real = JSON.parse(
   readFileSync(join(process.env.HQB_SAMPLE || "/tmp/lookup4.json"), "utf8"),

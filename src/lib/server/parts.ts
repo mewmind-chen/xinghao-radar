@@ -8,11 +8,14 @@ import {
   sqlClient,
 } from "./helpers";
 import { formatStockLine } from "@/lib/domain";
+import { listAnalysisTimes } from "./analysis-db";
 import type { MatchFlags, Part } from "@/lib/types";
 
 export type PartListItem = Part & {
   flags: MatchFlags;
   stockLine: string;
+  /** 最近型号分析时间（part_analyses），无则 null。 */
+  analysisAt: string | null;
 };
 
 export const bootstrap = createServerFn({ method: "GET" }).handler(async () => {
@@ -42,6 +45,7 @@ export const searchParts = createServerFn({ method: "GET" })
       rows = await sql`select * from parts order by updated_at desc, mpn limit 200`;
     }
     const parts = rows.map(mapPart);
+    const analysisAt = listAnalysisTimes();
     const flags = await matchFlagsForParts(
       sql,
       parts.map((p) => p.id),
@@ -52,6 +56,7 @@ export const searchParts = createServerFn({ method: "GET" })
         ...p,
         flags: f,
         stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
+        analysisAt: analysisAt[p.mpnKey] ?? null,
       };
     });
     if (data.filter === "stock") items = items.filter((i) => i.flags.stock || i.flags.transit);

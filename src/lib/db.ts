@@ -111,6 +111,8 @@ async function createPgliteSql(): Promise<Sql> {
   // data survives source edits (it resets on dev-server restart).
   globalRef.__pgliteInstance__ ??= (async () => {
     const { PGlite } = await import("@electric-sql/pglite");
+    // PGLite 保持内存实例（业务库生命周期随进程；重启由 seed 重建演示数据）。
+    // 需要跨重启保存的知识/记录类数据走 node:sqlite 本地 DB（见 analysis-db.ts）。
     const pg = new PGlite({
       parsers: {
         [OID_INT8]: Number,

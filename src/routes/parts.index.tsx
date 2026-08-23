@@ -5,6 +5,7 @@ import { Plus } from "lucide-react";
 import { createPart, searchParts } from "@/lib/server/parts";
 import { HitBadges } from "@/components/hit-badges";
 import { Mpn } from "@/components/mpn";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -80,6 +81,11 @@ function PartsPage() {
                 <Mpn value={p.mpn} />
                 {p.brandCode && <span className="text-xs text-muted-foreground">{p.brandCode}</span>}
                 {p.category && <span className="text-xs text-muted-foreground">{p.category}</span>}
+                {p.analysisAt && (
+                  <Badge variant="outline" className="text-[10px] text-emerald-600">
+                    已分析
+                  </Badge>
+                )}
                 <HitBadges flags={p.flags} />
               </div>
               <div className="font-mono text-xs text-muted-foreground tabular">{p.stockLine}</div>

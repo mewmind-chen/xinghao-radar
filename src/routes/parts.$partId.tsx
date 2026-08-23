@@ -5,7 +5,7 @@ import { ArrowLeft, Star } from "lucide-react";
 import { getPartDetail } from "@/lib/server/parts";
 import { receiveTransit, stockAdjust, stockMeta, stockOutbound, stockTransfer } from "@/lib/server/stock";
 import { setOfferValid, setInquiryValid, toggleWatch } from "@/lib/server/market";
-import { analyzePartMpn } from "@/lib/server/knowledge";
+import { analyzePartMpn, getPartAnalysis } from "@/lib/server/knowledge";
 import type { PartKnowledgeAnalysis } from "@/lib/server/knowledge";
 import {
   formatCost,
@@ -58,6 +58,19 @@ function PartDetail() {
 
   const analyzeMut = useMutation({
     mutationFn: () => analyzePartMpn({ data: { mpn: d?.part.mpn ?? "" } }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["part-analysis"] });
+      qc.invalidateQueries({ queryKey: ["parts"] });
+      if (r.ok) toast.success("型号分析已保存");
+    },
+  });
+
+  // 进入即读取本型号已保存的分析（有则直接展示，无需重新抓取）
+  const stored = useQuery({
+    queryKey: ["part-analysis", d?.part.mpn],
+    queryFn: () => getPartAnalysis({ data: { mpn: d?.part.mpn ?? "" } }),
+    enabled: Boolean(d?.part.mpn),
+    staleTime: 60_000,
   });
 
   if (q.isLoading) {
@@ -358,7 +371,11 @@ function PartDetail() {
             onClick={() => analyzeMut.mutate()}
             disabled={analyzeMut.isPending}
           >
-            {analyzeMut.isPending ? "分析中…" : "型号分析"}
+            {analyzeMut.isPending
+              ? "分析中…"
+              : stored.data
+                ? "重新分析"
+                : "型号分析"}
           </Button>
         </div>
         {(d.part.description || d.part.params) && (
@@ -370,6 +387,17 @@ function PartDetail() {
           </div>
         )}
         <p className="mt-1 text-[11px] text-muted-foreground">仅基于已录入资料，不猜测车规/军工等级。</p>
+        {!analyzeMut.data && !analyzeMut.isPending && stored.data?.analysis ? (
+          <>
+            <PartKnowledgePanel analysis={stored.data.analysis} loading={false} />
+            {stored.data.analyzedAt && (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                已保存 · 上次分析 {new Date(stored.data.analyzedAt).toLocaleString("zh-CN", { hour12: false })}
+              </p>
+            )}
+          </>
+        ) : null}
+        {/* 本次分析结果（或进行中骨架）优先于缓存 */}
         <PartKnowledgePanel
           analysis={analyzeMut.data}
           loading={analyzeMut.isPending}
