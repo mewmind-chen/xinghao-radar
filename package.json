@@ -13,7 +13,7 @@
     "db:migrate": "node scripts/migrate.mjs",
     "build:dev": "node scripts/with-app-env.mjs vite build --mode development",
     "preview": "node scripts/with-app-env.mjs vite preview",
-    "preview:8081": "node scripts/with-app-env.mjs vite preview --host 0.0.0.0 --port 8081",
+    "preview:8082": "node scripts/with-app-env.mjs vite preview --host 0.0.0.0 --port 8082",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "test": "node --test 'scripts/**/*.test.mjs'",
