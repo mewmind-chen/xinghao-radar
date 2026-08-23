@@ -1,19 +1,33 @@
+/**
+ * Import Service —— 预览数据组装 / 重复检测 / 确认写库（方案第 16 节边界）。
+ *
+ * V1 收敛改造（方案第 15 节）：
+ * - 解析层（heuristic/table/excel/csv/AI 抽取）迁入 packages/harness-import/
+ *   由 Import Agent 统一编排；本文件在 agent 无果时回退同一套确定性 parser
+ *   （从 harness 导入，单一事实源）。
+ * - markDuplicates / flagIntraFileDuplicates：程序执行，逻辑不变。
+ * - confirmImport：人工确认机制，完全不动。
+ */
+
 import { createServerFn } from "@tanstack/react-start";
 import {
   DUPLICATE_INQUIRY_HOURS,
   DUPLICATE_OFFER_HOURS,
-  brandShort,
   correctTradeText,
-  displayMpn,
   formatStockLine,
   isCrossHit,
   normalizeMpn,
-  parseCost,
   parseLeadTime,
-  parseQty,
-  resolveWarehouseCode,
 } from "@/lib/domain";
 import type { ImportKind, ImportRow, ImportSource } from "@/lib/types";
+import {
+  defaultProviders,
+  heuristicParse,
+  runImportAgent,
+  tableToRows,
+} from "@harness/index";
+import { parseCsv } from "@harness/plugins/csv-parser";
+import { parseExcel } from "@harness/plugins/excel-parser";
 import {
   ensureChannel,
   ensureCustomer,
@@ -24,262 +38,6 @@ import {
   sqlClient,
 } from "./helpers";
 import { ensureSeed } from "./seed";
-
-function splitLines(text: string): string[] {
-  return text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("#"));
-}
-
-const MPN_RE = /[A-Za-z0-9][A-Za-z0-9._+\-\/]{3,40}/;
-
-function heuristicParse(text: string, kind: ImportKind): ImportRow[] {
-  const rows: ImportRow[] = [];
-  for (const line of splitLines(correctTradeText(text))) {
-    const mpnMatch = line.match(MPN_RE);
-    if (!mpnMatch) continue;
-    const mpn = displayMpn(mpnMatch[0]);
-    const rest = line.replace(mpnMatch[0], " ");
-    const qtyHit = rest.match(/(\d+(?:\.\d+)?)\s*(万|W|K|k|M)?/);
-    const qty = qtyHit ? parseQty(qtyHit[0]) : null;
-    const cost = parseCost(rest);
-    const dc = rest.match(/(?:^|[^A-Za-z0-9])((?:20\d{2}|2[3-6]\d{2})\+?|\d{2}\+)(?=[^A-Za-z0-9+]|$)/);
-    const lt = rest.match(/(LT\s*)?(\d+\s*周|现货|\d{1,2}[\/.]\d{1,2}|\d+\s*月底|几天后|8月底)/i);
-    const wh = rest.match(/HK|香港|坂田|板田|交通/);
-    const isInquiry = kind === "inquiry" || /询|客户/.test(rest);
-    const isTransit = kind === "transit" || /在途|到货|货期/.test(rest);
-    const isStock = kind === "stock" || /入库|入仓/.test(rest);
-    let rowKind: ImportKind = kind === "mixed" ? "offer" : kind;
-    if (kind === "mixed") {
-      if (isInquiry) rowKind = "inquiry";
-      else if (isTransit) rowKind = "transit";
-      else if (isStock) rowKind = "stock";
-      else rowKind = "offer";
-    }
-    const cust = rest.match(/客[户]?\s*([\u4e00-\u9fa5A-Za-z0-9]{2,12})/);
-    const ch = rest.match(/渠道\s*([\u4e00-\u9fa5A-Za-z0-9]{2,12})/);
-    rows.push({
-      id: nid(),
-      kind: rowKind,
-      mpn,
-      brand: null,
-      qty,
-      qtyRaw: qtyHit ? qtyHit[0] : null,
-      dateCode: dc ? dc[1] : null,
-      priceAmount: cost.amount,
-      priceCurrency: cost.currency,
-      priceTax: cost.tax,
-      isTp: cost.isTp || /\bTP\b/.test(rest),
-      leadTimeText: lt ? lt[0] : null,
-      etaText: lt ? lt[0] : null,
-      warehouse: wh ? resolveWarehouseCode(wh[0]) : null,
-      channel: ch ? ch[1] : null,
-      customer: cust ? cust[1] : null,
-      package: null,
-      standardPack: null,
-      packState: null,
-      costAmount: cost.amount,
-      costCurrency: cost.currency,
-      costTax: cost.tax,
-      note: line,
-      duplicate: false,
-      duplicateReason: null,
-      selected: true,
-      warning: null,
-    });
-  }
-  return rows;
-}
-
-function headerKey(h: string): string | null {
-  const s = h.normalize("NFKC").trim().toLowerCase();
-  if (/型号|mpn|p\/n|pn|part\s*number|料号/.test(s)) return "mpn";
-  if (/品牌|brand|mfr|厂牌/.test(s)) return "brand";
-  if (/数量|qty|quantity/.test(s)) return "qty";
-  if (/批次|date\s*code|^dc$|d\/c/.test(s)) return "dateCode";
-  if (/价格|单价|price|tp/.test(s)) return "price";
-  if (/货期|交期|lead|lt/.test(s)) return "lt";
-  if (/仓库|仓位|warehouse/.test(s)) return "warehouse";
-  if (/客户|customer/.test(s)) return "customer";
-  if (/渠道|供应商|vendor|supplier/.test(s)) return "channel";
-  if (/封装|package|pkg/.test(s)) return "package";
-  if (/成本|cost/.test(s)) return "cost";
-  return null;
-}
-
-function tableToRows(table: string[][], kind: ImportKind): ImportRow[] {
-  if (table.length === 0) return [];
-  let headerIdx = 0;
-  for (let i = 0; i < Math.min(table.length, 8); i++) {
-    const mapped = table[i].map(headerKey);
-    if (mapped.includes("mpn")) {
-      headerIdx = i;
-      break;
-    }
-  }
-  const headers = table[headerIdx].map(headerKey);
-  const rows: ImportRow[] = [];
-  for (const line of table.slice(headerIdx + 1)) {
-    const get = (k: string) => {
-      const i = headers.indexOf(k);
-      return i >= 0 ? String(line[i] ?? "").trim() : "";
-    };
-    const mpn = displayMpn(get("mpn"));
-    if (!mpn) continue;
-    const cost = parseCost(get("price") || get("cost"));
-    rows.push({
-      id: nid(),
-      kind: kind === "mixed" ? (get("customer") ? "inquiry" : get("warehouse") ? "stock" : "offer") : kind,
-      mpn,
-      brand: get("brand") ? brandShort(get("brand")) : null,
-      qty: parseQty(get("qty")),
-      qtyRaw: get("qty") || null,
-      dateCode: get("dateCode") || null,
-      priceAmount: cost.amount,
-      priceCurrency: cost.currency,
-      priceTax: cost.tax,
-      isTp: cost.isTp || /tp/i.test(get("price")),
-      leadTimeText: get("lt") || null,
-      etaText: get("lt") || null,
-      warehouse: resolveWarehouseCode(get("warehouse")) || null,
-      channel: get("channel") || null,
-      customer: get("customer") || null,
-      package: get("package") || null,
-      standardPack: null,
-      packState: null,
-      costAmount: cost.amount,
-      costCurrency: cost.currency,
-      costTax: cost.tax,
-      note: line.filter(Boolean).join(" | "),
-      duplicate: false,
-      duplicateReason: null,
-      selected: true,
-      warning: null,
-    });
-  }
-  return rows;
-}
-
-function parseCsv(text: string): string[][] {
-  return text
-    .split(/\r?\n/)
-    .filter((l) => l.trim())
-    .map((line) => line.split(/[,	]/).map((c) => c.trim().replace(/^"|"$/g, "")));
-}
-
-async function parseExcel(base64: string): Promise<string[][]> {
-  const XLSX = await import("xlsx");
-  const buf = Buffer.from(base64, "base64");
-  const wb = XLSX.read(buf, { type: "buffer" });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  const json = XLSX.utils.sheet_to_json<(string | number)[]>(sheet, { header: 1, raw: false });
-  return json.map((row) => (row ?? []).map((c) => String(c ?? "").trim()));
-}
-
-async function aiExtract(opts: {
-  text?: string;
-  imageDataUrl?: string;
-  kind: ImportKind;
-}): Promise<ImportRow[] | null> {
-  const apiKey = process.env.XAI_API_KEY;
-  if (!apiKey) return null;
-  const sys = `你是电子元器件现货贸易录入助手。从用户提供的渠道推货/客户询价/库存/在途文本或截图中抽取结构化记录。
-硬规则：
-1. 型号（MPN）字符必须原样复制，禁止改写、补全、猜测。只允许去掉首尾空格。
-2. 数量转成整数：10K=10000，1万=10000。
-3. 批次是 Date Code（如 2418、24+），不是 Lot Number。
-4. 无价格、要求对方报目标价 → isTp=true。不要发明我方报价。
-5. 货期是 LT/交期，不是 AOT。香港仓=HK，板田=坂田。
-6. 不要猜测车规/军工等级。
-只返回 JSON：{"kind":"offer|inquiry|stock|transit|mixed","rows":[{...}]}
-每行字段：kind,mpn,brand,qty,dateCode,priceAmount,priceCurrency(USD|CNY),priceTax(none|exclusive|inclusive),isTp,leadTimeText,etaText,warehouse,channel,customer,package,standardPack,packState(full|loose|mixed),costAmount,costCurrency,costTax,note`;
-
-  const userContent: unknown[] = [
-    {
-      type: "text",
-      text: `默认类型: ${opts.kind}\n${opts.text ? `文本:\n${correctTradeText(opts.text).slice(0, 8000)}` : "见图片"}`,
-    },
-  ];
-  if (opts.imageDataUrl) {
-    userContent.push({ type: "image_url", image_url: { url: opts.imageDataUrl } });
-  }
-
-  let res: Response;
-  try {
-    res = await fetch("https://api.x.ai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: AbortSignal.timeout(12000),
-      body: JSON.stringify({
-        model: "grok-4.5",
-        temperature: 0,
-        max_tokens: 3500,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: sys },
-          { role: "user", content: userContent },
-        ],
-      }),
-    });
-  } catch {
-    return null;
-  }
-  if (!res.ok) return null;
-  const body = (await res.json()) as {
-    choices: { message: { content: string } }[];
-  };
-  const raw = body.choices[0]?.message.content ?? "";
-  try {
-    const parsed = JSON.parse(raw) as { rows?: Record<string, unknown>[] };
-    const rows = (parsed.rows ?? []).map((r) => {
-      const mpn = displayMpn(String(r.mpn ?? ""));
-      const cost = parseCost(
-        r.priceAmount != null ? String(r.priceAmount) : r.costAmount != null ? String(r.costAmount) : "",
-      );
-      const qty = typeof r.qty === "number" ? r.qty : parseQty(String(r.qty ?? ""));
-      return {
-        id: nid(),
-        kind: (["offer", "inquiry", "stock", "transit"].includes(String(r.kind))
-          ? r.kind
-          : opts.kind === "mixed"
-            ? "offer"
-            : opts.kind) as ImportKind,
-        mpn,
-        brand: r.brand ? brandShort(String(r.brand)) : null,
-        qty,
-        qtyRaw: r.qty != null ? String(r.qty) : null,
-        dateCode: r.dateCode ? String(r.dateCode) : null,
-        priceAmount: r.priceAmount != null ? Number(r.priceAmount) : cost.amount,
-        priceCurrency: (r.priceCurrency as ImportRow["priceCurrency"]) ?? cost.currency,
-        priceTax: (r.priceTax as ImportRow["priceTax"]) ?? cost.tax,
-        isTp: Boolean(r.isTp) || cost.isTp,
-        leadTimeText: r.leadTimeText ? String(r.leadTimeText) : null,
-        etaText: r.etaText ? String(r.etaText) : r.leadTimeText ? String(r.leadTimeText) : null,
-        warehouse: resolveWarehouseCode(r.warehouse ? String(r.warehouse) : null),
-        channel: r.channel ? String(r.channel) : null,
-        customer: r.customer ? String(r.customer) : null,
-        package: r.package ? String(r.package) : null,
-        standardPack: r.standardPack ? String(r.standardPack) : null,
-        packState: (r.packState as ImportRow["packState"]) ?? null,
-        costAmount: r.costAmount != null ? Number(r.costAmount) : cost.amount,
-        costCurrency: (r.costCurrency as ImportRow["costCurrency"]) ?? cost.currency,
-        costTax: (r.costTax as ImportRow["costTax"]) ?? cost.tax,
-        note: r.note ? String(r.note) : null,
-        duplicate: false,
-        duplicateReason: null,
-        selected: Boolean(mpn),
-        warning: mpn ? null : "缺少型号",
-      } satisfies ImportRow;
-    });
-    return rows.filter((r) => r.mpn);
-  } catch {
-    return null;
-  }
-}
 
 function flagIntraFileDuplicates(rows: ImportRow[]) {
   const seen = new Map<string, number>();
@@ -365,47 +123,43 @@ export const parseImport = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sql = await sqlClient();
     await ensureSeed(sql);
-    let rows: ImportRow[] = [];
-    let usedAi = false;
-    const text = data.text ? correctTradeText(data.text) : undefined;
 
-    if (data.sourceType === "excel" && data.fileBase64) {
-      const table = await parseExcel(data.fileBase64);
-      rows = tableToRows(table, data.kind);
-    } else if (data.sourceType === "csv" && (text || data.fileBase64)) {
-      const raw = text ?? Buffer.from(data.fileBase64!, "base64").toString("utf8");
-      rows = tableToRows(parseCsv(raw), data.kind);
-    } else if (data.sourceType === "image" && data.fileBase64) {
-      const mime = data.mime || "image/jpeg";
-      const url = `data:${mime};base64,${data.fileBase64}`;
-      const ai = await aiExtract({ imageDataUrl: url, kind: data.kind, text });
-      if (ai && ai.length) {
-        rows = ai;
-        usedAi = true;
-      }
-    } else if (data.sourceType === "pdf" || data.sourceType === "word") {
-      const heur = text ? heuristicParse(text, data.kind) : [];
-      const ai = text ? await aiExtract({ text, kind: data.kind }) : null;
-      if (ai && ai.length) {
-        rows = ai;
-        usedAi = true;
-      } else {
-        rows = heur;
-      }
-    } else {
-      const t = text ?? "";
-      rows = heuristicParse(t, data.kind);
-      if (rows.length === 0) {
-        const ai = await aiExtract({ text: t, kind: data.kind });
-        if (ai && ai.length) {
-          rows = ai;
-          usedAi = true;
+    // ① 先走 Harness Import Agent（方案第 15/19 节）
+    const providers = defaultProviders();
+    const outcome = await runImportAgent(
+      {
+        sourceType: data.sourceType,
+        kind: data.kind,
+        text: data.text ? correctTradeText(data.text) : undefined,
+        fileBase64: data.fileBase64,
+        mime: data.mime,
+        filename: data.filename,
+      },
+      providers,
+    );
+    let rows: ImportRow[] = outcome?.rows ?? [];
+    let usedAi = Boolean(outcome?.usedAi);
+
+    // ② 回退现有 parser（Harness 停机 / 无果时行为与收敛前一致 —— 验收 9）
+    if (rows.length === 0) {
+      const text = data.text ? correctTradeText(data.text) : undefined;
+      try {
+        if (data.sourceType === "excel" && data.fileBase64) {
+          rows = tableToRows(await parseExcel(data.fileBase64), data.kind);
+        } else if (data.sourceType === "csv" && (text || data.fileBase64)) {
+          const raw = text ?? Buffer.from(data.fileBase64!, "base64").toString("utf8");
+          rows = tableToRows(parseCsv(raw), data.kind);
         }
+      } catch {
+        rows = [];
       }
+      // 图片无规则解析可用；PDF/Word 抽取失败时退回用户粘贴文本
+      if (rows.length === 0 && text) rows = heuristicParse(text, data.kind);
     }
 
-    if (rows.length === 0 && text) rows = heuristicParse(text, data.kind);
+    if (rows.length === 0 && data.text) rows = heuristicParse(correctTradeText(data.text), data.kind);
 
+    // ③ 程序执行重复检测（验收 7），④ 返回预览数据 —— 写库只发生在 confirmImport（验收 6）
     await markDuplicates(sql, rows);
     const warehouses = await listWarehouses(sql);
     const channels = await sql`select id, name from channels order by name`;
@@ -413,7 +167,7 @@ export const parseImport = createServerFn({ method: "POST" })
     return {
       rows,
       usedAi,
-      aiAvailable: Boolean(process.env.XAI_API_KEY),
+      aiAvailable: providers.some((p) => p.available()),
       warehouses,
       channels: channels.map((r) => ({ id: String(r.id), name: String(r.name) })),
       customers: customers.map((r) => ({ id: String(r.id), name: String(r.name) })),

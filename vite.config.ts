@@ -150,6 +150,9 @@ export default defineConfig(({ command, isPreview }) => ({
     host: "0.0.0.0",
     port: 8080,
     strictPort: true,
+    // 公网隧道发布（cloudflared → radar.newmindchen.com）需要放行公网 Host 头，
+    // `.newmindchen.com` 覆盖全部子域名，防 DNS-rebinding 默认策略保持对其他域名关闭。
+    allowedHosts: [".newmindchen.com"],
   },
   preview: {
     host: "127.0.0.1",

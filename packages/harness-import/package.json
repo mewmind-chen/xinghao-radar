@@ -1,0 +1,7 @@
+{
+  "name": "@xinghao/harness-import",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DeepSeek Harness V1 · 插件化 AI 输入处理层：把 Excel/CSV/PDF/Word/图片/文本稳定转换成可预览确认的 ImportRow[]。只做录入，不做判断（PRD：录入交给 AI，判断留给人）。"
+}

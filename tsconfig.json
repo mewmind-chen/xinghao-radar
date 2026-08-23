@@ -15,7 +15,13 @@
     "noEmit": true,
     "types": ["vite/client", "node"],
     "baseUrl": ".",
-    "paths": { "@/*": ["./src/*"] }
+    // allowImportingTsExtensions: harness 包内部用显式 .ts 扩展导入，
+    // 使 Node --test（type-stripping）与 tsc 双兼容。
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@harness/*": ["./packages/harness-import/src/*"]
+    }
   },
-  "include": ["src", "server"]
+  "include": ["src", "server", "packages"]
 }
