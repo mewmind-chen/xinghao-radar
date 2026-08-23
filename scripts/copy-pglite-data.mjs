@@ -1,23 +1,21 @@
-import { copyFileSync, mkdirSync, statSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const sourceData = resolve(root, "node_modules/@electric-sql/pglite/dist/pglite.data");
-const sourceWasm = resolve(root, "node_modules/@electric-sql/pglite/dist/pglite.wasm");
+const sourceDir = resolve(root, "node_modules/@electric-sql/pglite/dist");
 const targetDir = resolve(root, ".vercel/output/functions/__server.func/_libs");
-const targetData = resolve(targetDir, "pglite.data");
-const targetWasm = resolve(targetDir, "pglite.wasm");
 
-for (const source of [sourceData, sourceWasm]) {
-  try {
-    statSync(source);
-  } catch {
-    throw new Error(`PGlite runtime file is missing: ${source}`);
-  }
+const runtimeFiles = readdirSync(sourceDir).filter((name) => /\.(wasm|data)$/.test(name));
+if (runtimeFiles.length === 0) {
+  throw new Error(`PGlite runtime files are missing: ${sourceDir}`);
 }
 
 mkdirSync(targetDir, { recursive: true });
-copyFileSync(sourceData, targetData);
-copyFileSync(sourceWasm, targetWasm);
-console.log(`[build] copied PGlite runtime: ${targetData}, ${targetWasm}`);
+for (const name of runtimeFiles) {
+  const source = resolve(sourceDir, name);
+  const target = resolve(targetDir, name);
+  statSync(source);
+  copyFileSync(source, target);
+  console.log(`[build] copied PGlite runtime: ${target}`);
+}
