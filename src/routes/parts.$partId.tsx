@@ -3,8 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ArrowLeft, Star } from "lucide-react";
 import { getPartDetail } from "@/lib/server/parts";
-import { receiveTransit, stockOutbound, stockTransfer, stockAdjust, stockMeta } from "@/lib/server/stock";
+import { receiveTransit, stockAdjust, stockMeta, stockOutbound, stockTransfer } from "@/lib/server/stock";
 import { setOfferValid, setInquiryValid, toggleWatch } from "@/lib/server/market";
+import { analyzePartMpn } from "@/lib/server/knowledge";
+import type { PartKnowledgeAnalysis } from "@/lib/server/knowledge";
 import {
   formatCost,
   formatEtaLabel,
@@ -52,6 +54,10 @@ function PartDetail() {
     onSuccess: () => {
       qc.invalidateQueries();
     },
+  });
+
+  const analyzeMut = useMutation({
+    mutationFn: () => analyzePartMpn({ data: { mpn: d?.part.mpn ?? "" } }),
   });
 
   if (q.isLoading) {
@@ -343,16 +349,32 @@ function PartDetail() {
         </ul>
       </section>
 
-      {(d.part.description || d.part.params) && (
-        <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
-          <h2 className="mb-2 text-sm font-medium">产品知识</h2>
-          {d.part.description && <p className="text-sm">{d.part.description}</p>}
-          {d.part.params && (
-            <p className="mt-1 font-mono text-xs text-muted-foreground">{d.part.params}</p>
-          )}
-          <p className="mt-2 text-[11px] text-muted-foreground">仅基于已录入资料，不猜测车规/军工等级。</p>
-        </section>
-      )}
+      <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h2 className="text-sm font-medium">产品知识</h2>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => analyzeMut.mutate()}
+            disabled={analyzeMut.isPending}
+          >
+            {analyzeMut.isPending ? "分析中…" : "型号分析"}
+          </Button>
+        </div>
+        {(d.part.description || d.part.params) && (
+          <div className="mb-2">
+            {d.part.description && <p className="text-sm">{d.part.description}</p>}
+            {d.part.params && (
+              <p className="mt-1 font-mono text-xs text-muted-foreground">{d.part.params}</p>
+            )}
+          </div>
+        )}
+        <p className="mt-1 text-[11px] text-muted-foreground">仅基于已录入资料，不猜测车规/军工等级。</p>
+        <PartKnowledgePanel
+          analysis={analyzeMut.data}
+          loading={analyzeMut.isPending}
+        />
+      </section>
 
       <StockOpDialog
         open={op}
@@ -370,6 +392,135 @@ function PartDetail() {
           setLotId(null);
         }}
       />
+    </div>
+  );
+}
+
+function PartKnowledgePanel({
+  analysis,
+  loading,
+}: {
+  analysis: PartKnowledgeAnalysis | undefined;
+  loading: boolean;
+}) {
+  if (loading) {
+    return (
+      <div className="mt-3 space-y-2">
+        <Skeleton className="h-28" />
+        <Skeleton className="h-32" />
+      </div>
+    );
+  }
+  if (!analysis) return null;
+  if (!analysis.ok) {
+    return (
+      <p className="mt-3 rounded-lg bg-secondary/50 px-3 py-2 text-xs text-muted-foreground">
+        型号分析暂不可用{analysis.error ? `：${analysis.error}` : ""}
+      </p>
+    );
+  }
+
+  const { positioning, headline, specs, applications, replacements, lcsc, hqew } = analysis;
+  const money = (n: number | null | undefined) =>
+    n == null || !Number.isFinite(n) ? "—" : `¥${n.toLocaleString("zh-CN")}`;
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="flex gap-3">
+        {lcsc?.imageUrl ? (
+          <a href={lcsc.url || "#"} target="_blank" rel="noreferrer" className="shrink-0">
+            <img
+              src={lcsc.imageUrl}
+              alt="芯片封装图"
+              loading="lazy"
+              className="h-28 w-28 rounded-lg border bg-white object-contain"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = "none";
+              }}
+            />
+          </a>
+        ) : null}
+        <div className="min-w-0">
+          {headline && <p className="text-sm font-medium">{headline}</p>}
+          {positioning && <p className="mt-0.5 text-xs text-muted-foreground">{positioning}</p>}
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {lcsc && (
+              <Badge variant="outline" className="text-[11px]">
+                立创 {money(lcsc.price)} · 现货 {formatQty(lcsc.stock)}
+              </Badge>
+            )}
+            {hqew && hqew.count > 0 && (
+              <Badge variant="outline" className="text-[11px]">
+                华强 {hqew.count} 家 · {formatQty(hqew.totalStock)} · 最低{" "}
+                {money(hqew.minPrice)}
+              </Badge>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {applications && applications.length > 0 && (
+        <div>
+          <h3 className="mb-1 text-xs font-medium text-muted-foreground">应用</h3>
+          <div className="flex flex-wrap gap-1">
+            {applications.slice(0, 8).map((a, i) => (
+              <Badge key={i} variant="mute" className="text-[11px]">
+                {a}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {specs && specs.length > 0 && (
+        <div>
+          <h3 className="mb-1 text-xs font-medium text-muted-foreground">规格参数</h3>
+          <ul className="divide-y rounded-lg border">
+            {specs.slice(0, 12).map((s, i) => (
+              <li key={i} className="flex gap-3 px-2.5 py-1.5 text-xs">
+                <span className="w-32 shrink-0 text-muted-foreground">{s.label}</span>
+                <span className="min-w-0 break-words">{s.value}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {lcsc && lcsc.priceBreaks.length > 0 && (
+        <div>
+          <h3 className="mb-1 text-xs font-medium text-muted-foreground">立创量价</h3>
+          <div className="flex flex-wrap gap-1.5">
+            {lcsc.priceBreaks.map((b, i) => (
+              <span key={i} className="rounded-md bg-secondary/60 px-2 py-1 text-[11px] tabular">
+                {formatQty(b.qty)}+ {money(b.price)}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {replacements && replacements.length > 0 && (
+        <div>
+          <h3 className="mb-1 text-xs font-medium text-muted-foreground">相似型号</h3>
+          <ul className="space-y-1">
+            {replacements.slice(0, 5).map((r, i) => (
+              <li key={i} className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                <span className="font-mono">{r.mpn}</span>
+                {r.brand && <span className="text-muted-foreground">{r.brand}</span>}
+                {r.package && <span className="text-muted-foreground">{r.package}</span>}
+                {r.similarity && <span className="text-muted-foreground">{r.similarity}</span>}
+                <span className="tabular">{money(r.price)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <p className="text-[11px] text-muted-foreground">
+        分析数据来自立创商城 / 华强电子网公开页面，仅供参考，采购以实际确认单为准。
+        {analysis.analyzedAt &&
+          ` · ${new Date(analysis.analyzedAt).toLocaleString("zh-CN", { hour12: false })}`}
+      </p>
     </div>
   );
 }
