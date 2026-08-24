@@ -1,6 +1,6 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, PenLine, Star } from "lucide-react";
 import { getPartDetail, searchParts } from "@/lib/server/parts";
 import { updatePartIdentity } from "@/lib/server/parts";
@@ -58,6 +58,7 @@ export const Route = createFileRoute("/parts/$partId")({
 function PartDetail() {
   const { partId } = Route.useParams();
   const ctx = Route.useSearch();
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["part", partId],
@@ -100,6 +101,47 @@ function PartDetail() {
   useEffect(() => {
     window.scrollTo({ top: 0 });
   }, [partId]);
+
+  // 左右滑动手势切换型号（与「上一个/下一个」按钮等效）
+  const touchRef = useRef<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.target as HTMLElement | null;
+      // 对话框、表单控件、可点击元素内部不触发滑动切换
+      if (!t || t.closest("[role='dialog'],button,a,input,select,textarea,[data-swipe='off']")) {
+        touchRef.current = null;
+        return;
+      }
+      if (e.touches.length !== 1) {
+        touchRef.current = null;
+        return;
+      }
+      touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      const st = touchRef.current;
+      touchRef.current = null;
+      if (!st || !e.changedTouches[0]) return;
+      const dx = e.changedTouches[0].clientX - st.x;
+      const dy = e.changedTouches[0].clientY - st.y;
+      // 水平位移足够且明显大于纵向（滚动页面的纵向滑动不触发）
+      if (Math.abs(dx) < 64 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      const target = dx < 0 ? ctxNext : ctxPrev;
+      if (target) {
+        navigate({
+          to: "/parts/$partId",
+          params: { partId: target.id },
+          search: ctx,
+        });
+      }
+    };
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [ctxPrev, ctxNext, ctx, navigate]);
 
   const watchMut = useMutation({
     mutationFn: (on: boolean) => toggleWatch({ data: { partId, on } }),
