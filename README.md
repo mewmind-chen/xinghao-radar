@@ -67,7 +67,7 @@ Radar 只把“型号理解、研究与建议”交给 `electronics-agent-platfo
 - `AGENT_API_URL`：Platform 服务地址，默认 `http://127.0.0.1:8787`。
 - `ELECTRONICS_AGENT_PLATFORM_TOKEN`：仅供 Radar 调用 Platform 的专用服务端 token。生产环境必须单独签发；不兼容、也不回退读取泛用的 `AGENT_API_TOKEN`。
 - `HQB_BASE_URL`：Workbench 降级服务地址，默认 `http://127.0.0.1:8081`。
-- `DATABASE_URL`：生产 Postgres 连接；未设置时使用本地 PGLite。
+- `DATABASE_URL`：生产 Postgres 连接；未设置时使用本地 PGLite。型号分析结果也写入该同一持久层的 `part_analyses` 表：部署时由 `npm run build` 的迁移创建，冷启动实例可直接读取；离线开发则保存在 `<DATA_DIR>/pglite`，不再使用 serverless 本地 SQLite 文件。旧版 `data/analyses.db` 可先运行 `node scripts/import-legacy-analyses.mjs` 只读预检，再用 `node scripts/import-legacy-analyses.mjs --apply` 幂等导入；源文件始终保留，不会自动删除。
 
 不要将 token 放入 `VITE_*` 变量、浏览器代码、截图或日志。服务日志只记录诸如 `platform_unavailable / timeout` 的粗粒度原因，不输出凭据、URL 或上游响应内容。
 

@@ -46,7 +46,7 @@ export const searchParts = createServerFn({ method: "GET" })
       rows = await sql`select * from parts order by updated_at desc, mpn limit 200`;
     }
     const parts = rows.map(mapPart);
-    const analysisAt = listAnalysisTimes();
+    const analysisAt = await listAnalysisTimes();
     const flags = await matchFlagsForParts(
       sql,
       parts.map((p) => p.id),
@@ -258,6 +258,6 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
         updated_at = now()
       where id = ${id}
     `;
-    moveAnalysisKey(oldKey, mpn);
+    await moveAnalysisKey(oldKey, mpn);
     return { ok: true as const };
   });

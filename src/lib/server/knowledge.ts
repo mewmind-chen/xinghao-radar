@@ -65,14 +65,14 @@ export type PartAnalysisDependencies = {
   getRadarPartContext: (mpn: string) => Promise<RadarPartContext | null>;
   researchPartViaPlatform: (mpn: string, context: RadarPartContext | null) => Promise<PlatformPartResearchOutcome>;
   lookupHqb: (mpn: string) => Promise<HqbLookupFull>;
-  saveAnalysis: (mpn: string, result: PartKnowledgeAnalysis) => void;
+  saveAnalysis: (mpn: string, result: PartKnowledgeAnalysis) => Promise<void>;
   /** Receives a safe event name only: never tokens, URLs, response bodies, or DB errors. */
   logDegraded: (event: DegradedPartAnalysisEvent, reason?: string) => void;
 };
 
-function persistAnalysis(mpn: string, result: PartKnowledgeAnalysis, save: PartAnalysisDependencies["saveAnalysis"]) {
+async function persistAnalysis(mpn: string, result: PartKnowledgeAnalysis, save: PartAnalysisDependencies["saveAnalysis"]) {
   try {
-    save(mpn, result);
+    await save(mpn, result);
   } catch {
     /* persist is best-effort */
   }
@@ -97,7 +97,7 @@ async function createDefaultDependencies(): Promise<PartAnalysisDependencies> {
       return (await res.json()) as HqbLookupFull;
     },
     saveAnalysis: (mpn, result) => {
-      saveAnalysisFull(mpn, {
+      return saveAnalysisFull(mpn, {
         analyzedAt: result.analyzedAt ?? new Date().toISOString(),
         sourceUrl: result.sourceUrl,
         json: JSON.stringify(result),
@@ -135,13 +135,13 @@ export async function analyzePartMpnWithDependencies(
       const { platformPartToHqb } = await import("./knowledge-map");
       const mapped = mapHqbResponse(platformPartToHqb(flow.platform));
       if (mapped.ok) {
-        persistAnalysis(mpn, mapped, deps.saveAnalysis);
+        await persistAnalysis(mpn, mapped, deps.saveAnalysis);
         return mapped;
       }
       return mapped;
     }
     const result = mapHqbResponse(flow.fallback);
-    if (result.ok) persistAnalysis(mpn, result, deps.saveAnalysis);
+    if (result.ok) await persistAnalysis(mpn, result, deps.saveAnalysis);
     return result;
   } catch (err) {
     return {
@@ -181,7 +181,7 @@ export const getPartAnalysis = createServerFn({ method: "GET" })
     const mpn = data.mpn?.trim();
     if (!mpn) return null;
     try {
-      const row = getAnalysis(mpn);
+      const row = await getAnalysis(mpn);
       if (!row) return null;
       return {
         analyzedAt: row.analyzed_at,

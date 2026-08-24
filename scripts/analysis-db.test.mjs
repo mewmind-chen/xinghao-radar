@@ -1,53 +1,88 @@
-// 本地 DB(analysis-db, node:sqlite)测试: 往返读写 / 键归一 / 摘要 / JSON 兼容。
-// 运行: node --test scripts/analysis-db.test.mjs
+// Analysis persistence repository tests. The production adapter uses the same
+// parameterized Sql surface over Postgres or local PGLite; no node:sqlite path.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createAnalysisRepository } from "../src/lib/server/analysis-db.ts";
 
-const dir = mkdtempSync(join(tmpdir(), "radar-analysis-test-"));
-process.env.DATA_DIR = dir;
-const mod = await import("../src/lib/server/analysis-db.ts");
+function fakeSql() {
+  const rows = new Map();
+  const calls = [];
+  return {
+    calls,
+    rows,
+    async query(text, params = []) {
+      calls.push({ text, params });
+      if (text.startsWith("insert into part_analyses")) {
+        const [mpn_key, mpn, analyzed_at, source_url, analysis] = params;
+        rows.set(mpn_key, { mpn_key, mpn, analyzed_at, source_url, analysis });
+        return [];
+      }
+      if (text.startsWith("select mpn_key, mpn")) {
+        const row = rows.get(params[0]);
+        return row ? [row] : [];
+      }
+      if (text.startsWith("select mpn_key, analyzed_at")) {
+        return [...rows.values()].map(({ mpn_key, analyzed_at }) => ({ mpn_key, analyzed_at }));
+      }
+      if (text.startsWith("with moved as")) {
+        const [toKey, toMpn, fromKey] = params;
+        const row = rows.get(fromKey);
+        if (row) {
+          rows.set(toKey, { ...row, mpn_key: toKey, mpn: toMpn });
+          rows.delete(fromKey);
+        }
+        return [];
+      }
+      throw new Error(`unexpected SQL: ${text}`);
+    },
+  };
+}
 
-test("保存后再读: 完整往返 + mpn 大小写归一", () => {
-  mod.saveAnalysisFull("  tps7a4700rgwr ", {
+test("保存后再读: 异步往返、大小写归一与参数化 SQL", async () => {
+  const store = fakeSql();
+  const repo = createAnalysisRepository(store);
+  const mpn = "  tps7a4700rgwr '; drop table parts; -- ";
+  await repo.saveAnalysisFull(mpn, {
     analyzedAt: "2026-08-23T10:00:00.000Z",
     sourceUrl: "https://item.szlcsc.com/116080.html",
     json: JSON.stringify({ ok: true, headline: "1A LDO" }),
   });
-  const row = mod.getAnalysis("TPS7A4700RGWR");
-  assert.ok(row, "大小写不同的查询也应命中");
+  const row = await repo.getAnalysis(mpn.toUpperCase());
+  assert.ok(row);
   assert.equal(row.analyzed_at, "2026-08-23T10:00:00.000Z");
   assert.equal(JSON.parse(row.analysis).headline, "1A LDO");
-  assert.equal(mod.getAnalysis("NO-SUCH-PART"), null);
+  assert.equal(await repo.getAnalysis("NO-SUCH-PART"), null);
+  const write = store.calls.find((call) => call.text.startsWith("insert into part_analyses"));
+  assert.ok(write);
+  assert.match(write.text, /\$1/);
+  assert.doesNotMatch(write.text, /drop table/i);
+  assert.match(String(write.params[0]), /DROP TABLE PARTS/);
 });
 
-test("同名覆盖: 保留最新一条", () => {
-  mod.saveAnalysisFull("TPS7A4700RGWR", { analyzedAt: "2026-08-23T11:00:00.000Z", json: JSON.stringify({ ok: true, v: 2 }) });
-  const row = mod.getAnalysis("tps7a4700rgwr");
-  assert.equal(JSON.parse(row.analysis).v, 2);
-  assert.equal(row.analyzed_at, "2026-08-23T11:00:00.000Z");
+test("同名覆盖、摘要与跨冷启动共享 SQL 表", async () => {
+  const store = fakeSql();
+  const firstProcess = createAnalysisRepository(store);
+  await firstProcess.saveAnalysisFull("TPS7A4700RGWR", {
+    analyzedAt: "2026-08-23T10:00:00.000Z", json: JSON.stringify({ v: 1 }),
+  });
+  const coldStartProcess = createAnalysisRepository(store);
+  await coldStartProcess.saveAnalysisFull("tps7a4700rgwr", {
+    analyzedAt: "2026-08-23T11:00:00.000Z", json: JSON.stringify({ v: 2 }),
+  });
+  assert.equal(JSON.parse((await coldStartProcess.getAnalysis("TPS7A4700RGWR")).analysis).v, 2);
+  assert.deepEqual(await coldStartProcess.listAnalysisTimes(), {
+    TPS7A4700RGWR: "2026-08-23T11:00:00.000Z",
+  });
 });
 
-test("listAnalysisTimes: 摘要映射", () => {
-  const times = mod.listAnalysisTimes();
-  assert.ok(times["TPS7A4700RGWR"] === "2026-08-23T11:00:00.000Z");
-  assert.ok(Object.keys(times).length >= 1);
+test("moveAnalysisKey 原子地移动记录且保留时间", async () => {
+  const store = fakeSql();
+  const repo = createAnalysisRepository(store);
+  await repo.saveAnalysisFull("OLD-MPN", { analyzedAt: "2026-08-23T09:00:00.000Z", json: "{}" });
+  await repo.moveAnalysisKey("OLD-MPN", "NEW-MPN");
+  assert.equal(await repo.getAnalysis("OLD-MPN"), null);
+  assert.equal((await repo.getAnalysis("new-mpn")).analyzed_at, "2026-08-23T09:00:00.000Z");
+  const move = store.calls.find((call) => call.text.startsWith("with moved as"));
+  assert.ok(move);
+  assert.match(move.text, /on conflict \(mpn_key\)/i);
 });
-
-test("moveAnalysisKey: 主档修正后分析记录迁移到新键且保留时间", () => {
-  mod.saveAnalysisFull("OLD-MPN", { analyzedAt: "2026-08-23T09:00:00.000Z", json: "{}" });
-  mod.moveAnalysisKey("OLD-MPN", "NEW-MPN");
-  assert.equal(mod.getAnalysis("OLD-MPN"), null, "旧键已清空");
-  const moved = mod.getAnalysis("new-mpn");
-  assert.ok(moved, "新键命中(大小写归一)");
-  assert.equal(moved.analyzed_at, "2026-08-23T09:00:00.000Z", "保留时间戳");
-});
-
-test("丢失的表/文件自动重建(IF NOT EXISTS)", () => {
-  const db2 = mod.listAnalysisTimes();
-  assert.equal(typeof db2, "object");
-});
-
-rmSync(dir, { recursive: true, force: true });
