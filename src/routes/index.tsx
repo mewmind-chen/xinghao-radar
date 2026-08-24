@@ -3,9 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   ArrowRight,
-  Camera,
   ClipboardList,
-  ClipboardPaste,
   Radio,
   Settings,
   Star,
@@ -38,20 +36,6 @@ function Workbench() {
         <div>
           <h1 className="text-xl font-medium tracking-tight">工作台</h1>
           <p className="text-sm text-muted-foreground">今日命中自动汇总，不弹窗骚扰。</p>
-        </div>
-        <div className="flex gap-2">
-          <Button asChild variant="outline">
-            <Link to="/import">
-              <ClipboardPaste className="size-4" />
-              粘贴导入
-            </Link>
-          </Button>
-          <Button asChild>
-            <Link to="/import">
-              <Camera className="size-4" />
-              拍照导入
-            </Link>
-          </Button>
         </div>
       </div>
 
