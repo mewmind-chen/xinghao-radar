@@ -199,15 +199,37 @@ export const confirmImport = createServerFn({ method: "POST" })
       if (kind === "inquiry" && !(row.customer || data.defaultCustomer)) {
         throw new Error(`${row.mpn} 缺少客户`);
       }
+      // 数量必须为正整数：识别层偶发把价格当数量（如 $1.15 → 1.15），
+      // 在写库前给出可理解的错误而非 Postgres integer 语法错。
+      const requireIntQty = (qty: number | null, what: string): number => {
+        const n = qty ?? 0;
+        if (!Number.isFinite(n) || n <= 0) throw new Error(`${row.mpn} ${what}数量无效`);
+        if (!Number.isInteger(n)) {
+          throw new Error(
+            `${row.mpn} ${what}数量必须是整数：${n}（像价格被识别成了数量，请检查该行）`,
+          );
+        }
+        return n;
+      };
+      if (kind === "offer") {
+        if (row.qty != null && !Number.isInteger(row.qty)) {
+          throw new Error(`${row.mpn} 推货数量必须是整数：${row.qty}（像价格被识别成了数量，请检查该行）`);
+        }
+      }
+      if (kind === "inquiry") {
+        if (row.qty != null && !Number.isInteger(row.qty)) {
+          throw new Error(`${row.mpn} 询价数量必须是整数：${row.qty}（像价格被识别成了数量，请检查该行）`);
+        }
+      }
       if (kind === "stock") {
         const wh =
           warehouses.find((w) => w.code === row.warehouse) ??
           warehouses.find((w) => w.id === data.defaultWarehouseId);
         if (!wh) throw new Error(`${row.mpn} 缺少仓库`);
-        if ((row.qty ?? 0) <= 0) throw new Error(`${row.mpn} 入库数量无效`);
+        requireIntQty(row.qty, "入库");
       }
-      if (kind === "transit" && (row.qty ?? 0) <= 0) {
-        throw new Error(`${row.mpn} 在途数量无效`);
+      if (kind === "transit") {
+        requireIntQty(row.qty, "在途");
       }
     }
 

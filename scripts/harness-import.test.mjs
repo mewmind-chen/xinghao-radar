@@ -76,16 +76,45 @@ test("heuristicParse: 示例行情文本逐行抽取", () => {
   assert.equal(rows[0].mpn, "TPS7A4700RGWR");
   assert.equal(rows[0].qty, 20000);
   assert.equal(rows[0].isTp, true);
-  // 契约锁定（既有行为，非本方案授权修改）：heuristicParse 的价格解析会把
-  // 行内全部数字吸入金额（10K 2418 $1.15 → 1024181.15）。已知怪癖，
-  // 由预览页人工核对兜底；字段级输入（表格/AI 后处理）不受影响。
-  assert.equal(rows[1].priceAmount, 1024181.15);
+  assert.equal(rows[0].dateCode, "24+");
+  // 修复（价格吸附）：数量/批次/货期先摘除，价格只取残余 → $1.15
+  assert.equal(rows[1].priceAmount, 1.15);
+  assert.equal(rows[1].priceCurrency, "USD");
+  assert.equal(rows[1].leadTimeText, "现货");
+  assert.equal(rows[1].dateCode, "2418");
 });
 
 test("heuristicParse: mixed 类型按关键词判类", () => {
   const rows = heuristicParse("ESP32-WROOM-32E 8K 客户 瀚博微", "mixed");
   assert.equal(rows[0].kind, "inquiry");
   assert.equal(rows[0].customer, "瀚博微");
+});
+
+test("heuristicParse: 数量/价格/货期互不污染", () => {
+  // 在途行: 数量 5K、货期 8月底、无价格(不吸附出 58)
+  const a = heuristicParse("NRF52840-QIAA 5K 8月底到", "mixed");
+  assert.equal(a[0].qty, 5000);
+  assert.equal(a[0].leadTimeText, "8月底");
+  assert.equal(a[0].priceAmount, null);
+  assert.equal(a[0].kind, "transit", "8月底到 → 在途语义");
+  // 询价行: 数量 8K、客户瀚博微、无价格(不吸附出 8)
+  const b = heuristicParse("ESP32-WROOM-32E 8K 客 瀚博微", "mixed");
+  assert.equal(b[0].qty, 8000);
+  assert.equal(b[0].customer, "瀚博微");
+  assert.equal(b[0].priceAmount, null);
+});
+
+test("heuristicParse: 数量优先带单位数字, 不把价格当数量", () => {
+  const a = heuristicParse("TPS7A4700RGWR 10K 2418 $1.15 现货", "offer");
+  assert.equal(a[0].qty, 10000);
+  // 纯价格行 → 数量为空（币符前导的裸数字视为价格）
+  const b = heuristicParse("LM317T $1.15", "offer");
+  assert.equal(b[0].qty, null);
+  const c = heuristicParse("LM317T 1.15元", "offer");
+  assert.equal(c[0].qty, null);
+  // 无单位裸整数仍是数量
+  const d = heuristicParse("LM317T 5000", "offer");
+  assert.equal(d[0].qty, 5000);
 });
 
 // ---------- MPN 对抗校验（验收 8 核心：只 warning 不改值） ----------

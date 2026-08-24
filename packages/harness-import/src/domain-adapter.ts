@@ -51,7 +51,12 @@ export function rawRowsToImportRows(
     const cost = parseCost(
       r.priceAmount != null ? String(r.priceAmount) : r.costAmount != null ? String(r.costAmount) : "",
     );
-    const qty = typeof r.qty === "number" ? r.qty : parseQty(String(r.qty ?? ""));
+    const qty =
+      typeof r.qty === "number"
+        ? Number.isFinite(r.qty)
+          ? Math.round(r.qty)
+          : null
+        : parseQty(String(r.qty ?? ""));
 
     const kind = isImportKind(r.kind)
       ? r.kind
