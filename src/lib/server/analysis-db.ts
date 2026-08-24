@@ -3,22 +3,26 @@
  *
  * 职责：型号分析记录（产品知识面板结果）。业务库 PGLite 为内存实例（重启由
  * seed 重建），分析结果需要跨重启保存的资产，单独落到
- * `<项目根>/data/analyses.db`（DATA_DIR 环境变量可覆盖目录）。
+ * `<项目根>/data/analyses.db`。
  *
- * - 同步 API：server fn 内调用开销可忽略；文件级持久化天然原子。
+ * 数据目录解析（重要）：不要用 import.meta.url 相对定位 —— Nitro preview
+ * 打包后模块在 .vercel/output/... 内，相对路径会指到构建产物目录（每次
+ * build 清空 = 数据丢失）。解析顺序：
+ *   1) env `DATA_DIR`（LaunchAgent/dev 脚本显式注入，推荐）
+ *   2) `<cwd>/data`（本地 dev 与脚本以项目根为 cwd 时正确）
  * - busy_timeout 兜底多进程场景（preview/dev 不应并存，此处防御）。
  * - 本模块仅服务端使用（node:sqlite 只在 server 运行时导入）。
  */
 
 import { mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const DATA_DIR =
-  process.env.DATA_DIR ||
-  resolve(dirname(fileURLToPath(import.meta.url)), "../../../data");
+const DATA_DIR = process.env.DATA_DIR || join(process.cwd(), "data");
 const DB_FILE = join(DATA_DIR, "analyses.db");
+
+// 启动即打印实际落盘位置，便于排查"保存到哪了"类问题（仅服务端首次加载）
+console.info(`[analysis-db] data dir: ${DATA_DIR} (file: ${DB_FILE})`);
 
 declare global {
   // eslint-disable-next-line no-var
