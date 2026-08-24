@@ -1,10 +1,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
-  Boxes,
   ClipboardList,
   LayoutDashboard,
-  MoreHorizontal,
   Radar,
   Search,
   Settings,
@@ -15,7 +13,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
 
 const NAV = [
   { to: "/", label: "工作台", icon: LayoutDashboard },
@@ -28,18 +25,10 @@ const NAV = [
   { to: "/settings", label: "设置", icon: Settings },
 ] as const;
 
-const MOBILE_PRIMARY = [
-  { to: "/", label: "工作台", icon: LayoutDashboard },
-  { to: "/parts", label: "型号", icon: Radar },
-  { to: "/import", label: "导入", icon: Upload },
-  { to: "/stock", label: "库存", icon: Boxes },
-] as const;
-
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
   const [q, setQ] = useState("");
-  const [more, setMore] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -116,51 +105,27 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
           </form>
         </header>
-        <main className="px-3 py-4 pb-24 md:px-6 md:pb-8">{children}</main>
+        <main className="px-3 py-4 pb-36 md:px-6 md:pb-8">{children}</main>
       </div>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-border bg-card pb-[env(safe-area-inset-bottom)] md:hidden">
-        {MOBILE_PRIMARY.map((item) => (
-          <Link
-            key={item.to}
-            to={item.to}
-            className={cn(
-              "flex h-14 flex-1 flex-col items-center justify-center gap-0.5 text-[11px] text-muted-foreground",
-              active(item.to) && "text-foreground",
-            )}
-          >
-            <item.icon className="size-5" />
-            {item.label}
-          </Link>
-        ))}
-        <button
-          type="button"
-          onClick={() => setMore(true)}
-          className="flex h-14 flex-1 flex-col items-center justify-center gap-0.5 text-[11px] text-muted-foreground"
-        >
-          <MoreHorizontal className="size-5" />
-          更多
-        </button>
+      {/* 移动端底部导航：全部功能直接可见（两行四列），不藏抽屉 */}
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] md:hidden">
+        <div className="grid grid-cols-4">
+          {NAV.map((item) => (
+            <Link
+              key={item.to}
+              to={item.to}
+              className={cn(
+                "flex flex-col items-center justify-center gap-0.5 py-2 text-[10px] text-muted-foreground active:bg-secondary/60",
+                active(item.to) && "bg-secondary/60 text-foreground",
+              )}
+            >
+              <item.icon className="size-5" />
+              {item.label}
+            </Link>
+          ))}
+        </div>
       </nav>
-
-      <Sheet open={more} onOpenChange={setMore}>
-        <SheetContent side="bottom">
-          <div className="mb-3 text-sm font-medium">全部页面</div>
-          <div className="grid grid-cols-3 gap-2">
-            {NAV.map((item) => (
-              <Link
-                key={item.to}
-                to={item.to}
-                onClick={() => setMore(false)}
-                className="flex flex-col items-center gap-1 rounded-lg bg-secondary px-2 py-3 text-xs"
-              >
-                <item.icon className="size-5" />
-                {item.label}
-              </Link>
-            ))}
-          </div>
-        </SheetContent>
-      </Sheet>
     </div>
   );
 }
