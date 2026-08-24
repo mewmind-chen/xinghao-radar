@@ -14,6 +14,10 @@ import { createServerFn } from "@tanstack/react-start";
 import { mapHqbResponse } from "./knowledge-map";
 import { getAnalysis, saveAnalysisFull } from "./analysis-db";
 import type { PartKnowledgeAnalysis } from "./knowledge-map";
+import type { PlatformPartResearchOutcome } from "./agent-platform";
+import type { RadarPartContext } from "./radar-context-provider";
+import { runPartAnalysisFlow } from "./part-analysis-flow";
+import type { DegradedPartAnalysisEvent } from "./part-analysis-flow";
 
 const HQB_BASE_URL = (process.env.HQB_BASE_URL || "http://127.0.0.1:8081").replace(/\/+$/, "");
 
@@ -23,7 +27,7 @@ export type {
   PartKnowledgeAnalysis,
 } from "./knowledge-map";
 
-type HqbLookupFull = {
+export type HqbLookupFull = {
   ok?: boolean;
   truncated?: boolean;
   record?: {
@@ -57,55 +61,103 @@ type HqbLookupFull = {
   };
 };
 
-export const analyzePartMpn = createServerFn({ method: "POST" })
-  .validator((input: { mpn: string }) => input)
-  .handler(async ({ data }): Promise<PartKnowledgeAnalysis> => {
-    const mpn = data.mpn?.trim();
-    if (!mpn) return { ok: false, error: "型号为空" };
-    try {
-      const { researchPartViaPlatform } = await import("./agent-platform");
-      const { getRadarPartContext } = await import("./radar-context-provider");
-      const context = await getRadarPartContext(mpn);
-      const platform = await researchPartViaPlatform(mpn, context);
-      const platformHasFacts = Boolean(platform?.identity || (platform?.offers && platform.offers.length));
-      if (platform && platformHasFacts) {
-        const { mapHqbResponse, platformPartToHqb } = await import("./knowledge-map");
-        const mapped = mapHqbResponse(platformPartToHqb(platform));
-        if (mapped.ok) {
-          try {
-            saveAnalysisFull(mpn, {
-              analyzedAt: mapped.analyzedAt ?? new Date().toISOString(),
-              sourceUrl: mapped.sourceUrl,
-              json: JSON.stringify(mapped),
-            });
-          } catch {
-            /* persist is best-effort */
-          }
-          return mapped;
-        }
-      }
+export type PartAnalysisDependencies = {
+  getRadarPartContext: (mpn: string) => Promise<RadarPartContext | null>;
+  researchPartViaPlatform: (mpn: string, context: RadarPartContext | null) => Promise<PlatformPartResearchOutcome>;
+  lookupHqb: (mpn: string) => Promise<HqbLookupFull>;
+  saveAnalysis: (mpn: string, result: PartKnowledgeAnalysis) => void;
+  /** Receives a safe event name only: never tokens, URLs, response bodies, or DB errors. */
+  logDegraded: (event: DegradedPartAnalysisEvent, reason?: string) => void;
+};
+
+function persistAnalysis(mpn: string, result: PartKnowledgeAnalysis, save: PartAnalysisDependencies["saveAnalysis"]) {
+  try {
+    save(mpn, result);
+  } catch {
+    /* persist is best-effort */
+  }
+}
+
+async function createDefaultDependencies(): Promise<PartAnalysisDependencies> {
+  const [{ researchPartViaPlatformWithOutcome }, { getRadarPartContext }] = await Promise.all([
+    import("./agent-platform"),
+    import("./radar-context-provider"),
+  ]);
+  return {
+    getRadarPartContext,
+    researchPartViaPlatform: researchPartViaPlatformWithOutcome,
+    lookupHqb: async (mpn) => {
       const res = await fetch(`${HQB_BASE_URL}/api/agent/lookup.full`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ query: mpn, steps: ["lcsc", "hqew"] }),
         signal: AbortSignal.timeout(120_000),
       });
-      if (!res.ok) return { ok: false, error: `分析服务异常（${res.status}）` };
-      const body = (await res.json()) as HqbLookupFull;
-      const result = mapHqbResponse(body);
-      if (result.ok) {
-        // 成功即持久化（本地 node:sqlite DB），写库失败不阻断本次展示
-        try {
-          saveAnalysisFull(mpn, {
-            analyzedAt: result.analyzedAt ?? new Date().toISOString(),
-            sourceUrl: result.sourceUrl,
-            json: JSON.stringify(result),
-          });
-        } catch {
-          /* 持久化失败不阻断展示 */
-        }
+      if (!res.ok) return { ok: false };
+      return (await res.json()) as HqbLookupFull;
+    },
+    saveAnalysis: (mpn, result) => {
+      saveAnalysisFull(mpn, {
+        analyzedAt: result.analyzedAt ?? new Date().toISOString(),
+        sourceUrl: result.sourceUrl,
+        json: JSON.stringify(result),
+      });
+    },
+    logDegraded: (event, reason) => {
+      // Keep degradation observable without emitting credentials, endpoints,
+      // model output, or raw database/network errors.
+      console.warn("[radar.part-analysis] degraded", { event, ...(reason ? { reason } : {}) });
+    },
+  };
+}
+
+/**
+ * Orchestrates optional platform intelligence around Radar's deterministic
+ * business path. Provider and Platform failures are deliberately non-fatal:
+ * HQB remains the fact-retrieval fallback and Radar retains final ownership.
+ */
+export async function analyzePartMpnWithDependencies(
+  rawMpn: string,
+  deps: PartAnalysisDependencies,
+): Promise<PartKnowledgeAnalysis> {
+  const mpn = rawMpn.trim();
+  if (!mpn) return { ok: false, error: "型号为空" };
+
+  try {
+    const flow = await runPartAnalysisFlow(mpn, {
+      getContext: deps.getRadarPartContext,
+      researchPlatform: deps.researchPartViaPlatform,
+      hasUsablePlatformResult: (platform) => Boolean(platform.identity || (platform.offers && platform.offers.length)),
+      lookupFallback: deps.lookupHqb,
+      logDegraded: deps.logDegraded,
+    });
+    if (flow.source === "platform") {
+      const { platformPartToHqb } = await import("./knowledge-map");
+      const mapped = mapHqbResponse(platformPartToHqb(flow.platform));
+      if (mapped.ok) {
+        persistAnalysis(mpn, mapped, deps.saveAnalysis);
+        return mapped;
       }
-      return result;
+      return mapped;
+    }
+    const result = mapHqbResponse(flow.fallback);
+    if (result.ok) persistAnalysis(mpn, result, deps.saveAnalysis);
+    return result;
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error && /timeout|abort/i.test(err.message)
+        ? "分析超时（外部抓取较慢，稍后重试）"
+        : "型号分析暂不可用",
+    };
+  }
+}
+
+export const analyzePartMpn = createServerFn({ method: "POST" })
+  .validator((input: { mpn: string }) => input)
+  .handler(async ({ data }): Promise<PartKnowledgeAnalysis> => {
+    try {
+      return await analyzePartMpnWithDependencies(data.mpn, await createDefaultDependencies());
     } catch (err) {
       return {
         ok: false,

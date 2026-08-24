@@ -1,8 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { candidateToImportRow, researchPartViaPlatform } from "../src/lib/server/agent-platform.ts";
+import {
+  candidateToImportRow,
+  researchPartViaPlatform,
+  researchPartViaPlatformWithOutcome,
+} from "../src/lib/server/agent-platform.ts";
 import { platformPartToHqb, mapHqbResponse } from "../src/lib/server/knowledge-map.ts";
 import { radarContextFromFlags } from "../src/lib/server/radar-context-provider.ts";
+import { runPartAnalysisFlow } from "../src/lib/server/part-analysis-flow.ts";
 
 test("platform candidate becomes Radar preview row; write flags stay local", () => {
   const row = candidateToImportRow(
@@ -77,4 +82,65 @@ test("part research POST carries only the caller's Radar context snapshot", asyn
     quotation: { source: "radar", openCount: 3, recentCount: 2 },
   });
   assert.doesNotMatch(JSON.stringify(sent?.context), /customer|cost|lot|channel/i);
+});
+
+test("part research classifies platform failures without exposing response details", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("upstream diagnostics must not leak", { status: 503 });
+  try {
+    const outcome = await researchPartViaPlatformWithOutcome("TPS54560DDAR");
+    assert.equal(outcome.result, null);
+    assert.equal(outcome.failureReason, "server_error");
+    assert.doesNotMatch(JSON.stringify(outcome), /upstream diagnostics/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("part research exposes safe downgrade reasons for 401 and timeout", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response(null, { status: 401 });
+    assert.equal((await researchPartViaPlatformWithOutcome("TPS54560DDAR")).failureReason, "unauthorized");
+
+    globalThis.fetch = async () => {
+      const err = new Error("request aborted");
+      err.name = "TimeoutError";
+      throw err;
+    };
+    assert.equal((await researchPartViaPlatformWithOutcome("TPS54560DDAR")).failureReason, "timeout");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("provider exception still calls Platform without context, then falls back to HQB", async () => {
+  const calls = [];
+  const result = await runPartAnalysisFlow(" TPS54560DDAR ", {
+    getContext: async () => {
+      throw new Error("database connection string must not surface");
+    },
+    researchPlatform: async (mpn, context) => {
+      calls.push({ kind: "platform", mpn, context });
+      return { result: null, failureReason: "timeout" };
+    },
+    hasUsablePlatformResult: () => true,
+    lookupFallback: async (mpn) => {
+      calls.push({ kind: "hqb", mpn });
+      return {
+        ok: true,
+        record: {
+          identity: { mpn, brand: "TI", lcscUrl: "https://example.test/part" },
+          offers: [{ sourceKey: "lcsc", stock: 12, price: 1.2 }],
+        },
+      };
+    },
+    logDegraded: () => {},
+  });
+
+  assert.equal(result.source, "fallback");
+  assert.deepEqual(calls, [
+    { kind: "platform", mpn: "TPS54560DDAR", context: null },
+    { kind: "hqb", mpn: "TPS54560DDAR" },
+  ]);
 });

@@ -30,6 +30,21 @@ test("Radar agent client has no Harness types", () => {
   assert.doesNotMatch(src, /defineTool/);
 });
 
+test("Radar uses its dedicated platform token and does not reuse AGENT_API_TOKEN", () => {
+  const src = readFileSync(join(root, "src/lib/server/agent-platform.ts"), "utf8");
+  assert.match(src, /ELECTRONICS_AGENT_PLATFORM_TOKEN/);
+  assert.doesNotMatch(src, /process\.env\.AGENT_API_TOKEN/);
+});
+
+test("Radar analysis degrades provider and Platform failures into a safe HQB fallback", () => {
+  const src = readFileSync(join(root, "src/lib/server/knowledge.ts"), "utf8");
+  const flow = readFileSync(join(root, "src/lib/server/part-analysis-flow.ts"), "utf8");
+  assert.match(src, /analyzePartMpnWithDependencies/);
+  assert.match(flow, /context_provider_unavailable/);
+  assert.match(flow, /platform_unavailable/);
+  assert.match(flow, /lookupFallback/);
+});
+
 test("Radar context provider is read-only and excludes sensitive business details", () => {
   const src = readFileSync(join(root, "src/lib/server/radar-context-provider.ts"), "utf8");
   assert.match(src, /normalizeMpn/);

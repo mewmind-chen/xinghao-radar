@@ -10,7 +10,23 @@ function nid(): string {
 }
 
 export const AGENT_API_URL = (process.env.AGENT_API_URL || "http://127.0.0.1:8787").replace(/\/+$/, "");
-const AGENT_API_TOKEN = String(process.env.AGENT_API_TOKEN || "").trim();
+// This credential belongs only to electronics-agent-platform. Do not reuse a
+// generic AGENT_API_TOKEN: that makes an accidental cross-service deployment
+// grant Radar more authority than it needs.
+const ELECTRONICS_AGENT_PLATFORM_TOKEN = String(process.env.ELECTRONICS_AGENT_PLATFORM_TOKEN || "").trim();
+
+export type PlatformFailureReason =
+  | "timeout"
+  | "unauthorized"
+  | "server_error"
+  | "http_error"
+  | "network_error"
+  | "invalid_response";
+
+type PostJsonOutcome = {
+  body: unknown | null;
+  failureReason?: PlatformFailureReason;
+};
 
 export type PlatformCandidate = {
   kind?: ImportKind;
@@ -71,9 +87,15 @@ export function candidateToImportRow(c: PlatformCandidate, fallbackKind: ImportK
   };
 }
 
-async function postJson(path: string, body: unknown, timeoutMs: number): Promise<unknown | null> {
+function classifyFetchError(err: unknown): PlatformFailureReason {
+  return err instanceof Error && /timeout|abort/i.test(err.name + err.message)
+    ? "timeout"
+    : "network_error";
+}
+
+async function postJson(path: string, body: unknown, timeoutMs: number): Promise<PostJsonOutcome> {
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (AGENT_API_TOKEN) headers.authorization = `Bearer ${AGENT_API_TOKEN}`;
+  if (ELECTRONICS_AGENT_PLATFORM_TOKEN) headers.authorization = `Bearer ${ELECTRONICS_AGENT_PLATFORM_TOKEN}`;
   try {
     const res = await fetch(`${AGENT_API_URL}${path}`, {
       method: "POST",
@@ -81,10 +103,23 @@ async function postJson(path: string, body: unknown, timeoutMs: number): Promise
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
+    if (!res.ok) {
+      return {
+        body: null,
+        failureReason: res.status === 401 || res.status === 403
+          ? "unauthorized"
+          : res.status >= 500
+            ? "server_error"
+            : "http_error",
+      };
+    }
+    try {
+      return { body: await res.json() };
+    } catch {
+      return { body: null, failureReason: "invalid_response" };
+    }
+  } catch (err) {
+    return { body: null, failureReason: classifyFetchError(err) };
   }
 }
 
@@ -96,7 +131,7 @@ export async function extractViaPlatform(input: {
   fileBase64?: string;
   mime?: string;
 }): Promise<{ rows: ImportRow[]; usedAi: boolean } | null> {
-  const body = await postJson("/v1/import/extract", { ...input, mode: "auto" }, 30_000);
+  const { body } = await postJson("/v1/import/extract", { ...input, mode: "auto" }, 30_000);
   if (!body || typeof body !== "object") return null;
   const rec = body as { candidates?: PlatformCandidate[]; usedAi?: boolean; needsAgent?: boolean };
   const candidates = Array.isArray(rec.candidates) ? rec.candidates : [];
@@ -137,17 +172,30 @@ export type PlatformPartResearch = {
   recommendation?: { action?: string; reasoning?: string };
 };
 
-export async function researchPartViaPlatform(
+export type PlatformPartResearchOutcome = {
+  result: PlatformPartResearch | null;
+  /** Safe, coarse failure classification only; never contains URL, token, or response body. */
+  failureReason?: PlatformFailureReason;
+};
+
+export async function researchPartViaPlatformWithOutcome(
   mpn: string,
   context?: RadarPartContext | null,
-): Promise<PlatformPartResearch | null> {
-  const body = await postJson(
+): Promise<PlatformPartResearchOutcome> {
+  const { body, failureReason } = await postJson(
     "/v1/parts/research",
     { mpn, steps: ["lcsc", "hqew"], mode: "auto", ...(context ? { context } : {}) },
     120_000,
   );
-  if (!body || typeof body !== "object") return null;
+  if (!body || typeof body !== "object") return { result: null, failureReason };
   const rec = body as PlatformPartResearch;
-  if (rec.ok === false) return null;
-  return rec;
+  if (rec.ok === false) return { result: null, failureReason: "http_error" };
+  return { result: rec };
+}
+
+export async function researchPartViaPlatform(
+  mpn: string,
+  context?: RadarPartContext | null,
+): Promise<PlatformPartResearch | null> {
+  return (await researchPartViaPlatformWithOutcome(mpn, context)).result;
 }

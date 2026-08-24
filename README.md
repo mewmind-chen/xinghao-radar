@@ -56,6 +56,21 @@ npm run preview     # 预览构建产物
 
 数据库迁移在 `migrations/`。首次启动会自动应用 schema 并写入演示数据。
 
+## 智能能力边界与部署
+
+Radar 只把“型号理解、研究与建议”交给 `electronics-agent-platform`；库存、询价、匹配规则、写库和最终操作仍由 Radar 的确定性业务代码与用户确认负责。每次型号研究会按精确 MPN 生成一个只读、聚合后的上下文快照（在库、在途、仓库汇总、询价计数），不发送客户、成本、批次、渠道明细等数据。
+
+部署拓扑为 `Radar → electronics-agent-platform → 公开研究源`，并保留 `Radar → Huaqiangbei Workbench /api/agent/lookup.full` 作为事实检索降级链路。上下文提供器异常、平台超时、401 或 5xx 都会记录安全的降级事件，再无上下文调用平台或直接回退 Workbench；它们不会阻断 Radar 的核心业务。
+
+从 [`.env.example`](.env.example) 复制为 `.env` 后按环境填写：
+
+- `AGENT_API_URL`：Platform 服务地址，默认 `http://127.0.0.1:8787`。
+- `ELECTRONICS_AGENT_PLATFORM_TOKEN`：仅供 Radar 调用 Platform 的专用服务端 token。生产环境必须单独签发；不兼容、也不回退读取泛用的 `AGENT_API_TOKEN`。
+- `HQB_BASE_URL`：Workbench 降级服务地址，默认 `http://127.0.0.1:8081`。
+- `DATABASE_URL`：生产 Postgres 连接；未设置时使用本地 PGLite。
+
+不要将 token 放入 `VITE_*` 变量、浏览器代码、截图或日志。服务日志只记录诸如 `platform_unavailable / timeout` 的粗粒度原因，不输出凭据、URL 或上游响应内容。
+
 ## 目录
 
 ```
