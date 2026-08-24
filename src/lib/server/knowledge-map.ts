@@ -21,6 +21,12 @@ export type PartKnowledgeAnalysis = {
   truncated?: boolean;
   positioning?: string;
   headline?: string;
+  /** 立创标准完整型号（可能带包装尾缀，如 AD9631ARZ-REEL7） */
+  resolvedMpn?: string;
+  /** 立创标准品牌原文（如 "ADI(亚德诺)"） */
+  resolvedBrand?: string;
+  resolvedPackage?: string;
+  resolvedCategory?: string;
   specs?: KnowledgeSpec[];
   applications?: string[];
   replacements?: KnowledgeReplacement[];
@@ -45,6 +51,10 @@ type HqbLookupFull = {
   truncated?: boolean;
   record?: {
     identity?: {
+      mpn?: string;
+      brand?: string;
+      category?: string;
+      package?: string;
       imageUrl?: string;
       lcscUrl?: string;
       lcscStock?: number | null;
@@ -87,6 +97,10 @@ export function mapHqbResponse(body: HqbLookupFull): PartKnowledgeAnalysis {
     truncated: Boolean(body.truncated),
     positioning: d?.positioning,
     headline: d?.headline,
+    resolvedMpn: identity?.mpn,
+    resolvedBrand: identity?.brand,
+    resolvedPackage: identity?.package,
+    resolvedCategory: identity?.category,
     specs: d?.specs?.length ? d.specs : undefined,
     applications: d?.apps?.length ? d.apps : identity?.applications?.length ? identity.applications : [],
     replacements: d?.replacements?.length ? d.replacements : [],

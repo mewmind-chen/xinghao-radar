@@ -36,6 +36,15 @@ test("listAnalysisTimes: 摘要映射", () => {
   assert.ok(Object.keys(times).length >= 1);
 });
 
+test("moveAnalysisKey: 主档修正后分析记录迁移到新键且保留时间", () => {
+  mod.saveAnalysisFull("OLD-MPN", { analyzedAt: "2026-08-23T09:00:00.000Z", json: "{}" });
+  mod.moveAnalysisKey("OLD-MPN", "NEW-MPN");
+  assert.equal(mod.getAnalysis("OLD-MPN"), null, "旧键已清空");
+  const moved = mod.getAnalysis("new-mpn");
+  assert.ok(moved, "新键命中(大小写归一)");
+  assert.equal(moved.analyzed_at, "2026-08-23T09:00:00.000Z", "保留时间戳");
+});
+
 test("丢失的表/文件自动重建(IF NOT EXISTS)", () => {
   const db2 = mod.listAnalysisTimes();
   assert.equal(typeof db2, "object");

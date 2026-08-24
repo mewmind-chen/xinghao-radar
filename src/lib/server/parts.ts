@@ -7,8 +7,9 @@ import {
   matchFlagsForParts,
   sqlClient,
 } from "./helpers";
-import { formatStockLine } from "@/lib/domain";
-import { listAnalysisTimes } from "./analysis-db";
+import { displayMpn, formatStockLine, normalizeMpn } from "@/lib/domain";
+import { cleanBrand } from "./part-identity";
+import { listAnalysisTimes, moveAnalysisKey } from "./analysis-db";
 import type { MatchFlags, Part } from "@/lib/types";
 
 export type PartListItem = Part & {
@@ -207,4 +208,56 @@ export const createPart = createServerFn({ method: "POST" })
       await sql`update parts set category = ${data.category}, updated_at = now() where id = ${part.id}`;
     }
     return part;
+  });
+
+/**
+ * 修正型号主档（录入/识别错误时的人工修正入口）。
+ * - 主档唯一：新 mpn_key 与其它主档冲突时报错；本档 partId 不变，
+ *   库存/渠道/询价/流水等历史事件全部保留。
+ * - 可选字段（category/package/description/params）用于带入分析结果，
+ *   只覆盖旧值为空或显式传入的列；brand 经 cleanBrand 归一。
+ * - 已保存的型号分析记录随新 key 迁移（保留时间戳）。
+ */
+export const updatePartIdentity = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      id: string;
+      mpn: string;
+      brand?: string;
+      category?: string;
+      package?: string;
+      description?: string;
+      params?: string;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const sql = await sqlClient();
+    const mpn = displayMpn(data.mpn ?? "");
+    if (!mpn) throw new Error("型号不能为空");
+    const key = normalizeMpn(data.mpn);
+    const id = data.id;
+    const current = await sql`select mpn, mpn_key from parts where id = ${id} limit 1`;
+    if (!current[0]) throw new Error("型号不存在");
+    const oldKey = String(current[0].mpn_key);
+
+    const clash = await sql`
+      select id from parts where mpn_key = ${key} and id <> ${id} limit 1
+    `;
+    if (clash[0]) throw new Error("同型号已存在于另一主档，请直接使用该档");
+
+    const brand = data.brand ? cleanBrand(data.brand) : null;
+    await sql`
+      update parts set
+        mpn = ${mpn},
+        mpn_key = ${key},
+        brand_code = coalesce(${brand}, brand_code),
+        category = coalesce(${data.category ?? null}, category),
+        package = coalesce(${data.package ?? null}, package),
+        description = coalesce(${data.description ?? null}, description),
+        params = coalesce(${data.params ?? null}, params),
+        updated_at = now()
+      where id = ${id}
+    `;
+    moveAnalysisKey(oldKey, mpn);
+    return { ok: true as const };
   });

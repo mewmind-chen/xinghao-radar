@@ -1,8 +1,9 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { ArrowLeft, Star } from "lucide-react";
+import { ArrowLeft, PenLine, Star } from "lucide-react";
 import { getPartDetail } from "@/lib/server/parts";
+import { updatePartIdentity } from "@/lib/server/parts";
 import { receiveTransit, stockAdjust, stockMeta, stockOutbound, stockTransfer } from "@/lib/server/stock";
 import { setOfferValid, setInquiryValid, toggleWatch } from "@/lib/server/market";
 import { analyzePartMpn, getPartAnalysis } from "@/lib/server/knowledge";
@@ -48,6 +49,7 @@ function PartDetail() {
   const d = q.data;
   const [op, setOp] = useState<null | "out" | "move" | "adj" | "recv">(null);
   const [lotId, setLotId] = useState<string | null>(null);
+  const [fixOpen, setFixOpen] = useState(false);
 
   const watchMut = useMutation({
     mutationFn: (on: boolean) => toggleWatch({ data: { partId, on } }),
@@ -142,14 +144,25 @@ function PartDetail() {
               {[d.part.package, d.part.lifecycle].filter(Boolean).join(" · ")}
             </p>
           </div>
-          <Button
-            variant={d.watched ? "hit" : "outline"}
-            className="w-full sm:w-auto"
-            onClick={() => watchMut.mutate(!d.watched)}
-          >
-            <Star className={cn("size-4", d.watched && "fill-current")} />
-            {d.watched ? "已关注" : "潜力"}
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setFixOpen(true)}
+              title="修正完整型号/品牌（录入错误时）"
+            >
+              <PenLine className="size-3.5" />
+              修正
+            </Button>
+            <Button
+              variant={d.watched ? "hit" : "outline"}
+              className="w-full sm:w-auto"
+              onClick={() => watchMut.mutate(!d.watched)}
+            >
+              <Star className={cn("size-4", d.watched && "fill-current")} />
+              {d.watched ? "已关注" : "潜力"}
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -404,6 +417,17 @@ function PartDetail() {
         />
       </section>
 
+      <CorrectPartDialog
+        open={fixOpen}
+        onClose={() => setFixOpen(false)}
+        partId={partId}
+        current={{ mpn: d.part.mpn, brand: d.part.brandCode ?? "" }}
+        onDone={() => {
+          qc.invalidateQueries();
+          setFixOpen(false);
+        }}
+      />
+
       <StockOpDialog
         open={op}
         onClose={() => {
@@ -550,6 +574,121 @@ function PartKnowledgePanel({
           ` · ${new Date(analysis.analyzedAt).toLocaleString("zh-CN", { hour12: false })}`}
       </p>
     </div>
+  );
+}
+
+function CorrectPartDialog({
+  open,
+  onClose,
+  partId,
+  current,
+  onDone,
+}: {
+  open: boolean;
+  onClose: () => void;
+  partId: string;
+  current: { mpn: string; brand: string };
+  onDone: () => void;
+}) {
+  const [mpn, setMpn] = useState("");
+  const [brand, setBrand] = useState("");
+  const [category, setCategory] = useState("");
+  const [pkg, setPkg] = useState("");
+  const [fetched, setFetched] = useState(false);
+
+  const analyzeMut = useMutation({
+    mutationFn: () => analyzePartMpn({ data: { mpn: mpn.trim() } }),
+    onSuccess: (r) => {
+      if (!r.ok) {
+        toast.error(r.error ?? "分析失败");
+        return;
+      }
+      // 自动带入立创标准型号/品牌/封装，供人工删减后保存
+      if (r.resolvedMpn) setMpn(r.resolvedMpn);
+      if (r.resolvedBrand) setBrand(r.resolvedBrand.split(/[（(]/)[0].trim());
+      if (r.resolvedCategory) setCategory(r.resolvedCategory);
+      if (r.resolvedPackage) setPkg(r.resolvedPackage);
+      setFetched(true);
+      toast.success("已带入立创标准资料，可删减尾缀后保存");
+    },
+  });
+
+  const saveMut = useMutation({
+    mutationFn: () =>
+      updatePartIdentity({
+        data: {
+          id: partId,
+          mpn: mpn.trim(),
+          brand: brand.trim() || undefined,
+          category: category.trim() || undefined,
+          package: pkg.trim() || undefined,
+        },
+      }),
+    onSuccess: () => {
+      toast.success("型号主档已修正");
+      onDone();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>修正型号主档</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-3">
+          <p className="text-xs text-muted-foreground">
+            当前：<span className="font-mono">{current.mpn}</span>
+            {current.brand ? ` · ${current.brand}` : ""}。修正后库存、渠道、询价、流水等历史全部保留。
+          </p>
+          <div>
+            <Label>完整型号</Label>
+            <div className="flex gap-1.5">
+              <Input
+                value={mpn}
+                onChange={(e) => setMpn(e.target.value)}
+                placeholder="如 AD9631ARZ-REEL7"
+                className="font-mono"
+              />
+              <Button
+                variant="outline"
+                className="shrink-0"
+                disabled={!mpn.trim() || analyzeMut.isPending}
+                onClick={() => analyzeMut.mutate()}
+              >
+                {analyzeMut.isPending ? "查询中…" : "分析带入"}
+              </Button>
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              点击「分析带入」自动查立创标准型号；包装尾缀如 -REEL7 可直接删掉。
+            </p>
+          </div>
+          {fetched && (
+            <p className="rounded-md bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-700">
+              已带入立创标准资料，改为标准型号后保存
+            </p>
+          )}
+          <div>
+            <Label>品牌</Label>
+            <Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="如 ADI" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label>类目</Label>
+              <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="如 运算放大器" />
+            </div>
+            <div>
+              <Label>封装</Label>
+              <Input value={pkg} onChange={(e) => setPkg(e.target.value)} placeholder="如 SOIC-8" />
+            </div>
+          </div>
+          <Button disabled={!mpn.trim() || saveMut.isPending} onClick={() => saveMut.mutate()}>
+            {saveMut.isPending ? "保存中…" : "保存"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

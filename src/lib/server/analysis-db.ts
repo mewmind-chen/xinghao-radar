@@ -90,3 +90,16 @@ export function listAnalysisTimes(): Record<string, string> {
   for (const r of rows) out[r.mpn_key] = r.analyzed_at;
   return out;
 }
+
+/** 主档修正后，把旧 mpn_key 的分析记录迁移到新 key（保留时间戳）。 */
+export function moveAnalysisKey(fromMpn: string, toMpn: string): void {
+  const a = analysisKey(fromMpn);
+  const b = analysisKey(toMpn);
+  if (a === b || !a || !b) return;
+  const db = open();
+  db.prepare(
+    "insert or replace into part_analyses (mpn_key, mpn, analyzed_at, source_url, analysis)" +
+      " select ?, ?, analyzed_at, source_url, analysis from part_analyses where mpn_key = ?",
+  ).run(b, toMpn.trim(), a);
+  db.prepare("delete from part_analyses where mpn_key = ?").run(a);
+}
