@@ -49,7 +49,7 @@ function Workbench() {
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-medium">智能导入</h2>
           <Link to="/import" className="text-xs text-muted-foreground hover:underline">
-            全部方式 →
+            更多方式 →
           </Link>
         </div>
         <Textarea
@@ -58,16 +58,11 @@ function Workbench() {
           value={paste}
           onChange={(e) => setPaste(e.target.value)}
         />
-        <div className="mt-2 flex gap-2">
-          <Button className="flex-1" size="sm" disabled={!paste.trim()} onClick={() => goImport(paste)}>
-            识别预览
-          </Button>
-          <Button asChild size="sm" variant="outline">
-            <Link to="/import">拍照 / Excel</Link>
-          </Button>
-        </div>
+        <Button className="mt-2 w-full" size="sm" disabled={!paste.trim()} onClick={() => goImport(paste)}>
+          识别预览
+        </Button>
         <p className="mt-1.5 text-[11px] text-muted-foreground">
-          粘贴识别、拍照、Excel/CSV、Word/PDF 均在导入页完成，先预览再入库。
+          拍照 / Excel / Word / PDF 等其它方式见「更多方式」，先预览再入库。
         </p>
       </section>
 
