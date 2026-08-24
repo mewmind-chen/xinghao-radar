@@ -1,7 +1,16 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { ArrowRight, Camera, ClipboardPaste, Radio } from "lucide-react";
+import {
+  ArrowRight,
+  Camera,
+  ClipboardList,
+  ClipboardPaste,
+  Radio,
+  Settings,
+  Star,
+  Truck,
+} from "lucide-react";
 import { getWorkbench } from "@/lib/server/workbench";
 import { formatEtaLabel, formatQty } from "@/lib/domain";
 import { HitBadges } from "@/components/hit-badges";
@@ -55,6 +64,16 @@ function Workbench() {
           value={data ? `${data.stats.stockSku} / ${data.stats.transitSku}` : undefined}
         />
       </div>
+
+      {/* 金刚区：低频功能入口（底部 Tab 之外的其余功能） */}
+      <section className="rounded-xl bg-card p-2 shadow-[var(--shadow-border)]">
+        <div className="grid grid-cols-4 gap-1">
+          <GongLink to="/channels" icon={Truck} label="渠道货源" n={data?.stats.activeChannels ?? null} />
+          <GongLink to="/inquiries" icon={ClipboardList} label="客户询价" n={data?.stats.validInquiries ?? null} />
+          <GongLink to="/watchlist" icon={Star} label="潜力型号" n={data?.stats.watch ?? null} />
+          <GongLink to="/settings" icon={Settings} label="设置" />
+        </div>
+      </section>
 
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <h2 className="mb-2 text-sm font-medium">快速贴</h2>
@@ -163,5 +182,32 @@ function Stat({ label, value, hint }: { label: string; value?: number | string; 
       <div className="mt-1 font-mono text-xl tabular">{value ?? "—"}</div>
       {hint ? <div className="text-[11px] text-muted-foreground">{hint}</div> : null}
     </div>
+  );
+}
+
+/** 金刚区入口卡（参考电商首页金刚区：图标 + 名称 + 数字角标） */
+function GongLink({
+  to,
+  icon: Icon,
+  label,
+  n,
+}: {
+  to: string;
+  icon: typeof Truck;
+  label: string;
+  n?: number | null;
+}) {
+  return (
+    <Link to={to} className="flex flex-col items-center gap-1 rounded-lg px-1 py-2 hover:bg-secondary/60">
+      <span className="relative">
+        <Icon className="size-5" />
+        {n != null && n > 0 && (
+          <span className="absolute -right-2.5 -top-1.5 rounded-full bg-primary px-1 text-[9px] leading-4 text-primary-foreground tabular">
+            {n}
+          </span>
+        )}
+      </span>
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+    </Link>
   );
 }

@@ -14,7 +14,8 @@ import {
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 
-const NAV = [
+/** 桌面侧栏 + 工作台金刚区：全部功能 */
+export const NAV = [
   { to: "/", label: "工作台", icon: LayoutDashboard },
   { to: "/parts", label: "型号库", icon: Radar },
   { to: "/stock", label: "我的库存", icon: Warehouse },
@@ -23,6 +24,14 @@ const NAV = [
   { to: "/watchlist", label: "潜力型号", icon: Star },
   { to: "/import", label: "智能导入", icon: Upload },
   { to: "/settings", label: "设置", icon: Settings },
+] as const;
+
+/** 移动端底部高频 Tab（其余功能在工作台金刚区） */
+const MOBILE_TABS = [
+  { to: "/", label: "工作台", icon: LayoutDashboard },
+  { to: "/parts", label: "型号库", icon: Radar },
+  { to: "/stock", label: "库存", icon: Warehouse },
+  { to: "/import", label: "导入", icon: Upload },
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -108,23 +117,21 @@ export function AppShell({ children }: { children: ReactNode }) {
         <main className="px-3 py-4 pb-24 md:px-6 md:pb-8">{children}</main>
       </div>
 
-      {/* 移动端底部导航：单行横向可滚动 Tab 栏(8 项全可见可达，不挤不高) */}
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] md:hidden">
-        <div className="flex overflow-x-auto px-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-          {NAV.map((item) => (
-            <Link
-              key={item.to}
-              to={item.to}
-              className={cn(
-                "flex w-[68px] shrink-0 flex-col items-center justify-center gap-1 py-2 text-[11px] leading-none text-muted-foreground active:bg-secondary/60",
-                active(item.to) && "bg-secondary/60 text-foreground",
-              )}
-            >
-              <item.icon className="size-5" />
-              <span className="max-w-full truncate">{item.label}</span>
-            </Link>
-          ))}
-        </div>
+      {/* 移动端底部导航：4 个高频 Tab，其余功能在工作台金刚区 */}
+      <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-border bg-card pb-[env(safe-area-inset-bottom)] md:hidden">
+        {MOBILE_TABS.map((item) => (
+          <Link
+            key={item.to}
+            to={item.to}
+            className={cn(
+              "flex h-14 flex-1 flex-col items-center justify-center gap-1 text-[11px] text-muted-foreground active:bg-secondary/60",
+              active(item.to) && "bg-secondary/60 text-foreground",
+            )}
+          >
+            <item.icon className="size-5" />
+            {item.label}
+          </Link>
+        ))}
       </nav>
     </div>
   );

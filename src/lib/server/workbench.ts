@@ -98,6 +98,13 @@ export const getWorkbench = createServerFn({ method: "GET" }).handler(async () =
     where deleted_at is null and status = 'in_transit' and qty_remaining > 0
   `;
   const watchN = await sql<{ n: number }>`select count(*)::int as n from watchlist`;
+  const activeChannels = await sql<{ n: number }>`
+    select count(*)::int as n from channels where is_active = true
+  `;
+  const validInquiries = await sql<{ n: number }>`
+    select count(*)::int as n from customer_inquiries
+    where deleted_at is null and is_valid = true
+  `;
 
   return {
     settings,
@@ -111,6 +118,8 @@ export const getWorkbench = createServerFn({ method: "GET" }).handler(async () =
       stockSku: Number(onHandParts[0]?.n ?? 0),
       transitSku: Number(transitParts[0]?.n ?? 0),
       watch: Number(watchN[0]?.n ?? 0),
+      activeChannels: Number(activeChannels[0]?.n ?? 0),
+      validInquiries: Number(validInquiries[0]?.n ?? 0),
     },
     pendingTransit: pendingTransit.map((r) => ({
       id: String(r.id),
