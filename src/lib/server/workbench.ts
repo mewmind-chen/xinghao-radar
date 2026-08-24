@@ -3,22 +3,6 @@ import { formatStockLine, startOfTodayIso } from "@/lib/domain";
 import { getSettings, listWarehouses, matchFlagsForParts, sqlClient } from "./helpers";
 import { ensureSeed } from "./seed";
 
-/** 底部导航角标计数（渠道/询价/潜力），轻量常驻查询。 */
-export const getNavCounters = createServerFn({ method: "GET" }).handler(async () => {
-  const sql = await sqlClient();
-  await ensureSeed(sql);
-  const [channels, inquiries, watch] = await Promise.all([
-    sql<{ n: number }>`select count(*)::int as n from channels where is_active = true`,
-    sql<{ n: number }>`select count(*)::int as n from customer_inquiries where deleted_at is null and is_valid = true`,
-    sql<{ n: number }>`select count(*)::int as n from watchlist`,
-  ]);
-  return {
-    channels: Number(channels[0]?.n ?? 0),
-    inquiries: Number(inquiries[0]?.n ?? 0),
-    watch: Number(watch[0]?.n ?? 0),
-  };
-});
-
 export const getWorkbench = createServerFn({ method: "GET" }).handler(async () => {
   const sql = await sqlClient();
   await ensureSeed(sql);
@@ -114,14 +98,6 @@ export const getWorkbench = createServerFn({ method: "GET" }).handler(async () =
     where deleted_at is null and status = 'in_transit' and qty_remaining > 0
   `;
   const watchN = await sql<{ n: number }>`select count(*)::int as n from watchlist`;
-  const activeChannels = await sql<{ n: number }>`
-    select count(*)::int as n from channels where is_active = true
-  `;
-  const validInquiries = await sql<{ n: number }>`
-    select count(*)::int as n from customer_inquiries
-    where deleted_at is null and is_valid = true
-  `;
-
   return {
     settings,
     warehouses,
@@ -134,8 +110,6 @@ export const getWorkbench = createServerFn({ method: "GET" }).handler(async () =
       stockSku: Number(onHandParts[0]?.n ?? 0),
       transitSku: Number(transitParts[0]?.n ?? 0),
       watch: Number(watchN[0]?.n ?? 0),
-      activeChannels: Number(activeChannels[0]?.n ?? 0),
-      validInquiries: Number(validInquiries[0]?.n ?? 0),
     },
     pendingTransit: pendingTransit.map((r) => ({
       id: String(r.id),

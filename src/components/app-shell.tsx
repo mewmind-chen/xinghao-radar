@@ -1,6 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
 import {
   ClipboardList,
   LayoutDashboard,
@@ -14,7 +13,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { getNavCounters } from "@/lib/server/workbench";
 
 /** 桌面侧栏：全部功能 */
 export const NAV = [
@@ -30,23 +28,18 @@ export const NAV = [
 
 /** 移动端底部 Tab：6 个主功能（导入在工作台内，设置在右上角） */
 const MOBILE_TABS = [
-  { to: "/", label: "工作台", icon: LayoutDashboard, counter: null as null | "channels" | "inquiries" | "watch" },
-  { to: "/parts", label: "型号库", icon: Radar, counter: null },
-  { to: "/stock", label: "库存", icon: Warehouse, counter: null },
-  { to: "/channels", label: "渠道货源", icon: Truck, counter: "channels" },
-  { to: "/inquiries", label: "客户询价", icon: ClipboardList, counter: "inquiries" },
-  { to: "/watchlist", label: "潜力型号", icon: Star, counter: "watch" },
+  { to: "/", label: "工作台", icon: LayoutDashboard },
+  { to: "/parts", label: "型号库", icon: Radar },
+  { to: "/stock", label: "库存", icon: Warehouse },
+  { to: "/channels", label: "渠道货源", icon: Truck },
+  { to: "/inquiries", label: "客户询价", icon: ClipboardList },
+  { to: "/watchlist", label: "潜力型号", icon: Star },
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
   const [q, setQ] = useState("");
-  const counters = useQuery({
-    queryKey: ["nav-counters"],
-    queryFn: () => getNavCounters(),
-    staleTime: 60_000,
-  });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -134,25 +127,18 @@ export function AppShell({ children }: { children: ReactNode }) {
         <main className="px-3 py-4 pb-24 md:px-6 md:pb-8">{children}</main>
       </div>
 
-      {/* 移动端底部导航：6 个主功能，带实时角标 */}
+      {/* 移动端底部导航：6 个主功能 */}
       <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-border bg-card pb-[env(safe-area-inset-bottom)] md:hidden">
         {MOBILE_TABS.map((item) => (
           <Link
             key={item.to}
             to={item.to}
             className={cn(
-              "relative flex h-14 flex-1 flex-col items-center justify-center gap-0.5 text-[10px] leading-none text-muted-foreground active:bg-secondary/60",
+              "flex h-14 flex-1 flex-col items-center justify-center gap-0.5 text-[10px] leading-none text-muted-foreground active:bg-secondary/60",
               active(item.to) && "bg-secondary/60 text-foreground",
             )}
           >
-            <span className="relative">
-              <item.icon className="size-5" />
-              {item.counter && (counters.data?.[item.counter] ?? 0) > 0 && (
-                <span className="absolute -right-2.5 -top-1.5 rounded-full bg-primary px-1 text-[8px] leading-[13px] text-primary-foreground tabular">
-                  {counters.data![item.counter]}
-                </span>
-              )}
-            </span>
+            <item.icon className="size-5" />
             {item.label}
           </Link>
         ))}
