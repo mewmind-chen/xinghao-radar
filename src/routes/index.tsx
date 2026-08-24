@@ -60,16 +60,29 @@ function Workbench() {
       </section>
 
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
-        <h2 className="mb-2 text-sm font-medium">快速贴</h2>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-medium">智能导入</h2>
+          <Link to="/import" className="text-xs text-muted-foreground hover:underline">
+            全部方式 →
+          </Link>
+        </div>
         <Textarea
           className="min-h-20 font-mono text-sm"
           placeholder="贴渠道表或询价，去预览确认"
           value={paste}
           onChange={(e) => setPaste(e.target.value)}
         />
-        <Button className="mt-2 w-full" size="sm" disabled={!paste.trim()} onClick={() => goImport(paste)}>
-          识别预览
-        </Button>
+        <div className="mt-2 flex gap-2">
+          <Button className="flex-1" size="sm" disabled={!paste.trim()} onClick={() => goImport(paste)}>
+            识别预览
+          </Button>
+          <Button asChild size="sm" variant="outline">
+            <Link to="/import">拍照 / Excel</Link>
+          </Button>
+        </div>
+        <p className="mt-1.5 text-[11px] text-muted-foreground">
+          粘贴识别、拍照、Excel/CSV、Word/PDF 均在导入页完成，先预览再入库。
+        </p>
       </section>
 
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">

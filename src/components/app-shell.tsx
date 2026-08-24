@@ -26,12 +26,11 @@ export const NAV = [
   { to: "/settings", label: "设置", icon: Settings },
 ] as const;
 
-/** 移动端底部高频 Tab（其余功能在工作台金刚区） */
+/** 移动端底部高频 Tab（导入入口在工作台「智能导入」模块内） */
 const MOBILE_TABS = [
   { to: "/", label: "工作台", icon: LayoutDashboard },
   { to: "/parts", label: "型号库", icon: Radar },
   { to: "/stock", label: "库存", icon: Warehouse },
-  { to: "/import", label: "导入", icon: Upload },
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
