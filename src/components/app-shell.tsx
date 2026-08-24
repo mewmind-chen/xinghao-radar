@@ -105,23 +105,23 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
           </form>
         </header>
-        <main className="px-3 py-4 pb-20 md:px-6 md:pb-8">{children}</main>
+        <main className="px-3 py-4 pb-24 md:px-6 md:pb-8">{children}</main>
       </div>
 
-      {/* 移动端底部导航：单行 8 项，全部功能直接可见且高度紧凑 */}
+      {/* 移动端底部导航：单行横向可滚动 Tab 栏(8 项全可见可达，不挤不高) */}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] md:hidden">
-        <div className="grid grid-cols-8">
+        <div className="flex overflow-x-auto px-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           {NAV.map((item) => (
             <Link
               key={item.to}
               to={item.to}
               className={cn(
-                "flex min-w-0 flex-col items-center justify-center gap-0.5 py-1.5 text-[9px] leading-none text-muted-foreground active:bg-secondary/60",
+                "flex w-[68px] shrink-0 flex-col items-center justify-center gap-1 py-2 text-[11px] leading-none text-muted-foreground active:bg-secondary/60",
                 active(item.to) && "bg-secondary/60 text-foreground",
               )}
             >
-              <item.icon className="size-[17px]" />
-              <span className="truncate">{item.label}</span>
+              <item.icon className="size-5" />
+              <span className="max-w-full truncate">{item.label}</span>
             </Link>
           ))}
         </div>
