@@ -595,7 +595,7 @@ function PartKnowledgePanel({
     );
   }
 
-  const { positioning, headline, specs, applications, replacements, lcsc, hqew } = analysis;
+  const { positioning, headline, specs, applications, replacements, lcsc, hqew, internalBusinessAdvice } = analysis;
   const money = (n: number | null | undefined) =>
     n == null || !Number.isFinite(n) ? "—" : `¥${n.toLocaleString("zh-CN")}`;
 
@@ -633,6 +633,16 @@ function PartKnowledgePanel({
           </div>
         </div>
       </div>
+
+      {internalBusinessAdvice && (
+        <div className="rounded-lg bg-secondary/60 px-3 py-2.5">
+          <h3 className="text-xs font-medium text-muted-foreground">内部业务建议</h3>
+          <p className="mt-1 text-sm font-medium">{internalBusinessAdvice.action}</p>
+          {internalBusinessAdvice.reasoning && (
+            <p className="mt-1 text-xs text-muted-foreground">{internalBusinessAdvice.reasoning}</p>
+          )}
+        </div>
+      )}
 
       {applications && applications.length > 0 && (
         <div>

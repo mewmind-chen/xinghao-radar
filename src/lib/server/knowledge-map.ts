@@ -44,6 +44,11 @@ export type PartKnowledgeAnalysis = {
     totalStock: number;
     minPrice: number | null;
   };
+  /** Platform advice derived from Radar's request-scoped aggregate context. */
+  internalBusinessAdvice?: {
+    action: string;
+    reasoning: string;
+  };
 };
 
 type HqbLookupFull = {
@@ -75,6 +80,13 @@ type HqbLookupFull = {
     apps?: string[];
     replacements?: KnowledgeReplacement[];
   };
+  advice?: {
+    usedInternal?: boolean;
+    action?: string;
+    internalView?: string;
+    combined?: string;
+  };
+  recommendation?: { action?: string; reasoning?: string };
 };
 
 function minPrice(prices: (number | null | undefined)[]): number | null {
@@ -97,6 +109,8 @@ export function platformPartToHqb(body: {
       : never
     : never;
   dossier?: { headline?: string; extra?: { what?: string }; specs?: KnowledgeSpec[]; apps?: string[]; replacements?: KnowledgeReplacement[] };
+  advice?: HqbLookupFull["advice"];
+  recommendation?: HqbLookupFull["recommendation"];
 }): HqbLookupFull {
   return {
     ok: body.ok !== false,
@@ -111,6 +125,8 @@ export function platformPartToHqb(body: {
       apps: body.dossier?.apps,
       replacements: body.dossier?.replacements,
     },
+    advice: body.advice,
+    recommendation: body.recommendation,
   };
 }
 
@@ -122,6 +138,14 @@ export function mapHqbResponse(body: HqbLookupFull): PartKnowledgeAnalysis {
   const hqewRows = offers.filter((o) => o.sourceKey === "hqew");
   const lcscRow = offers.find((o) => o.sourceKey === "lcsc") ?? null;
   const d = body.dossier;
+  const internalBusinessAdvice = body.advice?.usedInternal
+    ? {
+        action: body.advice.action || body.recommendation?.action || "内部业务建议",
+        reasoning: [body.advice.internalView, body.advice.combined, body.recommendation?.reasoning]
+          .filter(Boolean)
+          .join(" "),
+      }
+    : undefined;
   return {
     ok: true,
     analyzedAt: new Date().toISOString(),
@@ -148,5 +172,6 @@ export function mapHqbResponse(body: HqbLookupFull): PartKnowledgeAnalysis {
       totalStock: hqewRows.reduce((s, o) => s + (o.stock ?? 0), 0),
       minPrice: minPrice(hqewRows.map((o) => o.price)),
     },
+    internalBusinessAdvice,
   };
 }

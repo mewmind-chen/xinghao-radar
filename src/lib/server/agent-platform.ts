@@ -3,6 +3,7 @@
  * Business facts stay here. The platform only returns candidates / research results.
  */
 import type { ImportKind, ImportRow, ImportSource } from "@/lib/types";
+import type { RadarPartContext } from "./radar-context-provider";
 
 function nid(): string {
   return crypto.randomUUID();
@@ -121,11 +122,30 @@ export type PlatformPartResearch = {
     specs?: { label: string; value: string }[];
   };
   offers?: { sourceKey?: string; model?: string; stock?: number | null; price?: number | null }[];
-  dossier?: { headline?: string; extra?: { what?: string } };
+  dossier?: {
+    headline?: string;
+    extra?: { what?: string };
+    specs?: { label: string; value: string }[];
+    apps?: string[];
+  };
+  advice?: {
+    usedInternal?: boolean;
+    action?: string;
+    internalView?: string;
+    combined?: string;
+  };
+  recommendation?: { action?: string; reasoning?: string };
 };
 
-export async function researchPartViaPlatform(mpn: string): Promise<PlatformPartResearch | null> {
-  const body = await postJson("/v1/parts/research", { mpn, steps: ["lcsc", "hqew"], mode: "auto" }, 120_000);
+export async function researchPartViaPlatform(
+  mpn: string,
+  context?: RadarPartContext | null,
+): Promise<PlatformPartResearch | null> {
+  const body = await postJson(
+    "/v1/parts/research",
+    { mpn, steps: ["lcsc", "hqew"], mode: "auto", ...(context ? { context } : {}) },
+    120_000,
+  );
   if (!body || typeof body !== "object") return null;
   const rec = body as PlatformPartResearch;
   if (rec.ok === false) return null;

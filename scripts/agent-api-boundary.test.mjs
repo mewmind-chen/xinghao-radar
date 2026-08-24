@@ -15,6 +15,7 @@ test("Radar import prefers Agent API then local fallback; confirmImport stays lo
 test("Radar part analysis prefers platform then Workbench lookup.full", () => {
   const src = readFileSync(join(root, "src/lib/server/knowledge.ts"), "utf8");
   assert.match(src, /researchPartViaPlatform/);
+  assert.match(src, /getRadarPartContext/);
   assert.match(src, /\/api\/agent\/lookup\.full/);
 });
 
@@ -22,8 +23,19 @@ test("Radar agent client has no Harness types", () => {
   const src = readFileSync(join(root, "src/lib/server/agent-platform.ts"), "utf8");
   assert.match(src, /\/v1\/import\/extract/);
   assert.match(src, /\/v1\/parts\/research/);
+  assert.match(src, /context/);
   assert.match(src, /mode: "auto"/);
   assert.doesNotMatch(src, /mode: "agent"/);
   assert.doesNotMatch(src, /@deepseek-ai/);
   assert.doesNotMatch(src, /defineTool/);
+});
+
+test("Radar context provider is read-only and excludes sensitive business details", () => {
+  const src = readFileSync(join(root, "src/lib/server/radar-context-provider.ts"), "utf8");
+  assert.match(src, /normalizeMpn/);
+  assert.match(src, /getSettings/);
+  assert.match(src, /matchFlagsForParts/);
+  assert.doesNotMatch(src, /\b(insert|update|delete)\b/i);
+  assert.doesNotMatch(src, /customer_name|cost_amount|lot_id|channel_name/i);
+  assert.doesNotMatch(src, /Harness|@deepseek-ai|defineTool/);
 });

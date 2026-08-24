@@ -64,7 +64,9 @@ export const analyzePartMpn = createServerFn({ method: "POST" })
     if (!mpn) return { ok: false, error: "型号为空" };
     try {
       const { researchPartViaPlatform } = await import("./agent-platform");
-      const platform = await researchPartViaPlatform(mpn);
+      const { getRadarPartContext } = await import("./radar-context-provider");
+      const context = await getRadarPartContext(mpn);
+      const platform = await researchPartViaPlatform(mpn, context);
       const platformHasFacts = Boolean(platform?.identity || (platform?.offers && platform.offers.length));
       if (platform && platformHasFacts) {
         const { mapHqbResponse, platformPartToHqb } = await import("./knowledge-map");
