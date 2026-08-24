@@ -124,7 +124,32 @@ export const parseImport = createServerFn({ method: "POST" })
     const sql = await sqlClient();
     await ensureSeed(sql);
 
-    // ① 先走 Harness Import Agent（方案第 15/19 节）
+    // ① 稳定 Agent API（electronics-agent-platform）。失败则回退本地 parser。
+    const { extractViaPlatform } = await import("./agent-platform");
+    const platform = await extractViaPlatform({
+      kind: data.kind,
+      sourceType: data.sourceType,
+      text: data.text ? correctTradeText(data.text) : undefined,
+      fileBase64: data.fileBase64,
+      mime: data.mime,
+      filename: data.filename,
+    });
+    if (platform && platform.rows.length > 0) {
+      await markDuplicates(sql, platform.rows);
+      const warehouses = await listWarehouses(sql);
+      const channels = await sql`select id, name from channels order by name`;
+      const customers = await sql`select id, name from customers order by name`;
+      return {
+        rows: platform.rows,
+        usedAi: platform.usedAi,
+        aiAvailable: true,
+        warehouses,
+        channels: channels.map((r) => ({ id: String(r.id), name: String(r.name) })),
+        customers: customers.map((r) => ({ id: String(r.id), name: String(r.name) })),
+      };
+    }
+
+    // ② 本地 fallback（平台挂了仍可导入固定模板 / heuristic）
     const providers = defaultProviders();
     const outcome = await runImportAgent(
       {

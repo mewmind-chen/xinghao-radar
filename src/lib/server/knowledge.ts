@@ -1,9 +1,8 @@
 /**
- * 型号知识服务 —— 调用 huaqiangbei-workbench 的型号分析（产品知识区）。
+ * 型号知识服务 —— 优先走 electronics-agent-platform，失败再回退 Workbench。
  *
- * - 通道: hqb 本机 Agent API `/api/agent/lookup.full`（回环，零凭据透传；
- *   抓取凭据只存在于 hqb 服务端环境，本服务不接触）。
- * - 可配置: `HQB_BASE_URL`（默认 http://127.0.0.1:8081）。
+ * - 通道: AGENT_API_URL `/v1/parts/research`；回退 `HQB_BASE_URL/api/agent/lookup.full`。
+ * - 可配置: `AGENT_API_URL`（默认 http://127.0.0.1:8787）、`HQB_BASE_URL`。
  * - 降级不变量: 服务不可达 / 超时 / 空结果一律返回 `{ ok:false, error }`，
  *   绝不 throw —— 型号详情页无论何时照常渲染。
  * - 语义: 只消费 hqb 的确定性抓取与聚合结果，不在本服务内让任何模型猜参数。
@@ -64,6 +63,25 @@ export const analyzePartMpn = createServerFn({ method: "POST" })
     const mpn = data.mpn?.trim();
     if (!mpn) return { ok: false, error: "型号为空" };
     try {
+      const { researchPartViaPlatform } = await import("./agent-platform");
+      const platform = await researchPartViaPlatform(mpn);
+      const platformHasFacts = Boolean(platform?.identity || (platform?.offers && platform.offers.length));
+      if (platform && platformHasFacts) {
+        const { mapHqbResponse, platformPartToHqb } = await import("./knowledge-map");
+        const mapped = mapHqbResponse(platformPartToHqb(platform));
+        if (mapped.ok) {
+          try {
+            saveAnalysisFull(mpn, {
+              analyzedAt: mapped.analyzedAt ?? new Date().toISOString(),
+              sourceUrl: mapped.sourceUrl,
+              json: JSON.stringify(mapped),
+            });
+          } catch {
+            /* persist is best-effort */
+          }
+          return mapped;
+        }
+      }
       const res = await fetch(`${HQB_BASE_URL}/api/agent/lookup.full`, {
         method: "POST",
         headers: { "content-type": "application/json" },

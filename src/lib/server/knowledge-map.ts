@@ -82,6 +82,38 @@ function minPrice(prices: (number | null | undefined)[]): number | null {
   return list.length ? Math.min(...list) : null;
 }
 
+/** Map electronics-agent-platform PartResearchResult onto the same Hqb shape. */
+export function platformPartToHqb(body: {
+  ok?: boolean;
+  mpn?: string;
+  identity?: HqbLookupFull["record"] extends infer R
+    ? R extends { identity?: infer I }
+      ? I
+      : never
+    : never;
+  offers?: HqbLookupFull["record"] extends infer R
+    ? R extends { offers?: infer O }
+      ? O
+      : never
+    : never;
+  dossier?: { headline?: string; extra?: { what?: string }; specs?: KnowledgeSpec[]; apps?: string[]; replacements?: KnowledgeReplacement[] };
+}): HqbLookupFull {
+  return {
+    ok: body.ok !== false,
+    record: {
+      identity: body.identity,
+      offers: body.offers,
+    },
+    dossier: {
+      headline: body.dossier?.headline || body.dossier?.extra?.what,
+      positioning: body.dossier?.extra?.what,
+      specs: body.dossier?.specs,
+      apps: body.dossier?.apps,
+      replacements: body.dossier?.replacements,
+    },
+  };
+}
+
 /** 纯映射：hqb lookup.full 响应 → 本服务压缩结构（供 handler 与单测共用）。 */
 export function mapHqbResponse(body: HqbLookupFull): PartKnowledgeAnalysis {
   if (!body.ok) return { ok: false, error: "分析未返回结果" };
