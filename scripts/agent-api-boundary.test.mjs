@@ -8,7 +8,7 @@ const root = join(import.meta.dirname, "..");
 test("Radar import prefers Agent API then local fallback; confirmImport stays local", () => {
   const src = readFileSync(join(root, "src/lib/server/import.ts"), "utf8");
   assert.match(src, /extractViaPlatform/);
-  assert.match(src, /heuristicParse/);
+  assert.match(src, /resolveImportExtract/);
   assert.match(src, /export const confirmImport/);
 });
 

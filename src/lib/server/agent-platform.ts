@@ -24,6 +24,7 @@ export type PlatformFailureReason =
   | "invalid_response";
 
 type PostJsonOutcome = {
+  status: number;
   body: unknown | null;
   failureReason?: PlatformFailureReason;
 };
@@ -104,8 +105,15 @@ async function postJson(path: string, body: unknown, timeoutMs: number): Promise
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
+      let body: unknown | null = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = null;
+      }
       return {
-        body: null,
+        status: res.status,
+        body,
         failureReason: res.status === 401 || res.status === 403
           ? "unauthorized"
           : res.status >= 500
@@ -114,12 +122,12 @@ async function postJson(path: string, body: unknown, timeoutMs: number): Promise
       };
     }
     try {
-      return { body: await res.json() };
+      return { status: res.status, body: await res.json() };
     } catch {
-      return { body: null, failureReason: "invalid_response" };
+      return { status: res.status, body: null, failureReason: "invalid_response" };
     }
   } catch (err) {
-    return { body: null, failureReason: classifyFetchError(err) };
+    return { status: 0, body: null, failureReason: classifyFetchError(err) };
   }
 }
 
@@ -130,15 +138,9 @@ export async function extractViaPlatform(input: {
   filename?: string;
   fileBase64?: string;
   mime?: string;
-}): Promise<{ rows: ImportRow[]; usedAi: boolean } | null> {
-  const { body } = await postJson("/v1/import/extract", { ...input, mode: "auto" }, 30_000);
-  if (!body || typeof body !== "object") return null;
-  const rec = body as { candidates?: PlatformCandidate[]; usedAi?: boolean; needsAgent?: boolean };
-  const candidates = Array.isArray(rec.candidates) ? rec.candidates : [];
-  if (!candidates.length) return rec.needsAgent ? null : { rows: [], usedAi: Boolean(rec.usedAi) };
-  const kind = input.kind === "mixed" ? "offer" : input.kind;
-  const rows = candidates.filter((c) => c.mpn).map((c) => candidateToImportRow(c, kind));
-  return { rows, usedAi: Boolean(rec.usedAi) };
+}): Promise<{ status: number; body: unknown | null; failureReason?: PlatformFailureReason }> {
+  const { body, failureReason, status } = await postJson("/v1/import/extract", { ...input, mode: "auto" }, 30_000);
+  return { status, body, failureReason };
 }
 
 export type PlatformPartResearch = {

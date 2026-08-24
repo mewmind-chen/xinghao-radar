@@ -19,6 +19,7 @@ import { validateImportRows } from "./schema.ts";
 import type { ImportKind, ImportRow, ImportSource } from "./schema.ts";
 import { heuristicParse } from "./rule-parser.ts";
 import { tableToRows } from "./table.ts";
+import { isControlledImportText, isTrustedImportTable } from "./input-class.ts";
 import { extractTextLines } from "./plugins/text-extractor.ts";
 import { toImageDataUrl } from "./plugins/vision-extractor.ts";
 import { extractDocumentText } from "./plugins/document-parser.ts";
@@ -66,20 +67,23 @@ export async function runImportAgent(
   const kind = input.kind;
 
   switch (route.plugin) {
-    // 表格类永远走确定性解析 —— 数量/成本/LT 由现有代码负责（方案第 22 节），零幻觉零成本
+    // 仅受信内部模板走确定性表解析。陌生供应商表交给宿主 / Platform Agent。
     case "excel": {
       if (!input.fileBase64) return null;
       try {
         const table = await parseExcel(input.fileBase64);
+        if (!isTrustedImportTable(table)) return null;
         return { rows: tableToRows(table, kind), usedAi: false, provider: null };
       } catch {
-        return null; // 解析失败 → 宿主回退
+        return null;
       }
     }
     case "csv": {
       const raw = input.text ?? (input.fileBase64 ? Buffer.from(input.fileBase64, "base64").toString("utf8") : "");
       if (!raw) return null;
-      return { rows: tableToRows(parseCsv(raw), kind), usedAi: false, provider: null };
+      const table = parseCsv(raw);
+      if (!isTrustedImportTable(table)) return null;
+      return { rows: tableToRows(table, kind), usedAi: false, provider: null };
     }
 
     case "image": {
@@ -103,10 +107,8 @@ export async function runImportAgent(
         if (extracted) docText = extracted;
       }
       if (!docText.trim()) return null;
-      // 先规则后模型：规整文本零成本解析；杂乱文本交给 AI
-      const ruled = heuristicParse(docText, kind);
-      if (ruled.length > 0) {
-        return { rows: ruled, usedAi: false, provider: null };
+      if (isControlledImportText(docText)) {
+        return { rows: heuristicParse(docText, kind), usedAi: false, provider: null };
       }
       return aiExtractRows(providers, {
         defaultKind: kind,
@@ -119,9 +121,8 @@ export async function runImportAgent(
     default: {
       const t = input.text ?? "";
       if (!t.trim()) return null;
-      const ruled = heuristicParse(t, kind);
-      if (ruled.length > 0) {
-        return { rows: ruled, usedAi: false, provider: null };
+      if (isControlledImportText(t)) {
+        return { rows: heuristicParse(t, kind), usedAi: false, provider: null };
       }
       return aiExtractRows(providers, {
         defaultKind: kind,

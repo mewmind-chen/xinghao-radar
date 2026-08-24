@@ -342,6 +342,56 @@ test("agent: CSV 输入走确定性表解析（AI 不参与表格）", async () 
   assert.equal(outcome.rows[0].qty, 3000);
 });
 
+test("agent: 微信叙事文本不走 heuristic 主路径，交给 AI", async () => {
+  let aiCalled = 0;
+  const text = `老陈那边 TI 54560 还有一批
+10K
+24+
+香港现货
+一块一美金左右`;
+  assert.ok(heuristicParse(text, "offer").length > 0, "heuristic 仍能抽出 token，但不能当主路径");
+  const outcome = await runImportAgentWithFake(
+    { sourceType: "text", kind: "offer", text },
+    fakeProvider({
+      extract: async () => {
+        aiCalled++;
+        return {
+          provider: "fake",
+          model: "fake-1",
+          raw: JSON.stringify({ rows: [{ kind: "offer", mpn: "54560", qty: 10000 }] }),
+        };
+      },
+    }),
+  );
+  assert.ok(aiCalled > 0);
+  assert.equal(outcome.usedAi, true);
+  assert.equal(outcome.rows[0].mpn, "54560");
+});
+
+test("agent: 陌生供应商 Excel 不走 headerKey 成功路径", async () => {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ["Part Number", "Maker", "Available"],
+    ["TPS54560DDAR", "TI", "10000"],
+  ]), "S1");
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+  const b64 = Buffer.from(buf).toString("base64");
+  const guessed = tableToRows(
+    [
+      ["Part Number", "Maker", "Available"],
+      ["TPS54560DDAR", "TI", "10000"],
+    ],
+    "offer",
+  );
+  assert.ok(guessed.length > 0, "headerKey helper 仍能猜中，但不能当 agent 成功");
+  const outcome = await runImportAgent(
+    { sourceType: "excel", kind: "offer", fileBase64: b64, filename: "vendor.xlsx" },
+    [],
+  );
+  assert.equal(outcome, null);
+});
+
 test("agent: Excel 输入走确定性表解析", async () => {
   const XLSX = await import("xlsx");
   const wb = XLSX.utils.book_new();

@@ -23,6 +23,9 @@ function ImportPage() {
   const [text, setText] = useState("");
   const [rows, setRows] = useState<ImportRow[] | null>(null);
   const [usedAi, setUsedAi] = useState(false);
+  const [extractOrigin, setExtractOrigin] = useState<string | null>(null);
+  const [extractState, setExtractState] = useState<string | null>(null);
+  const [extractMessage, setExtractMessage] = useState<string | null>(null);
   const [aiAvailable, setAiAvailable] = useState(true);
   const [channel, setChannel] = useState("");
   const [customer, setCustomer] = useState("");
@@ -57,6 +60,9 @@ function ImportPage() {
     onSuccess: (r) => {
       setRows(r.rows);
       setUsedAi(r.usedAi);
+      setExtractOrigin(r.extractOrigin ?? null);
+      setExtractState(r.extractState ?? null);
+      setExtractMessage(r.extractMessage ?? null);
       setAiAvailable(r.aiAvailable);
       setChannels(r.channels);
       setCustomers(r.customers);
@@ -64,7 +70,15 @@ function ImportPage() {
       if (!channel && r.channels[0]) setChannel(r.channels[0].name);
       if (!customer && r.customers[0]) setCustomer(r.customers[0].name);
       if (!warehouseId && r.warehouses[0]) setWarehouseId(r.warehouses[0].id);
-      if (r.rows.length === 0) toast.error("没有识别到型号");
+      if (r.extractState === "vision_unavailable" && r.rows.length === 0) {
+        toast.error(r.extractMessage || "当前无法识别图片");
+      } else if (r.extractState === "needs_mapping") {
+        toast.error(r.extractMessage || "需要智能列映射");
+      } else if (r.extractState === "platform_unavailable" && r.rows.length === 0) {
+        toast.error(r.extractMessage || "Platform 暂不可用");
+      } else if (r.rows.length === 0) {
+        toast.error(r.extractMessage || "没有识别到型号");
+      }
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -296,7 +310,9 @@ function ImportPage() {
           />
         </div>
         {!aiAvailable && (
-          <p className="mt-2 text-xs text-muted-foreground">当前环境无 AI，将用规则解析 Excel / 文本。</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            固定内部模板与受控格式仍可本地识别。陌生表格与聊天文本需要智能抽取，不会再用猜测表头冒充成功。
+          </p>
         )}
       </section>
 
@@ -304,7 +320,18 @@ function ImportPage() {
         <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-medium">
-              预览 {rows.length} 行{usedAi ? " · AI" : " · 规则"}
+              预览 {rows.length} 行
+              {extractOrigin === "trusted_template"
+                ? " · 固定模板"
+                : extractOrigin === "controlled_text"
+                  ? " · 受控格式"
+                  : extractOrigin === "local_fallback"
+                    ? extractState === "vision_unavailable"
+                      ? " · 本地视觉降级"
+                      : " · 本地降级"
+                    : extractOrigin === "platform" || usedAi
+                      ? " · AI 识别（Platform）"
+                      : ""}
             </h2>
             <Button disabled={confirmMut.isPending} onClick={() => confirmMut.mutate()}>
               确认写入
@@ -312,6 +339,7 @@ function ImportPage() {
           </div>
           <p className="mb-3 text-xs text-muted-foreground">
             型号请人工核对。疑似重复已勾掉，若确为新事件可重新勾选。
+            {extractMessage ? ` ${extractMessage}` : ""}
           </p>
           <ul className="space-y-2">
             {rows.map((row, idx) => (

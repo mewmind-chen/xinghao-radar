@@ -40,7 +40,11 @@ function Workbench() {
     onSuccess: (r) => {
       setRows(r.rows);
       setDone(null);
-      setParseErr(r.rows.length === 0 ? "没有识别到型号，请检查粘贴内容" : null);
+      setParseErr(
+        r.rows.length === 0
+          ? r.extractMessage || "没有识别到型号，请检查粘贴内容"
+          : null,
+      );
     },
     onError: (e: Error) => setParseErr(e.message),
   });

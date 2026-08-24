@@ -27,6 +27,7 @@ export type { ImportModelProvider, ProviderConfig, ProviderExtract } from "./mod
 export { rawRowsToImportRows, verifyMpnProvenance } from "./domain-adapter.ts";
 export { heuristicParse } from "./rule-parser.ts";
 export { headerKey, tableToRows } from "./table.ts";
+export { isTrustedImportTable, isControlledImportText, isTrustedMpnHeader, TRUSTED_MPN_HEADERS } from "./input-class.ts";
 export { validateImportRows, isImportKind, IMPORT_KINDS } from "./schema.ts";
 export type {
   ImportKind,

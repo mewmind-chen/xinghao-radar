@@ -1,12 +1,9 @@
 /**
- * Import Service —— 预览数据组装 / 重复检测 / 确认写库（方案第 16 节边界）。
+ * Import Service —— 预览数据组装 / 重复检测 / 确认写库。
  *
- * V1 收敛改造（方案第 15 节）：
- * - 解析层（heuristic/table/excel/csv/AI 抽取）迁入 packages/harness-import/
- *   由 Import Agent 统一编排；本文件在 agent 无果时回退同一套确定性 parser
- *   （从 harness 导入，单一事实源）。
- * - markDuplicates / flagIntraFileDuplicates：程序执行，逻辑不变。
- * - confirmImport：人工确认机制，完全不动。
+ * 抽取决策在 import-contract：受信内部模板 / 受控文本走确定性 parser；
+ * 无界表格与聊天文本走 Platform。needsAgent + 空 candidates 不是失败，
+ * 禁止因此用 headerKey / heuristic 冒充成功。confirmImport 仍是唯一写库入口。
  */
 
 import { createServerFn } from "@tanstack/react-start";
@@ -22,12 +19,11 @@ import {
 import type { ImportKind, ImportRow, ImportSource } from "@/lib/types";
 import {
   defaultProviders,
-  heuristicParse,
   runImportAgent,
-  tableToRows,
 } from "@harness/index";
 import { parseCsv } from "@harness/plugins/csv-parser";
 import { parseExcel } from "@harness/plugins/excel-parser";
+import { resolveImportExtract } from "./import-contract";
 import {
   ensureChannel,
   ensureCustomer,
@@ -124,67 +120,57 @@ export const parseImport = createServerFn({ method: "POST" })
     const sql = await sqlClient();
     await ensureSeed(sql);
 
-    // ① 稳定 Agent API（electronics-agent-platform）。失败则回退本地 parser。
     const { extractViaPlatform } = await import("./agent-platform");
-    const platform = await extractViaPlatform({
-      kind: data.kind,
-      sourceType: data.sourceType,
-      text: data.text ? correctTradeText(data.text) : undefined,
-      fileBase64: data.fileBase64,
-      mime: data.mime,
-      filename: data.filename,
-    });
-    if (platform && platform.rows.length > 0) {
-      await markDuplicates(sql, platform.rows);
-      const warehouses = await listWarehouses(sql);
-      const channels = await sql`select id, name from channels order by name`;
-      const customers = await sql`select id, name from customers order by name`;
-      return {
-        rows: platform.rows,
-        usedAi: platform.usedAi,
-        aiAvailable: true,
-        warehouses,
-        channels: channels.map((r) => ({ id: String(r.id), name: String(r.name) })),
-        customers: customers.map((r) => ({ id: String(r.id), name: String(r.name) })),
-      };
-    }
-
-    // ② 本地 fallback（平台挂了仍可导入固定模板 / heuristic）
-    const providers = defaultProviders();
-    const outcome = await runImportAgent(
+    const resolved = await resolveImportExtract(
       {
-        sourceType: data.sourceType,
         kind: data.kind,
+        sourceType: data.sourceType,
         text: data.text ? correctTradeText(data.text) : undefined,
         fileBase64: data.fileBase64,
         mime: data.mime,
         filename: data.filename,
       },
-      providers,
+      {
+        readTable: async () => {
+          try {
+            if (data.sourceType === "excel" && data.fileBase64) {
+              return await parseExcel(data.fileBase64);
+            }
+            if (data.sourceType === "csv") {
+              const raw =
+                (data.text ? correctTradeText(data.text) : undefined) ??
+                (data.fileBase64 ? Buffer.from(data.fileBase64, "base64").toString("utf8") : "");
+              return raw ? parseCsv(raw) : null;
+            }
+          } catch {
+            return null;
+          }
+          return null;
+        },
+        extractViaPlatform,
+        runLocalImageFallback: async () => {
+          if (data.sourceType !== "image") return null;
+          const providers = defaultProviders();
+          const outcome = await runImportAgent(
+            {
+              sourceType: "image",
+              kind: data.kind,
+              fileBase64: data.fileBase64,
+              mime: data.mime,
+              filename: data.filename,
+            },
+            providers,
+          );
+          if (!outcome?.rows.length) return null;
+          return { rows: outcome.rows, usedAi: outcome.usedAi };
+        },
+      },
     );
-    let rows: ImportRow[] = outcome?.rows ?? [];
-    let usedAi = Boolean(outcome?.usedAi);
 
-    // ② 回退现有 parser（Harness 停机 / 无果时行为与收敛前一致 —— 验收 9）
-    if (rows.length === 0) {
-      const text = data.text ? correctTradeText(data.text) : undefined;
-      try {
-        if (data.sourceType === "excel" && data.fileBase64) {
-          rows = tableToRows(await parseExcel(data.fileBase64), data.kind);
-        } else if (data.sourceType === "csv" && (text || data.fileBase64)) {
-          const raw = text ?? Buffer.from(data.fileBase64!, "base64").toString("utf8");
-          rows = tableToRows(parseCsv(raw), data.kind);
-        }
-      } catch {
-        rows = [];
-      }
-      // 图片无规则解析可用；PDF/Word 抽取失败时退回用户粘贴文本
-      if (rows.length === 0 && text) rows = heuristicParse(text, data.kind);
-    }
+    const rows = resolved.rows;
+    const usedAi = resolved.usedAi;
+    const providers = defaultProviders();
 
-    if (rows.length === 0 && data.text) rows = heuristicParse(correctTradeText(data.text), data.kind);
-
-    // ③ 程序执行重复检测（验收 7），④ 返回预览数据 —— 写库只发生在 confirmImport（验收 6）
     await markDuplicates(sql, rows);
     const warehouses = await listWarehouses(sql);
     const channels = await sql`select id, name from channels order by name`;
@@ -193,6 +179,9 @@ export const parseImport = createServerFn({ method: "POST" })
       rows,
       usedAi,
       aiAvailable: providers.some((p) => p.available()),
+      extractOrigin: resolved.extractOrigin,
+      extractState: resolved.extractState,
+      extractMessage: resolved.extractMessage,
       warehouses,
       channels: channels.map((r) => ({ id: String(r.id), name: String(r.name) })),
       customers: customers.map((r) => ({ id: String(r.id), name: String(r.name) })),
