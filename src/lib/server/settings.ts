@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { iso } from "@/lib/domain";
 import { getSettings, listWarehouses, logOp, nid, sqlClient } from "./helpers";
 import { ensureSeed } from "./seed";
 
@@ -33,7 +34,7 @@ export const getAppSettings = createServerFn({ method: "GET" }).handler(async ()
       kind: String(r.kind),
       sourceType: String(r.source_type),
       filename: r.filename ? String(r.filename) : null,
-      createdAt: String(r.created_at),
+      createdAt: iso(r.created_at),
       undoneAt: r.undone_at ? String(r.undone_at) : null,
     })),
     logs: logs.map((r) => ({
@@ -42,7 +43,7 @@ export const getAppSettings = createServerFn({ method: "GET" }).handler(async ()
       entityType: String(r.entity_type),
       entityId: String(r.entity_id),
       detail: r.detail ? String(r.detail) : null,
-      createdAt: String(r.created_at),
+      createdAt: iso(r.created_at),
     })),
   };
 });

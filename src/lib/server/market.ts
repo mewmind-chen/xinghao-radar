@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { formatStockLine } from "@/lib/domain";
+import { formatStockLine, iso } from "@/lib/domain";
 import type { CostTax, Currency, MatchFlags } from "@/lib/types";
 import {
   asCostTax,
@@ -124,7 +124,7 @@ export const listOffers = createServerFn({ method: "GET" })
         priceTax: asCostTax(r.price_tax),
         isTp: Boolean(r.is_tp),
         leadTimeText: r.lead_time_text ? String(r.lead_time_text) : null,
-        offeredAt: String(r.offered_at),
+        offeredAt: iso(r.offered_at),
         isValid: Boolean(r.is_valid),
         flags: f,
         stockLine: f ? formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel) : "",
@@ -195,7 +195,7 @@ export const listInquiries = createServerFn({ method: "GET" })
         mpn: String(r.mpn),
         brandCode: r.brand_code ? String(r.brand_code) : null,
         qty: r.qty != null ? Number(r.qty) : null,
-        inquiredAt: String(r.inquired_at),
+        inquiredAt: iso(r.inquired_at),
         isValid: Boolean(r.is_valid),
         flags: f,
         stockLine: f ? formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel) : "",
@@ -335,7 +335,7 @@ export const listWatchlist = createServerFn({ method: "GET" }).handler(async () 
     return {
       partId: String(r.part_id),
       note: r.note ? String(r.note) : null,
-      addedAt: String(r.added_at),
+      addedAt: iso(r.added_at),
       mpn: String(r.mpn),
       brandCode: r.brand_code ? String(r.brand_code) : null,
       category: r.category ? String(r.category) : null,

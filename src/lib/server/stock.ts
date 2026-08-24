@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { formatStockLine, parseLeadTime } from "@/lib/domain";
+import { formatStockLine, iso, parseLeadTime } from "@/lib/domain";
 import type { CostTax, Currency, PackState } from "@/lib/types";
 import {
   asCostTax,
@@ -89,7 +89,7 @@ export const listStock = createServerFn({ method: "GET" })
       costCurrency: asCurrency(r.cost_currency),
       costTax: asCostTax(r.cost_tax),
       supplierName: r.supplier_name ? String(r.supplier_name) : null,
-      inboundAt: String(r.inbound_at),
+      inboundAt: iso(r.inbound_at),
       etaDate: r.eta_date ? String(r.eta_date) : null,
       etaText: r.eta_text ? String(r.eta_text) : null,
       etaPrecision: r.eta_precision ? String(r.eta_precision) : null,

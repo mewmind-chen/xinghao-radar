@@ -9,6 +9,7 @@ import {
   correctTradeText,
   displayMpn,
   finalizeMatchFlags,
+  formatMd,
   formatStockLine,
   hitText,
   isCrossHit,
@@ -199,6 +200,20 @@ test("finalizeMatchFlags/hitText: 库·途·客N·潜 标记串", () => {
   assert.equal(f.isDual, true, "库+客=双命中");
   assert.equal(f.isHit, true);
   assert.equal(hitText(f), "库 · 途 · 客3 · 潜");
+});
+
+test("formatMd: ISO→26-8-24; 英文Date串兼容; 非法/空输入绝不输出NaN", () => {
+  assert.equal(formatMd("2026-08-24T03:01:00.000Z"), "26-8-24");
+  assert.equal(formatMd("2026-08-24"), "26-8-24");
+  // PGLite timestamptz 曾被 String() 序列化为英文本地串(旧数据/旧产物)
+  assert.equal(formatMd("Mon Aug 24 2026 03:01:00 GMT+0800 (China Standard Time)"), "26-8-24");
+  assert.equal(formatMd(""), "");
+  assert.equal(formatMd(null), "");
+  assert.equal(formatMd(undefined), "");
+  assert.equal(formatMd("garbage"), "");
+  assert.match(formatMd("Mon Aug 24 2026 03:01:00 GMT+0800"), /^\d{2}-\d{1,2}-\d{1,2}$/);
+  // 单数字月日不补零
+  assert.equal(formatMd("2026-09-05T00:00:00Z"), "26-9-5");
 });
 
 test("formatStockLine: 多仓多批聚合展示（验收4 的展示面）", () => {

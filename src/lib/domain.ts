@@ -202,10 +202,18 @@ export function formatEtaLabel(opts: {
   return null;
 }
 
-export function formatMd(iso: string): string {
-  const d = iso.slice(0, 10);
-  const [, m, day] = d.split("-");
-  return `${Number(m)}/${Number(day)}`;
+export function formatMd(iso: string | null | undefined): string {
+  // 服务端对 timestamptz 曾用 String() 序列化，得到的是本地时区的英文日期串
+  // （如 "Mon Aug 24 2026 03:01:00 GMT+0800 (China Standard Time)"），而不是
+  // YYYY-MM-DD；先按 YYYY-MM-DD 前缀直接取，避免纯日期被 new Date 按 UTC
+  // 午夜解析而在西时区跨天偏移。自 26-8-24 起，服务端一律经 iso() 归一为
+  // UTC ISO，本函数兜底兼容旧串并防御非法输入。
+  if (iso == null || iso === "") return "";
+  const m = iso.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1].slice(-2)}-${Number(m[2])}-${Number(m[3])}`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return ""; // 非法输入 → 空串，绝不输出 NaN/原始怪串
+  return `${String(d.getFullYear()).slice(-2)}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
 export function formatWhen(iso: string): string {

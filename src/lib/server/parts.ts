@@ -7,7 +7,7 @@ import {
   matchFlagsForParts,
   sqlClient,
 } from "./helpers";
-import { displayMpn, formatStockLine, normalizeMpn } from "@/lib/domain";
+import { displayMpn, formatStockLine, iso, normalizeMpn } from "@/lib/domain";
 import { cleanBrand } from "./part-identity";
 import { listAnalysisTimes, moveAnalysisKey } from "./analysis-db";
 import type { MatchFlags, Part } from "@/lib/types";
@@ -135,7 +135,7 @@ export const getPartDetail = createServerFn({ method: "GET" })
         costTax: (r.cost_tax as "none" | "exclusive" | "inclusive") ?? null,
         supplierId: r.supplier_id ? String(r.supplier_id) : null,
         supplierName: r.supplier_name ? String(r.supplier_name) : null,
-        inboundAt: String(r.inbound_at),
+        inboundAt: iso(r.inbound_at),
         orderedAt: r.ordered_at ? String(r.ordered_at) : null,
         etaDate: r.eta_date ? String(r.eta_date) : null,
         etaText: r.eta_text ? String(r.eta_text) : null,
@@ -157,7 +157,7 @@ export const getPartDetail = createServerFn({ method: "GET" })
         fromWarehouseCode: r.from_code ? String(r.from_code) : null,
         toWarehouseId: r.to_warehouse_id ? String(r.to_warehouse_id) : null,
         toWarehouseCode: r.to_code ? String(r.to_code) : null,
-        happenedAt: String(r.happened_at),
+        happenedAt: iso(r.happened_at),
         note: r.note ? String(r.note) : null,
       })),
       offers: offers.map((r) => ({
@@ -175,9 +175,9 @@ export const getPartDetail = createServerFn({ method: "GET" })
         priceTax: (r.price_tax as "none" | "exclusive" | "inclusive") ?? null,
         isTp: Boolean(r.is_tp),
         leadTimeText: r.lead_time_text ? String(r.lead_time_text) : null,
-        offeredAt: String(r.offered_at),
+        offeredAt: iso(r.offered_at),
         isValid: Boolean(r.is_valid),
-        invalidatedAt: r.invalidated_at ? String(r.invalidated_at) : null,
+        invalidatedAt: r.invalidated_at ? iso(r.invalidated_at) : null,
       })),
       inquiries: inquiries.map((r) => ({
         id: String(r.id),
@@ -188,9 +188,9 @@ export const getPartDetail = createServerFn({ method: "GET" })
         mpn: part.mpn,
         brandCode: part.brandCode,
         qty: r.qty != null ? Number(r.qty) : null,
-        inquiredAt: String(r.inquired_at),
+        inquiredAt: iso(r.inquired_at),
         isValid: Boolean(r.is_valid),
-        invalidatedAt: r.invalidated_at ? String(r.invalidated_at) : null,
+        invalidatedAt: r.invalidated_at ? iso(r.invalidated_at) : null,
       })),
     };
   });
