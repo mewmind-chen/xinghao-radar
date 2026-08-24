@@ -95,7 +95,7 @@ export async function extractViaPlatform(input: {
   fileBase64?: string;
   mime?: string;
 }): Promise<{ rows: ImportRow[]; usedAi: boolean } | null> {
-  const body = await postJson("/v1/import/extract", input, 30_000);
+  const body = await postJson("/v1/import/extract", { ...input, mode: "auto" }, 30_000);
   if (!body || typeof body !== "object") return null;
   const rec = body as { candidates?: PlatformCandidate[]; usedAi?: boolean; needsAgent?: boolean };
   const candidates = Array.isArray(rec.candidates) ? rec.candidates : [];
@@ -125,7 +125,7 @@ export type PlatformPartResearch = {
 };
 
 export async function researchPartViaPlatform(mpn: string): Promise<PlatformPartResearch | null> {
-  const body = await postJson("/v1/parts/research", { mpn, steps: ["lcsc", "hqew"] }, 120_000);
+  const body = await postJson("/v1/parts/research", { mpn, steps: ["lcsc", "hqew"], mode: "auto" }, 120_000);
   if (!body || typeof body !== "object") return null;
   const rec = body as PlatformPartResearch;
   if (rec.ok === false) return null;

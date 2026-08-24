@@ -22,6 +22,8 @@ test("Radar agent client has no Harness types", () => {
   const src = readFileSync(join(root, "src/lib/server/agent-platform.ts"), "utf8");
   assert.match(src, /\/v1\/import\/extract/);
   assert.match(src, /\/v1\/parts\/research/);
+  assert.match(src, /mode: "auto"/);
+  assert.doesNotMatch(src, /mode: "agent"/);
   assert.doesNotMatch(src, /@deepseek-ai/);
   assert.doesNotMatch(src, /defineTool/);
 });
