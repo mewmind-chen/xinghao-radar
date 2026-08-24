@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   appNameFromHost,
-  createHeadInjector,
+  createHeadInjector as createPwaHeadInjector,
   grokXCreatorHeadTags,
-  injectGrokPwaHead,
+  injectGrokPwaHead as injectPwaHead,
   isDocumentPath,
   isInstallQuery,
   renderWebManifest,
@@ -18,6 +18,19 @@ import {
 import { renderInstallPage } from "./grok-pwa-plugin.mjs";
 
 const TEMPLATE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// The app workspace contains its own OG identity and card. Keep the shared
+// chrome unit tests independent of that live business/app configuration unless
+// a case deliberately supplies its own fixture directory.
+const TEST_CWD = mkdtempSync(join(tmpdir(), "grok-pwa-test-"));
+
+function injectGrokPwaHead(html, ctx = {}) {
+  return injectPwaHead(html, { cwd: TEST_CWD, ...ctx });
+}
+
+function createHeadInjector(ctx = {}) {
+  return createPwaHeadInjector({ cwd: TEST_CWD, ...ctx });
+}
 
 test("injects before </head>", () => {
   const out = injectGrokPwaHead("<html><head><title>x</title></head><body></body></html>");
@@ -134,7 +147,7 @@ test("baked identity does not need a workspace filesystem", () => {
   assert.doesNotMatch(out, /og\.grok\.me/);
 });
 
-test("explicit site without card=custom is not overridden by a cwd card file", () => {
+test("a cwd card file makes an explicit site use the custom card", () => {
   const root = mkdtempSync(join(tmpdir(), "grok-og-card-"));
   mkdirSync(join(root, "public"));
   writeFileSync(join(root, "public/og.jpg"), "x");
@@ -143,8 +156,8 @@ test("explicit site without card=custom is not overridden by a cwd card file", (
     cwd: root,
     site: {},
   });
-  assert.match(out, /og\.grok\.me\/v1\/card\.png/);
-  assert.doesNotMatch(out, /wild-race\.grok\.me\/og\.jpg/);
+  assert.match(out, /wild-race\.grok\.me\/og\.jpg/);
+  assert.doesNotMatch(out, /og\.grok\.me\/v1\/card\.png/);
 });
 
 test("snapshotOgIdentity stamps card=custom from a public card file", () => {
@@ -409,4 +422,3 @@ test("vite plugin bakes og identity as a virtual module", () => {
   assert.match(plugin, /virtual:grok-og-identity/);
   assert.match(plugin, /snapshotOgIdentity/);
 });
-
