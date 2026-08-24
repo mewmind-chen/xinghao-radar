@@ -366,7 +366,7 @@ function PartDetail() {
         <ul className="space-y-2 text-sm">
           {timeline.slice(0, 40).map((ev) => (
             <li key={ev.key} className="flex gap-3">
-              <span className="w-12 shrink-0 font-mono text-xs text-muted-foreground tabular">
+              <span className="w-14 shrink-0 whitespace-nowrap font-mono text-xs text-muted-foreground tabular">
                 {formatMd(ev.t)}
               </span>
               <span className="min-w-0">{ev.node}</span>
