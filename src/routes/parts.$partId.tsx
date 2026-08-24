@@ -7,7 +7,7 @@ import { updatePartIdentity } from "@/lib/server/parts";
 import { listStock } from "@/lib/server/stock";
 import { receiveTransit, stockAdjust, stockMeta, stockOutbound, stockTransfer } from "@/lib/server/stock";
 import { setOfferValid, setInquiryValid, toggleWatch } from "@/lib/server/market";
-import { analyzePartMpn, getPartAnalysis } from "@/lib/server/knowledge";
+import { analyzePartMpn, getPartAnalysis, getPartReview, submitPartReview } from "@/lib/server/knowledge";
 import type { PartKnowledgeAnalysis } from "@/lib/server/knowledge";
 import {
   formatCost,
@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -165,6 +166,37 @@ function PartDetail() {
     queryFn: () => getPartAnalysis({ data: { mpn: d?.part.mpn ?? "" } }),
     enabled: Boolean(d?.part.mpn),
     staleTime: 60_000,
+  });
+
+  // 人工决定（接受/拒绝/修正）。Radar 持久化最终动作，平台不写业务决定。
+  const reviewQuery = useQuery({
+    queryKey: ["part-review", d?.part.mpn],
+    queryFn: () => getPartReview({ data: { mpn: d?.part.mpn ?? "" } }),
+    enabled: Boolean(d?.part.mpn),
+    staleTime: 30_000,
+  });
+  const [reviewNote, setReviewNote] = useState("");
+  const [correctedJson, setCorrectedJson] = useState("");
+  const reviewMut = useMutation({
+    mutationFn: (decision: "accept" | "reject" | "corrected") =>
+      submitPartReview({
+        data: {
+          mpn: d?.part.mpn ?? "",
+          decision,
+          note: reviewNote.trim() || undefined,
+          correctedJson: decision === "corrected" && correctedJson.trim() ? correctedJson.trim() : undefined,
+        },
+      }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["part-review"] });
+      if (r.ok) {
+        setReviewNote("");
+        setCorrectedJson("");
+        toast.success("人工决定已保存（业务系统持有）");
+      } else {
+        toast.error(r.error || "保存决定失败");
+      }
+    },
   });
 
   if (q.isLoading) {
@@ -538,6 +570,66 @@ function PartDetail() {
           analysis={analyzeMut.data}
           loading={analyzeMut.isPending}
         />
+        {reviewQuery.data?.decision && (
+          <p className="mt-2 rounded-lg bg-secondary/40 px-3 py-2 text-[11px] text-muted-foreground">
+            人工决定：
+            {reviewQuery.data.decision === "accept"
+              ? "已接受"
+              : reviewQuery.data.decision === "reject"
+                ? "已拒绝"
+                : "已修正"}
+            {reviewQuery.data.reviewedAt
+              ? ` · ${new Date(reviewQuery.data.reviewedAt).toLocaleString("zh-CN", { hour12: false })}`
+              : ""}
+            {reviewQuery.data.note ? ` · ${reviewQuery.data.note}` : ""}
+          </p>
+        )}
+        <div className="mt-2 space-y-2">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => reviewMut.mutate("accept")}
+              disabled={reviewMut.isPending || !d?.part.mpn}
+            >
+              接受此分析
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => reviewMut.mutate("reject")}
+              disabled={reviewMut.isPending || !d?.part.mpn}
+            >
+              拒绝此分析
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (!correctedJson.trim()) {
+                  toast.error("修正需要填写修正后的 JSON");
+                  return;
+                }
+                reviewMut.mutate("corrected");
+              }}
+              disabled={reviewMut.isPending || !d?.part.mpn}
+            >
+              提交修正
+            </Button>
+          </div>
+          <Textarea
+            value={correctedJson}
+            onChange={(e) => setCorrectedJson(e.target.value)}
+            placeholder="修正后的分析 JSON（可选；提交修正时必填）"
+            className="min-h-[64px] font-mono text-xs"
+          />
+          <Textarea
+            value={reviewNote}
+            onChange={(e) => setReviewNote(e.target.value)}
+            placeholder="备注（可选）"
+            className="min-h-[40px] text-xs"
+          />
+        </div>
       </section>
 
       <CorrectPartDialog

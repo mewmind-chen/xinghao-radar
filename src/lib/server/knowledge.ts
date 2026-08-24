@@ -12,7 +12,7 @@
 
 import { createServerFn } from "@tanstack/react-start";
 import { mapHqbResponse } from "./knowledge-map";
-import { getAnalysis, saveAnalysisFull } from "./analysis-db";
+import { getAnalysis, saveAnalysisFull, saveAnalysisReview, getAnalysisReview } from "./analysis-db";
 import type { PartKnowledgeAnalysis } from "./knowledge-map";
 import type { PlatformPartResearchOutcome } from "./agent-platform";
 import type { RadarPartContext } from "./radar-context-provider";
@@ -190,5 +190,74 @@ export const getPartAnalysis = createServerFn({ method: "GET" })
       };
     } catch {
       return null;
+    }
+  });
+
+export type PartReviewInput = {
+  mpn: string;
+  decision: "accept" | "reject" | "corrected";
+  note?: string;
+  correctedJson?: string;
+};
+
+export type PartReviewOutcome = {
+  ok: boolean;
+  error?: string;
+  review?: {
+    decision: string;
+    reviewedAt: string;
+  };
+};
+
+/** 保存人对该型号分析的人工决定。Radar 持久化最终动作；平台不写业务决定。 */
+export const submitPartReview = createServerFn({ method: "POST" })
+  .validator((input: PartReviewInput) => input)
+  .handler(async ({ data }): Promise<PartReviewOutcome> => {
+    const mpn = data.mpn?.trim();
+    if (!mpn) return { ok: false, error: "型号为空" };
+    if (!["accept", "reject", "corrected"].includes(data.decision)) {
+      return { ok: false, error: "决定不合法" };
+    }
+    if (data.decision === "corrected" && !data.correctedJson) {
+      return { ok: false, error: "修正需要 correctedJson" };
+    }
+    try {
+      await saveAnalysisReview({
+        mpn,
+        decision: data.decision,
+        note: data.note,
+        correctedJson: data.correctedJson,
+      });
+      return { ok: true, review: { decision: data.decision, reviewedAt: new Date().toISOString() } };
+    } catch {
+      return { ok: false, error: "保存决定失败" };
+    }
+  });
+
+export type PartReviewLoaded = {
+  decision: "accept" | "reject" | "corrected" | null;
+  reviewedAt?: string;
+  reviewer?: string;
+  note?: string;
+  correctedJson?: string;
+};
+
+export const getPartReview = createServerFn({ method: "GET" })
+  .validator((input: { mpn: string }) => input)
+  .handler(async ({ data }): Promise<PartReviewLoaded> => {
+    const mpn = data.mpn?.trim();
+    if (!mpn) return { decision: null };
+    try {
+      const row = await getAnalysisReview(mpn);
+      if (!row) return { decision: null };
+      return {
+        decision: row.decision,
+        reviewedAt: row.reviewed_at,
+        reviewer: row.reviewer || undefined,
+        note: row.note || undefined,
+        correctedJson: row.corrected_json ?? undefined,
+      };
+    } catch {
+      return { decision: null };
     }
   });

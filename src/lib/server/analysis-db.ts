@@ -31,6 +31,28 @@ export type AnalysisRepository = {
   getAnalysis(mpn: string): Promise<StoredRow | null>;
   listAnalysisTimes(): Promise<Record<string, string>>;
   moveAnalysisKey(fromMpn: string, toMpn: string): Promise<void>;
+  saveReview(input: ReviewRecord): Promise<void>;
+  getReview(mpn: string): Promise<ReviewRow | null>;
+};
+
+export type ReviewDecision = "accept" | "reject" | "corrected";
+
+export type ReviewRecord = {
+  mpn: string;
+  decision: ReviewDecision;
+  reviewer?: string;
+  note?: string;
+  correctedJson?: string;
+};
+
+export type ReviewRow = {
+  mpn_key: string;
+  mpn: string;
+  decision: ReviewDecision;
+  reviewed_at: string;
+  reviewer: string;
+  note: string;
+  corrected_json: string | null;
 };
 
 /** Build a repository over either deployed Postgres or local PGLite. */
@@ -77,6 +99,34 @@ export function createAnalysisRepository(sql: Sql): AnalysisRepository {
         [toKey, toMpn.trim(), fromKey],
       );
     },
+
+    async saveReview(input) {
+      const key = analysisKey(input.mpn);
+      await sql.query(
+        "insert into part_analysis_reviews (mpn_key, mpn, decision, reviewed_at, reviewer, note, corrected_json) " +
+          "values ($1, $2, $3, now(), $4, $5, $6) " +
+          "on conflict (mpn_key) do update set mpn = excluded.mpn, decision = excluded.decision, " +
+          "reviewed_at = excluded.reviewed_at, reviewer = excluded.reviewer, note = excluded.note, " +
+          "corrected_json = excluded.corrected_json",
+        [
+          key,
+          String(input.mpn).trim(),
+          input.decision,
+          input.reviewer ?? null,
+          input.note ?? null,
+          input.correctedJson ?? null,
+        ],
+      );
+    },
+
+    async getReview(mpn) {
+      const rows = await sql.query<ReviewRow>(
+        "select mpn_key, mpn, decision, reviewed_at, reviewer, note, corrected_json " +
+          "from part_analysis_reviews where mpn_key = $1",
+        [analysisKey(mpn)],
+      );
+      return rows[0] ?? null;
+    },
   };
 }
 
@@ -102,4 +152,13 @@ export async function listAnalysisTimes(): Promise<Record<string, string>> {
 /** 主档修正后，把旧 mpn_key 的分析记录迁移到新 key（保留时间戳）。 */
 export async function moveAnalysisKey(fromMpn: string, toMpn: string): Promise<void> {
   await (await repository()).moveAnalysisKey(fromMpn, toMpn);
+}
+
+/** 记录人对该型号分析的人工决定（接受/拒绝/修正）。Radar 拥有最终决定。 */
+export async function saveAnalysisReview(input: ReviewRecord): Promise<void> {
+  await (await repository()).saveReview(input);
+}
+
+export async function getAnalysisReview(mpn: string): Promise<ReviewRow | null> {
+  return (await repository()).getReview(mpn);
 }
