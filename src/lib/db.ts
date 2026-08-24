@@ -1,4 +1,6 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 /** Which database backend is active. */
 export type DbSource = "neon" | "pglite";
@@ -111,9 +113,18 @@ async function createPgliteSql(): Promise<Sql> {
   // data survives source edits (it resets on dev-server restart).
   globalRef.__pgliteInstance__ ??= (async () => {
     const { PGlite } = await import("@electric-sql/pglite");
-    // PGLite 保持内存实例（业务库生命周期随进程；重启由 seed 重建演示数据）。
-    // 需要跨重启保存的知识/记录类数据走 node:sqlite 本地 DB（见 analysis-db.ts）。
+    // 本地持久化：业务库（型号/库存/渠道/询价/流水）全部落盘到
+    // `<DATA_DIR>/pglite`（DATA_DIR 默认 <cwd>/data，LaunchAgent 已注入项目根）。
+    // 重启/重建后数据保留；迁移与 seed 均幂等（_migrations 追踪 / on conflict）。
+    const dataDir = join(process.env.DATA_DIR || join(process.cwd(), "data"), "pglite");
+    try {
+      mkdirSync(dataDir, { recursive: true });
+    } catch {
+      /* 目录创建失败时退回内存模式 */
+    }
+    console.info(`[db] pglite data dir: ${dataDir}`);
     const pg = new PGlite({
+      dataDir,
       parsers: {
         [OID_INT8]: Number,
         [OID_DATE]: identity,
