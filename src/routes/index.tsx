@@ -89,6 +89,7 @@ function Workbench() {
               <Link
                 to="/parts/$partId"
                 params={{ partId: h.partId }}
+                search={{ from: "parts" }}
                 className="flex items-start justify-between gap-3 py-3 hover:bg-secondary/60"
               >
                 <div className="min-w-0">
@@ -117,7 +118,7 @@ function Workbench() {
           <ul className="space-y-2">
             {data?.pendingTransit.map((t) => (
               <li key={t.id}>
-                <Link to="/parts/$partId" params={{ partId: t.partId }} className="block">
+                <Link to="/parts/$partId" params={{ partId: t.partId }} search={{ from: "parts" }} className="block">
                   <div className="flex items-baseline justify-between gap-2">
                     <Mpn value={t.mpn} />
                     <span className="font-mono text-xs tabular">
@@ -142,7 +143,7 @@ function Workbench() {
           <ul className="space-y-2">
             {data?.demandNoStock.map((t) => (
               <li key={t.partId}>
-                <Link to="/parts/$partId" params={{ partId: t.partId }} className="flex items-baseline justify-between">
+                <Link to="/parts/$partId" params={{ partId: t.partId }} search={{ from: "parts" }} className="flex items-baseline justify-between">
                   <Mpn value={t.mpn} />
                   <span className="font-mono text-xs">客{t.inquiryCount}</span>
                 </Link>

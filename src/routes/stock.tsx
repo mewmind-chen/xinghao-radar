@@ -78,6 +78,7 @@ function StockPage() {
             <Link
               to="/parts/$partId"
               params={{ partId: it.partId }}
+              search={{ from: "stock", q: q || undefined, warehouseId: wh === "all" ? undefined : wh }}
               className="flex flex-col gap-1 px-4 py-3 hover:bg-secondary/50 md:flex-row md:items-center md:justify-between"
             >
               <div className="flex flex-wrap items-center gap-2">

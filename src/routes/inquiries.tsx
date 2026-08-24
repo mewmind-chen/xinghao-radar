@@ -113,7 +113,7 @@ function InquiriesPage() {
               }
               className="mt-1"
             />
-            <Link to="/parts/$partId" params={{ partId: it.partId }} className="min-w-0 flex-1">
+            <Link to="/parts/$partId" params={{ partId: it.partId }} search={{ from: "parts" }} className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <Mpn value={it.mpn} />
                 {it.brandCode && <span className="text-xs text-muted-foreground">{it.brandCode}</span>}

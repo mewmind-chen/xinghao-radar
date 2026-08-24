@@ -22,7 +22,7 @@ function WatchPage() {
         {list.data?.map((it) => (
           <li key={it.partId} className="flex items-start gap-3 px-4 py-3">
             <Star className="mt-0.5 size-4 fill-current text-primary" />
-            <Link to="/parts/$partId" params={{ partId: it.partId }} className="min-w-0 flex-1">
+            <Link to="/parts/$partId" params={{ partId: it.partId }} search={{ from: "parts" }} className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <Mpn value={it.mpn} />
                 {it.brandCode && <span className="text-xs text-muted-foreground">{it.brandCode}</span>}

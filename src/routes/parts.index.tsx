@@ -75,6 +75,7 @@ function PartsPage() {
             <Link
               to="/parts/$partId"
               params={{ partId: p.id }}
+              search={{ from: "parts", q: q || undefined, filter }}
               className="flex flex-col gap-1 px-4 py-3 hover:bg-secondary/50 md:flex-row md:items-center md:justify-between"
             >
               <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -99,7 +100,7 @@ function PartsPage() {
       <CreatePartDialog
         open={open}
         onOpenChange={setOpen}
-        onCreated={(id) => nav({ to: "/parts/$partId", params: { partId: id } })}
+        onCreated={(id) => nav({ to: "/parts/$partId", params: { partId: id }, search: { from: "parts", q: undefined, filter: "all" } })}
       />
     </div>
   );

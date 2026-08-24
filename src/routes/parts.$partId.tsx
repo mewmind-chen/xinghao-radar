@@ -1,9 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft, PenLine, Star } from "lucide-react";
-import { getPartDetail } from "@/lib/server/parts";
+import { getPartDetail, searchParts } from "@/lib/server/parts";
 import { updatePartIdentity } from "@/lib/server/parts";
+import { listStock } from "@/lib/server/stock";
 import { receiveTransit, stockAdjust, stockMeta, stockOutbound, stockTransfer } from "@/lib/server/stock";
 import { setOfferValid, setInquiryValid, toggleWatch } from "@/lib/server/market";
 import { analyzePartMpn, getPartAnalysis } from "@/lib/server/knowledge";
@@ -36,10 +37,27 @@ import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/parts/$partId")({ component: PartDetail });
+type DetailSearch = {
+  /** 从哪个列表进入：型号库(parts) / 我的库存(stock)，决定上下切换的范围 */
+  from: "parts" | "stock";
+  q?: string;
+  filter?: "all" | "stock" | "hit" | "watch";
+  warehouseId?: string;
+};
+
+export const Route = createFileRoute("/parts/$partId")({
+  validateSearch: (s: Record<string, unknown>): DetailSearch => ({
+    from: s.from === "stock" ? "stock" : "parts",
+    q: typeof s.q === "string" && s.q ? s.q : undefined,
+    filter: s.filter === "stock" || s.filter === "hit" || s.filter === "watch" ? s.filter : "all",
+    warehouseId: typeof s.warehouseId === "string" && s.warehouseId ? s.warehouseId : undefined,
+  }),
+  component: PartDetail,
+});
 
 function PartDetail() {
   const { partId } = Route.useParams();
+  const ctx = Route.useSearch();
   const qc = useQueryClient();
   const q = useQuery({
     queryKey: ["part", partId],
@@ -50,6 +68,38 @@ function PartDetail() {
   const [op, setOp] = useState<null | "out" | "move" | "adj" | "recv">(null);
   const [lotId, setLotId] = useState<string | null>(null);
   const [fixOpen, setFixOpen] = useState(false);
+
+  // 上下切换上下文：按进入来源加载同一列表，定位当前序号
+  const ctxList = useQuery({
+    queryKey: ["detail-ctx", ctx.from, ctx.q ?? "", ctx.filter ?? "all", ctx.warehouseId ?? ""],
+    queryFn: async (): Promise<{ id: string; mpn: string }[]> => {
+      if (ctx.from === "stock") {
+        const r = await listStock({
+          data: { q: ctx.q || undefined, warehouseId: ctx.warehouseId || undefined },
+        });
+        const seen = new Set<string>();
+        const out: { id: string; mpn: string }[] = [];
+        for (const it of r.items) {
+          if (!seen.has(it.partId)) {
+            seen.add(it.partId);
+            out.push({ id: it.partId, mpn: it.mpn });
+          }
+        }
+        return out;
+      }
+      const rows = await searchParts({ data: { q: ctx.q ?? "", filter: ctx.filter ?? "all" } });
+      return rows.map((p) => ({ id: p.id, mpn: p.mpn }));
+    },
+  });
+  const ctxIdx = ctxList.data?.findIndex((p) => p.id === partId) ?? -1;
+  const ctxPrev = ctxIdx > 0 ? ctxList.data![ctxIdx - 1] : null;
+  const ctxNext =
+    ctxIdx >= 0 && ctxIdx < (ctxList.data?.length ?? 0) - 1 ? ctxList.data![ctxIdx + 1] : null;
+
+  // 切换型号时回到顶部
+  useEffect(() => {
+    window.scrollTo({ top: 0 });
+  }, [partId]);
 
   const watchMut = useMutation({
     mutationFn: (on: boolean) => toggleWatch({ data: { partId, on } }),
@@ -128,6 +178,37 @@ function PartDetail() {
         型号库
       </Link>
 
+      <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <Link
+          to="/parts/$partId"
+          params={{ partId: ctxPrev?.id ?? "" }}
+          search={ctx}
+          title={ctxPrev?.mpn}
+          className={cn(
+            "shrink-0 rounded-md border border-border px-2 py-1",
+            ctxPrev ? "hover:bg-secondary hover:text-foreground" : "pointer-events-none opacity-40",
+          )}
+          aria-disabled={!ctxPrev}
+        >
+          ← 上一个
+        </Link>
+        <span className="tabular">
+          {ctxList.data ? (ctxIdx >= 0 ? `${ctxIdx + 1} / ${ctxList.data.length}` : "—") : "…"}
+        </span>
+        <Link
+          to="/parts/$partId"
+          params={{ partId: ctxNext?.id ?? "" }}
+          search={ctx}
+          title={ctxNext?.mpn}
+          className={cn(
+            "shrink-0 rounded-md border border-border px-2 py-1",
+            ctxNext ? "hover:bg-secondary hover:text-foreground" : "pointer-events-none opacity-40",
+          )}
+          aria-disabled={!ctxNext}
+        >
+          下一个 →
+        </Link>
+      </div>
       <header className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
