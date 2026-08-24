@@ -60,6 +60,7 @@ test("app migrations include durable analysis storage while auth remains outside
   const migrationsDir = join(projectRoot(), "migrations");
   const pending = pendingMigrations(readdirSync(migrationsDir), []);
   assert.ok(pending.some(({ name }) => name === "0003_part_analyses.sql"));
+  assert.ok(pending.some(({ name }) => name === "0004_part_analysis_review.sql"));
   assert.ok(!pending.some(({ name }) => name === AUTH_MIGRATION));
   assert.ok(readdirSync(join(migrationsDir, "auth")).includes("0001_auth.sql"));
 });

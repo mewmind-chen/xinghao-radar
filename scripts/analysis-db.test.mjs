@@ -6,18 +6,37 @@ import { createAnalysisRepository } from "../src/lib/server/analysis-db.ts";
 
 function fakeSql() {
   const rows = new Map();
+  const reviews = new Map();
   const calls = [];
   return {
     calls,
     rows,
+    reviews,
     async query(text, params = []) {
       calls.push({ text, params });
+      if (text.includes("part_analysis_reviews") && text.startsWith("insert")) {
+        const [mpn_key, mpn, decision, reviewer, note, corrected_json] = params;
+        reviews.set(mpn_key, {
+          mpn_key,
+          mpn,
+          decision,
+          reviewed_at: "2026-08-24T09:00:00.000Z",
+          reviewer,
+          note,
+          corrected_json,
+        });
+        return [];
+      }
+      if (text.includes("part_analysis_reviews") && text.startsWith("select")) {
+        const row = reviews.get(params[0]);
+        return row ? [row] : [];
+      }
       if (text.startsWith("insert into part_analyses")) {
         const [mpn_key, mpn, analyzed_at, source_url, analysis] = params;
         rows.set(mpn_key, { mpn_key, mpn, analyzed_at, source_url, analysis });
         return [];
       }
-      if (text.startsWith("select mpn_key, mpn")) {
+      if (text.startsWith("select mpn_key, mpn, analyzed_at, source_url, analysis")) {
         const row = rows.get(params[0]);
         return row ? [row] : [];
       }
@@ -73,6 +92,27 @@ test("同名覆盖、摘要与跨冷启动共享 SQL 表", async () => {
   assert.deepEqual(await coldStartProcess.listAnalysisTimes(), {
     TPS7A4700RGWR: "2026-08-23T11:00:00.000Z",
   });
+});
+
+test("人工决定写入业务表且修正必须带 corrected_json", async () => {
+  const store = fakeSql();
+  const repo = createAnalysisRepository(store);
+  await repo.saveReview({
+    mpn: "tps54560ddar",
+    decision: "corrected",
+    note: "封装写错",
+    correctedJson: JSON.stringify({ headline: "SOIC-8" }),
+  });
+  const row = await repo.getReview("TPS54560DDAR");
+  assert.equal(row.decision, "corrected");
+  assert.equal(row.note, "封装写错");
+  assert.equal(JSON.parse(row.corrected_json).headline, "SOIC-8");
+  const write = store.calls.find((call) => call.text.includes("part_analysis_reviews") && call.text.startsWith("insert"));
+  assert.ok(write);
+  assert.match(write.text, /on conflict \(mpn_key\)/i);
+  assert.equal(write.params[0], "TPS54560DDAR");
+  assert.equal(write.params[2], "corrected");
+  assert.equal(write.params[5], JSON.stringify({ headline: "SOIC-8" }));
 });
 
 test("moveAnalysisKey 原子地移动记录且保留时间", async () => {
