@@ -183,6 +183,31 @@
     "confirmExecuted": false,
     "tunnelIngress": "radar.newmindchen.com → http://127.0.0.1:8082"
   },
+  "narrativeTimeoutRecovery": {
+    "before": {
+      "radarClientTimeoutMs": 30000,
+      "platformHttpDeadlineMs": 120000,
+      "observedPageResult": "local_fallback / preview 1 row",
+      "platformContinuedAfterRadarAbort": true
+    },
+    "after": {
+      "commit": "7fea69e",
+      "radarImportRequestBudgetMs": 150000,
+      "platformHttpDeadlineMs": 120000,
+      "finiteBufferMs": 30000,
+      "platformToolExecutionTimeoutMs": 60000
+    },
+    "productionSmoke": [
+      {"case": "Narrative Text", "run": 1, "elapsedMs": 51581, "viaHarness": true, "route": "harness", "previewRows": 2, "timeout": false},
+      {"case": "Narrative Text", "run": 2, "elapsedMs": 45779, "viaHarness": true, "route": "harness", "previewRows": 2, "timeout": false},
+      {"case": "Narrative Text", "run": 3, "elapsedMs": 27617, "viaHarness": true, "route": "harness", "previewRows": 2, "timeout": false},
+      {"case": "Narrative Text", "run": 4, "elapsedMs": 57609, "viaHarness": true, "route": "harness", "previewRows": 2, "timeout": false},
+      {"case": "Narrative Text", "run": 5, "elapsedMs": 100296, "viaHarness": true, "route": "harness", "previewRows": 2, "timeout": false},
+      {"case": "Unknown Excel", "elapsedMs": 45044, "viaHarness": true, "route": "harness", "previewRows": 2, "timeout": false},
+      {"case": "Unknown CSV", "elapsedMs": 16713, "viaHarness": true, "route": "harness", "previewRows": 2, "timeout": false},
+      {"case": "Image", "elapsedMs": 18247, "viaHarness": true, "route": "harness", "previewRows": 2, "timeout": false}
+    ]
+  },
   "mpnProvenance": {
     "input": ["TPS54560DDAR", "STM32F103C8T6"],
     "candidateValuesPreserved": true,
@@ -190,7 +215,7 @@
   },
   "verification": {
     "radarTypecheck": "PASS",
-    "radarTests": "235/235 PASS",
+    "radarTests": "237/237 PASS",
     "radarBuild": "PASS; PGlite data/wasm/initdb assets verified",
     "platformTests": "161/161 PASS"
   }

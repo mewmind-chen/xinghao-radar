@@ -69,6 +69,24 @@ Import Excel, narrative text, unknown CSV, and image all passed with `viaHarness
 
 `https://radar.newmindchen.com/import` returned HTTP 200 and was exercised with narrative text, unknown Excel, unknown CSV, and image. Each produced a visible `预览 2 行 · AI 识别（Platform）` state with two Candidates. No destructive Confirm was executed. The configured Cloudflare ingress maps this production hostname to the existing Radar service at `127.0.0.1:8082`; no new server, domain, or deployment architecture was introduced.
 
+## Narrative request-budget recovery
+
+The final production blocker was in Radar's Platform client, not in Import semantics. Before this fix, `src/lib/server/agent-platform.ts` passed a hard-coded `30_000` ms timeout to `AbortSignal.timeout`. Platform's HTTP guard had a separate `120_000` ms deadline and continued the Harness request after Radar aborted, so the page classified the transport abort as `timeout` and entered the existing text `local_fallback` path. The DSH tool execution bound is `60_000` ms per tool call; it is not a shorter total Import request bound.
+
+Commit `7fea69e` introduced the named `AGENT_IMPORT_REQUEST_BUDGET_MS = 150_000` constant. This leaves a finite 30-second transport buffer above Platform's 120-second deadline, while keeping Part's existing request budget unchanged. The fallback semantics are unchanged for a genuine Platform 504 or unavailable runtime.
+
+After deploying the fix branch to the existing production service, the same Narrative fixture passed five consecutive times:
+
+| Run | elapsedMs | viaHarness | route | Preview rows | timeout |
+|---:|---:|---:|---|---:|---:|
+| 1 | 51581 | true | harness | 2 | false |
+| 2 | 45779 | true | harness | 2 | false |
+| 3 | 27617 | true | harness | 2 | false |
+| 4 | 57609 | true | harness | 2 | false |
+| 5 | 100296 | true | harness | 2 | false |
+
+The same post-fix production run also passed Unknown Excel (`45044ms`, 2 rows), Unknown CSV (`16713ms`, 2 rows), and Image (`18247ms`, 2 rows), all with `viaHarness=true` and `route=harness`. No Confirm was executed.
+
 The product boundary remains:
 
 `Extract → Candidate → Preview → Human Review → Confirm → Radar DB`
@@ -77,8 +95,8 @@ Agent Import never writes Radar DB. `confirmImport` remains the explicit human-c
 
 ## Regression checks
 
-- Radar: `npm run typecheck` passed; `npm test` passed **235/235**; `npm run build` passed and verified `pglite.data`, `pglite.wasm`, and `initdb.wasm` in the production output.
+- Radar: `npm run typecheck` passed; `npm test` passed **237/237** (235 baseline tests plus two timeout regressions); `npm run build` passed and verified `pglite.data`, `pglite.wasm`, and `initdb.wasm` in the production output.
 - Platform: `npm test` passed **161/161** on `fix/agent-import-recovery`; the only Platform files in this branch are the structural opaque-data validation fix and its contract regression test.
 - No Part, Company, Market Source, Firecrawl, AnySearch, ICNet, Mouser, Plugin, or new database schema changes are included.
 
-Machine-readable case results, model routes, mappings, tool calls, source-key state, and production-page observations are in `results.json`.
+Machine-readable case results, model routes, mappings, tool calls, source-key state, and production-page observations are in `results.json`; timeout-specific smoke measurements are in `timeout-smoke-results.json`.

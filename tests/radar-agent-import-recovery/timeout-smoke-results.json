@@ -1,0 +1,15 @@
+{
+  "productionUrl": "https://radar.newmindchen.com/import",
+  "waitMs": 160000,
+  "narrativeRuns": 5,
+  "results": [
+    {"case":"Narrative Text","run":1,"elapsedMs":51581,"viaHarness":true,"route":"harness","previewRows":2,"timeout":false,"fallbackFrom":null,"error":null},
+    {"case":"Narrative Text","run":2,"elapsedMs":45779,"viaHarness":true,"route":"harness","previewRows":2,"timeout":false,"fallbackFrom":null,"error":null},
+    {"case":"Narrative Text","run":3,"elapsedMs":27617,"viaHarness":true,"route":"harness","previewRows":2,"timeout":false,"fallbackFrom":null,"error":null},
+    {"case":"Narrative Text","run":4,"elapsedMs":57609,"viaHarness":true,"route":"harness","previewRows":2,"timeout":false,"fallbackFrom":null,"error":null},
+    {"case":"Narrative Text","run":5,"elapsedMs":100296,"viaHarness":true,"route":"harness","previewRows":2,"timeout":false,"fallbackFrom":null,"error":null},
+    {"case":"Unknown Excel","elapsedMs":45044,"viaHarness":true,"route":"harness","previewRows":2,"timeout":false,"fallbackFrom":null,"error":null},
+    {"case":"Unknown CSV","elapsedMs":16713,"viaHarness":true,"route":"harness","previewRows":2,"timeout":false,"fallbackFrom":null,"error":null},
+    {"case":"Image","elapsedMs":18247,"viaHarness":true,"route":"harness","previewRows":2,"timeout":false,"fallbackFrom":null,"error":null}
+  ]
+}
