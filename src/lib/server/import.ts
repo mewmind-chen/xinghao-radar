@@ -17,6 +17,7 @@ import {
   parseLeadTime,
 } from "@/lib/domain";
 import type { ImportKind, ImportRow, ImportSource } from "@/lib/types";
+import type { CostTax, Currency } from "@/lib/types";
 import {
   defaultProviders,
   runImportAgent,
@@ -32,19 +33,32 @@ import {
   matchFlagsForParts,
   nid,
   sqlClient,
+  withTransaction,
 } from "./helpers";
 import { ensureSeed } from "./seed";
 
-function flagIntraFileDuplicates(rows: ImportRow[]) {
+function effectiveImportKind(row: ImportRow, selectedKind: ImportKind): ImportKind {
+  if (selectedKind === "stock") return "stock";
+  return row.kind === "mixed" ? selectedKind : row.kind;
+}
+
+const DUPLICATE_STOCK_DAYS = 90;
+
+function flagIntraFileDuplicates(
+  rows: ImportRow[],
+  selectedKind: ImportKind,
+  defaults?: { warehouseId?: string; supplier?: string },
+) {
   const seen = new Map<string, number>();
   for (const row of rows) {
     const k = [
-      row.kind,
+      effectiveImportKind(row, selectedKind),
       normalizeMpn(row.mpn),
       row.qty ?? "",
       row.dateCode ?? "",
-      row.channel ?? "",
+      row.channel ?? defaults?.supplier ?? "",
       row.customer ?? "",
+      row.warehouse ?? defaults?.warehouseId ?? "",
       row.isTp ? "tp" : (row.priceAmount ?? ""),
     ].join("|");
     if (seen.has(k)) {
@@ -57,15 +71,51 @@ function flagIntraFileDuplicates(rows: ImportRow[]) {
   }
 }
 
-async function markDuplicates(sql: Awaited<ReturnType<typeof sqlClient>>, rows: ImportRow[]) {
-  flagIntraFileDuplicates(rows);
+async function markDuplicates(
+  sql: Awaited<ReturnType<typeof sqlClient>>,
+  rows: ImportRow[],
+  selectedKind: ImportKind,
+  defaultWarehouseId?: string,
+  defaultSupplier?: string,
+) {
+  flagIntraFileDuplicates(rows, selectedKind, { warehouseId: defaultWarehouseId, supplier: defaultSupplier });
   for (const row of rows) {
     if (row.duplicate) continue;
     const key = normalizeMpn(row.mpn);
     const part = await sql`select id from parts where mpn_key = ${key} limit 1`;
     if (!part[0]) continue;
     const partId = String(part[0].id);
-    if (row.kind === "offer") {
+    const kind = effectiveImportKind(row, selectedKind);
+    if (kind === "stock") {
+      const warehouse = row.warehouse ?? defaultWarehouseId ?? "";
+      const supplierName = row.channel ?? defaultSupplier ?? "";
+      const cost = row.costAmount;
+      const currency = row.costCurrency;
+      const tax = row.costTax;
+      const hits = await sql`
+        select l.id
+        from stock_lots l
+        left join warehouses w on w.id = l.warehouse_id
+        left join channels ch on ch.id = l.supplier_id
+        where l.part_id = ${partId} and l.deleted_at is null
+          and l.status in ('on_hand', 'in_transit')
+          and l.inbound_at >= now() - (${DUPLICATE_STOCK_DAYS} || ' days')::interval
+          and coalesce(l.qty_in, 0) = coalesce(${row.qty}, 0)
+          and coalesce(l.date_code, '') = coalesce(${row.dateCode ?? ""}, '')
+          and coalesce(l.cost_amount, -1::numeric) = coalesce(${cost ?? null}::numeric, -1::numeric)
+          and coalesce(l.cost_currency, '') = coalesce(${currency ?? ""}, '')
+          and coalesce(l.cost_tax, '') = coalesce(${tax ?? ""}, '')
+          and (${warehouse} = '' or w.id = ${warehouse} or w.code = ${warehouse})
+          and (${supplierName} = '' or ch.name = ${supplierName})
+        limit 3
+      `;
+      if (hits.length > 0) {
+        row.duplicate = true;
+        row.duplicateReason = "疑似重复：相同型号、仓库、数量、DC 和成本已有库存批次（若确为新批次可勾选）";
+        row.selected = false;
+      }
+    }
+    if (kind === "offer") {
       const chName = row.channel ?? "";
       const hits = await sql`
         select o.id from channel_offers o
@@ -88,7 +138,7 @@ async function markDuplicates(sql: Awaited<ReturnType<typeof sqlClient>>, rows: 
         row.selected = false;
       }
     }
-    if (row.kind === "inquiry") {
+    if (kind === "inquiry") {
       const cuName = row.customer ?? "";
       const hits = await sql`
         select i.id from customer_inquiries i
@@ -117,6 +167,10 @@ export const parseImport = createServerFn({ method: "POST" })
       filename?: string;
       fileBase64?: string;
       mime?: string;
+      defaultWarehouseId?: string;
+      defaultSupplier?: string;
+      defaultCurrency?: Currency;
+      defaultTax?: CostTax;
     }) => input,
   )
   .handler(async ({ data }) => {
@@ -170,11 +224,13 @@ export const parseImport = createServerFn({ method: "POST" })
       },
     );
 
-    const rows = resolved.rows;
+    const rows = resolved.rows.map((row) =>
+      data.kind === "stock" ? { ...row, kind: "stock" as const } : row,
+    );
     const usedAi = resolved.usedAi;
     const providers = defaultProviders();
 
-    await markDuplicates(sql, rows);
+    await markDuplicates(sql, rows, data.kind, data.defaultWarehouseId, data.defaultSupplier);
     const warehouses = await listWarehouses(sql);
     const channels = await sql`select id, name from channels order by name`;
     const customers = await sql`select id, name from customers order by name`;
@@ -201,15 +257,19 @@ export const confirmImport = createServerFn({ method: "POST" })
       defaultChannel?: string;
       defaultCustomer?: string;
       defaultWarehouseId?: string;
+      defaultSupplier?: string;
+      defaultCurrency?: Currency;
+      defaultTax?: CostTax;
       rows: ImportRow[];
     }) => input,
   )
   .handler(async ({ data }) => {
     const sql = await sqlClient();
     const selected = data.rows.filter((r) => r.selected && r.mpn);
+    if (selected.length === 0) throw new Error("没有勾选可写入的行");
     const warehouses = await listWarehouses(sql);
     for (const row of selected) {
-      const kind = row.kind === "mixed" ? data.kind : row.kind;
+      const kind = effectiveImportKind(row, data.kind);
       if (kind === "offer" && !(row.channel || data.defaultChannel)) {
         throw new Error(`${row.mpn} 缺少渠道`);
       }
@@ -244,40 +304,55 @@ export const confirmImport = createServerFn({ method: "POST" })
           warehouses.find((w) => w.id === data.defaultWarehouseId);
         if (!wh) throw new Error(`${row.mpn} 缺少仓库`);
         requireIntQty(row.qty, "入库");
+        const amount = row.costAmount;
+        const currency = amount == null ? null : (row.costCurrency ?? data.defaultCurrency ?? null);
+        const tax = amount == null ? null : (row.costTax ?? data.defaultTax ?? null);
+        if (amount == null && (row.costCurrency != null || row.costTax != null)) {
+          throw new Error(`${row.mpn} 成本为空时币种和税别必须为空`);
+        }
+        if (amount != null && (!Number.isFinite(amount) || amount < 0)) {
+          throw new Error(`${row.mpn} 成本必须为空或不小于 0`);
+        }
+        if (amount != null && !currency) throw new Error(`${row.mpn} 填写成本时必须选择币种`);
+        if (amount != null && currency === "USD" && tax !== "none") throw new Error(`${row.mpn} 美元成本税别只能是无`);
+        if (amount != null && currency === "CNY" && tax !== "exclusive" && tax !== "inclusive") {
+          throw new Error(`${row.mpn} 人民币成本必须选择含税或未税`);
+        }
       }
       if (kind === "transit") {
         requireIntQty(row.qty, "在途");
       }
     }
 
-    const batchId = nid();
-    await sql`
+    return withTransaction(sql, async (tx) => {
+      const batchId = nid();
+      await tx`
       insert into import_batches (id, kind, source_type, filename, raw_excerpt)
       values (${batchId}, ${data.kind}, ${data.sourceType}, ${data.filename ?? null}, ${data.excerpt ?? null})
-    `;
+      `;
 
-    const partIds: string[] = [];
-    for (const row of selected) {
-      const part = await ensurePart(sql, row.mpn, {
+      const partIds: string[] = [];
+      for (const row of selected) {
+        const part = await ensurePart(tx, row.mpn, {
         brand: row.brand,
         package: row.package,
         source: "导入",
-      });
-      partIds.push(part.id);
-    }
-    const uniqueIds = [...new Set(partIds)];
-    const flagsBefore = await matchFlagsForParts(sql, uniqueIds);
+        });
+        partIds.push(part.id);
+      }
+      const uniqueIds = [...new Set(partIds)];
+      const flagsBefore = await matchFlagsForParts(tx, uniqueIds);
 
-    for (let i = 0; i < selected.length; i++) {
-      const row = selected[i];
-      const partId = partIds[i];
-      const kind = row.kind === "mixed" ? data.kind : row.kind;
+      for (let i = 0; i < selected.length; i++) {
+        const row = selected[i];
+        const partId = partIds[i];
+        const kind = effectiveImportKind(row, data.kind);
 
       if (kind === "offer") {
         const chName = row.channel || data.defaultChannel;
         if (!chName) throw new Error(`${row.mpn} 缺少渠道`);
-        const ch = await ensureChannel(sql, chName);
-        await sql`
+        const ch = await ensureChannel(tx, chName);
+        await tx`
           insert into channel_offers (
             id, channel_id, part_id, qty, date_code, price_amount, price_currency, price_tax,
             is_tp, lead_time_text, import_batch_id
@@ -290,8 +365,8 @@ export const confirmImport = createServerFn({ method: "POST" })
       } else if (kind === "inquiry") {
         const cuName = row.customer || data.defaultCustomer;
         if (!cuName) throw new Error(`${row.mpn} 缺少客户`);
-        const cu = await ensureCustomer(sql, cuName);
-        await sql`
+        const cu = await ensureCustomer(tx, cuName);
+        await tx`
           insert into customer_inquiries (id, customer_id, part_id, qty, import_batch_id)
           values (${nid()}, ${cu.id}, ${partId}, ${row.qty}, ${batchId})
         `;
@@ -304,19 +379,22 @@ export const confirmImport = createServerFn({ method: "POST" })
         const lotId = nid();
         const qty = row.qty ?? 0;
         if (qty <= 0) throw new Error(`${row.mpn} 入库数量无效`);
-        const supplier = row.channel ? await ensureChannel(sql, row.channel) : null;
-        await sql`
+        const supplierName = row.channel || data.defaultSupplier;
+        const supplier = supplierName ? await ensureChannel(tx, supplierName) : null;
+        const amount = row.costAmount;
+        const currency = amount == null ? null : (row.costCurrency ?? data.defaultCurrency ?? null);
+        const tax = amount == null ? null : (row.costTax ?? data.defaultTax ?? null);
+        await tx`
           insert into stock_lots (
             id, part_id, warehouse_id, status, qty_in, qty_remaining, date_code, package,
-            standard_pack, pack_state, cost_amount, cost_currency, cost_tax, supplier_id, import_batch_id
+            standard_pack, pack_state, cost_amount, cost_currency, cost_tax, supplier_id, import_batch_id, origin_lot_id
           ) values (
             ${lotId}, ${partId}, ${wh.id}, 'on_hand', ${qty}, ${qty}, ${row.dateCode},
             ${row.package}, ${row.standardPack}, ${row.packState},
-            ${row.costAmount ?? row.priceAmount}, ${row.costCurrency ?? row.priceCurrency},
-            ${row.costTax ?? row.priceTax}, ${supplier?.id ?? null}, ${batchId}
+            ${amount}, ${currency}, ${tax}, ${supplier?.id ?? null}, ${batchId}, ${lotId}
           )
         `;
-        await sql`
+        await tx`
           insert into stock_movements (id, part_id, lot_id, type, qty, to_warehouse_id, import_batch_id)
           values (${nid()}, ${partId}, ${lotId}, 'in', ${qty}, ${wh.id}, ${batchId})
         `;
@@ -325,27 +403,30 @@ export const confirmImport = createServerFn({ method: "POST" })
         if (qty <= 0) throw new Error(`${row.mpn} 在途数量无效`);
         const parsed = parseLeadTime(row.etaText || row.leadTimeText || "");
         const lotId = nid();
-        const supplier = row.channel ? await ensureChannel(sql, row.channel) : null;
-        await sql`
+        const supplierName = row.channel || data.defaultSupplier;
+        const supplier = supplierName ? await ensureChannel(tx, supplierName) : null;
+        const amount = row.costAmount;
+        const currency = row.costCurrency;
+        const tax = row.costTax;
+        await tx`
           insert into stock_lots (
             id, part_id, status, qty_in, qty_remaining, date_code,
-            cost_amount, cost_currency, cost_tax, supplier_id, ordered_at, eta_date, eta_text, eta_precision, import_batch_id
+            cost_amount, cost_currency, cost_tax, supplier_id, ordered_at, eta_date, eta_text, eta_precision, import_batch_id, origin_lot_id
           ) values (
             ${lotId}, ${partId}, 'in_transit', ${qty}, ${qty}, ${row.dateCode},
-            ${row.costAmount ?? row.priceAmount}, ${row.costCurrency ?? row.priceCurrency},
-            ${row.costTax ?? row.priceTax}, ${supplier?.id ?? null}, now(), ${parsed.etaDate}, ${parsed.original || null},
-            ${parsed.precision}, ${batchId}
+            ${amount}, ${currency}, ${tax}, ${supplier?.id ?? null}, now(), ${parsed.etaDate}, ${parsed.original || null},
+            ${parsed.precision}, ${batchId}, ${lotId}
           )
         `;
-        await sql`
+        await tx`
           insert into stock_movements (id, part_id, lot_id, type, qty, note, import_batch_id)
           values (${nid()}, ${partId}, ${lotId}, 'transit_open', ${qty}, ${row.etaText}, ${batchId})
         `;
       }
-      await sql`update parts set updated_at = now() where id = ${partId}`;
-    }
+        await tx`update parts set updated_at = now() where id = ${partId}`;
+      }
 
-    const flagsAfter = await matchFlagsForParts(sql, uniqueIds);
+      const flagsAfter = await matchFlagsForParts(tx, uniqueIds);
     const trigger: ImportKind = data.kind === "mixed" ? "offer" : data.kind;
     const summary = {
       identified: selected.length,
@@ -353,10 +434,10 @@ export const confirmImport = createServerFn({ method: "POST" })
         const f = flagsBefore.get(id);
         return f ? isCrossHit(f, trigger) : false;
       }).length,
-      stock: uniqueIds.filter((id) => flagsBefore.get(id)?.stock).length,
-      inquiry: uniqueIds.filter((id) => (flagsBefore.get(id)?.inquiryCount ?? 0) > 0).length,
-      dual: uniqueIds.filter((id) => flagsBefore.get(id)?.isDual).length,
-      watch: uniqueIds.filter((id) => flagsBefore.get(id)?.watch).length,
+      stock: uniqueIds.filter((id) => flagsAfter.get(id)?.stock).length,
+      inquiry: uniqueIds.filter((id) => (flagsAfter.get(id)?.inquiryCount ?? 0) > 0).length,
+      dual: uniqueIds.filter((id) => flagsAfter.get(id)?.isDual).length,
+      watch: uniqueIds.filter((id) => flagsAfter.get(id)?.watch).length,
     };
     const hitParts = uniqueIds.map((id) => {
       const f = flagsAfter.get(id)!;
@@ -366,5 +447,6 @@ export const confirmImport = createServerFn({ method: "POST" })
         stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
       };
     });
-    return { batchId, summary, hitParts };
+      return { batchId, summary, hitParts };
+    });
   });

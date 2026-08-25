@@ -7,14 +7,15 @@ import {
   matchFlagsForParts,
   sqlClient,
 } from "./helpers";
-import { displayMpn, formatStockLine, iso, normalizeMpn } from "@/lib/domain";
+import { displayMpn, formatInventoryQty, formatStockLine, iso, normalizeMpn } from "@/lib/domain";
 import { cleanBrand } from "./part-identity";
 import { listAnalysisTimes, moveAnalysisKey } from "./analysis-db";
 import type { MatchFlags, Part } from "@/lib/types";
 
 export type PartListItem = Part & {
   flags: MatchFlags;
-  stockLine: string;
+  /** 型号库只展示有效在库批次的总数量；仓位/批次明细在型号详情中展示。 */
+  onHandLabel: string;
   /** 最近型号分析时间（part_analyses），无则 null。 */
   analysisAt: string | null;
 };
@@ -56,7 +57,11 @@ export const searchParts = createServerFn({ method: "GET" })
       return {
         ...p,
         flags: f,
-        stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
+        onHandLabel: f.onHand > 0
+          ? formatInventoryQty(f.onHand)
+          : f.inTransit > 0
+            ? `途 ${formatInventoryQty(f.inTransit)}`
+            : "",
         analysisAt: analysisAt[p.mpnKey] ?? null,
       };
     });

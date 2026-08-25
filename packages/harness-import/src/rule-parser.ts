@@ -13,7 +13,7 @@ import {
 import { extractTextLines } from "./plugins/text-extractor.ts";
 import type { ImportKind, ImportRow } from "./schema.ts";
 
-const MPN_RE = /[A-Za-z0-9][A-Za-z0-9._+\-\/]{3,40}/;
+const MPN_RE = /[A-Za-z0-9][-A-Za-z0-9._+/]{3,40}/;
 
 /**
  * 从剩余文本挑选数量：
@@ -59,8 +59,8 @@ export function heuristicParse(text: string, kind: ImportKind | "mixed"): Import
       if (hit >= 0) tail = tail.slice(0, hit) + " " + tail.slice(hit + qtyPick.raw.length);
     }
     const qty = qtyPick?.qty ?? null;
-    const dcRaw = take(/(?:^|[^A-Za-z0-9])((?:20\d{2}|2[3-6]\d{2})\+?|\d{2}\+)(?=[^A-Za-z0-9+]|$)/);
-    const ltRaw = take(/(?<![$\d.])(LT\s*)?(\d+\s*周|现货|\d{1,2}[\/.]\d{1,2}|\d+\s*月底|几天后|8月底)/i);
+    const dcRaw = take(/(?:^|[^A-Za-z0-9])(?:(?:DC|D[/]C)\s*)?((?:20\d{2}|2[3-6]\d{2})\+?|\d{2}\+)(?=[^A-Za-z0-9+]|$)/i);
+    const ltRaw = take(/(?<![$¥￥\d.])(LT\s*)?(\d+\s*周|现货|\d{1,2}[/.]\d{1,2}|\d+\s*月底|几天后|8月底)/i);
     const whRaw = take(/HK|香港|坂田|板田|交通/);
     const chRaw = take(/渠道\s*[\u4e00-\u9fa5A-Za-z0-9]{2,12}/);
     const custRaw = take(/客[户]?\s*[\u4e00-\u9fa5A-Za-z0-9]{2,12}/);
@@ -78,7 +78,7 @@ export function heuristicParse(text: string, kind: ImportKind | "mixed"): Import
     }
     const cust = custRaw.match(/客[户]?\s*([\u4e00-\u9fa5A-Za-z0-9]{2,12})/);
     const ch = chRaw.match(/渠道\s*([\u4e00-\u9fa5A-Za-z0-9]{2,12})/);
-    const dc = dcRaw.match(/(?:^|[^A-Za-z0-9])((?:20\d{2}|2[3-6]\d{2})\+?|\d{2}\+)(?=[^A-Za-z0-9+]|$)/);
+    const dc = dcRaw.match(/((?:20\d{2}|2[3-6]\d{2})\+?|\d{2}\+)/);
     rows.push({
       id: nid(),
       kind: rowKind,

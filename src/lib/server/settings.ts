@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { iso } from "@/lib/domain";
-import { getSettings, listWarehouses, logOp, nid, sqlClient } from "./helpers";
+import { getSettings, listWarehouses, logOp, nid, sqlClient, withTransaction } from "./helpers";
 import { ensureSeed } from "./seed";
 
 export const getAppSettings = createServerFn({ method: "GET" }).handler(async () => {
@@ -94,25 +94,34 @@ export const undoImportBatch = createServerFn({ method: "POST" })
   .validator((input: { id: string }) => input)
   .handler(async ({ data }) => {
     const sql = await sqlClient();
-    const batch = await sql`select * from import_batches where id = ${data.id}`;
-    if (!batch[0]) throw new Error("批次不存在");
-    if (batch[0].undone_at) throw new Error("该批次已撤销");
-    const lots = await sql`
-      select * from stock_lots where import_batch_id = ${data.id} and deleted_at is null
-    `;
-    for (const lot of lots) {
-      if (Number(lot.qty_remaining) !== Number(lot.qty_in) && lot.status !== "in_transit") {
-        throw new Error("该批次库存已被后续出库消耗，不能整批撤销");
+    return withTransaction(sql, async (tx) => {
+      const batch = await tx`select * from import_batches where id = ${data.id} for update`;
+      if (!batch[0]) throw new Error("批次不存在");
+      if (batch[0].undone_at) throw new Error("该批次已撤销");
+      const lots = await tx`
+        select * from stock_lots where import_batch_id = ${data.id} and deleted_at is null
+      `;
+      for (const lot of lots) {
+        const downstream = await tx`
+          select id from stock_movements
+          where deleted_at is null
+            and (lot_id = ${lot.id} or source_lot_id = ${lot.id})
+            and coalesce(import_batch_id, '') <> ${data.id}
+          limit 1
+        `;
+        if (downstream[0]) {
+          throw new Error("该批次已发生出库、调拨、修正或在途接收，不能整批撤销");
+        }
+        if (Number(lot.qty_remaining) !== Number(lot.qty_in)) {
+          throw new Error("该批次库存已被后续操作改变，不能整批撤销");
+        }
       }
-      if (lot.status === "in_transit" && Number(lot.qty_remaining) !== Number(lot.qty_in)) {
-        throw new Error("该批次在途已部分入库，不能整批撤销");
-      }
-    }
-    await sql`update stock_lots set deleted_at = now() where import_batch_id = ${data.id}`;
-    await sql`update stock_movements set deleted_at = now() where import_batch_id = ${data.id}`;
-    await sql`update channel_offers set deleted_at = now() where import_batch_id = ${data.id}`;
-    await sql`update customer_inquiries set deleted_at = now() where import_batch_id = ${data.id}`;
-    await sql`update import_batches set undone_at = now() where id = ${data.id}`;
-    await logOp(sql, "undo_batch", "import_batch", data.id);
-    return { ok: true as const };
+      await tx`update stock_lots set deleted_at = now() where import_batch_id = ${data.id}`;
+      await tx`update stock_movements set deleted_at = now() where import_batch_id = ${data.id}`;
+      await tx`update channel_offers set deleted_at = now() where import_batch_id = ${data.id}`;
+      await tx`update customer_inquiries set deleted_at = now() where import_batch_id = ${data.id}`;
+      await tx`update import_batches set undone_at = now() where id = ${data.id}`;
+      await logOp(tx, "undo_batch", "import_batch", data.id);
+      return { ok: true as const };
+    });
   });

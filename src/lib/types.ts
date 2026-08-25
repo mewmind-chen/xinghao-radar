@@ -58,6 +58,8 @@ export type Customer = {
 
 export type StockLot = {
   id: string;
+  sourceLotId?: string | null;
+  originLotId?: string | null;
   partId: string;
   warehouseId: string | null;
   warehouseCode: string | null;
@@ -84,6 +86,7 @@ export type StockMovement = {
   id: string;
   partId: string;
   lotId: string | null;
+  sourceLotId?: string | null;
   type: MovementType;
   qty: number;
   fromWarehouseId: string | null;
