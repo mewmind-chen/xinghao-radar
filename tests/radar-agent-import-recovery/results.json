@@ -1,0 +1,191 @@
+{
+  "baseline": {
+    "radarProductionSha": "4f08291bdaa6ea7b3e50df3da23accd1bf6c1dff",
+    "radarBranch": "fix/agent-import-recovery",
+    "platformRuntimeBaseSha": "01bd169511f6a5bdb0a71c7013c821295d732708",
+    "platformPriorSourceRuntimeBranch": "fix/source-runtime-readiness@7994ede",
+    "beforeCapture": "2026-08-25",
+    "afterCapture": "2026-08-25"
+  },
+  "before": {
+    "endpoint": "POST /v1/import/extract",
+    "sourceKeys": "The old runtime had source credentials configured; this was not used as an Import dependency.",
+    "cases": [
+      {
+        "case": "Unknown Excel EN",
+        "mode": "agent",
+        "httpStatus": 200,
+        "okReported": "absent in captured response",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2,
+        "mapping": "Item Code→mpn; Available→qty; Maker→brand; Lot→dateCode"
+      },
+      {
+        "case": "Unknown Excel CN",
+        "mode": "agent",
+        "httpStatus": 200,
+        "okReported": "absent in captured response",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2,
+        "mapping": "货号→mpn; 可供→qty; 原厂→brand; 周期→dateCode"
+      },
+      {
+        "case": "Narrative Text",
+        "mode": "agent",
+        "httpStatus": 200,
+        "okReported": "absent in captured response",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2
+      },
+      {
+        "case": "CSV Standard",
+        "mode": "auto",
+        "httpStatus": 200,
+        "okReported": "absent in captured response",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2
+      },
+      {
+        "case": "CSV Unknown",
+        "mode": "agent",
+        "httpStatus": 200,
+        "okReported": "absent in captured response",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2
+      },
+      {
+        "case": "Image",
+        "mode": "agent",
+        "httpStatus": 422,
+        "okReported": false,
+        "error": "contract_error",
+        "reason": "Opaque image base64 was scanned as JSON text and falsely matched the forbidden SQL token.",
+        "viaHarness": false,
+        "route": null,
+        "toolsCalled": [],
+        "candidates": 0
+      }
+    ]
+  },
+  "afterZeroSource": {
+    "sourceCredentials": {
+      "FIRECRAWL_API_KEY": false,
+      "ANYSEARCH_API_KEY": false,
+      "ICNET_COOKIE": false,
+      "MOUSER_API_KEY": false
+    },
+    "harnessModelCredential": "available through the existing Harness runtime; value intentionally omitted",
+    "commonTools": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+    "modelRoutes": {
+      "tabularAndText": "opencode-go / deepseek-v4-flash / fast / economy",
+      "image": "deepseek-official / deepseek-v4-flash-vision-exp / vision / standard"
+    },
+    "cases": [
+      {
+        "case": "Unknown Excel EN",
+        "needsAgent": true,
+        "mode": "agent",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2,
+        "previewRows": 2,
+        "mapping": "Item Code→mpn; Available→qty; Maker→brand; Lot→dateCode",
+        "candidateMpns": ["TPS54560DDAR", "STM32F103C8T6"]
+      },
+      {
+        "case": "Unknown Excel CN",
+        "needsAgent": true,
+        "mode": "agent",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2,
+        "previewRows": 2,
+        "mapping": "货号→mpn; 可供→qty; 原厂→brand; 周期→dateCode",
+        "candidateMpns": ["TPS54560DDAR", "STM32F103C8T6"]
+      },
+      {
+        "case": "Narrative Text",
+        "needsAgent": true,
+        "mode": "agent",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2,
+        "candidateMpns": ["TPS54560DDAR", "STM32F103C8T6"]
+      },
+      {
+        "case": "CSV Standard",
+        "needsAgent": "maybe",
+        "mode": "auto",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2,
+        "mapping": "MPN→mpn; Quantity→qty; Brand→brand",
+        "candidateMpns": ["TPS54560DDAR", "STM32F103C8T6"]
+      },
+      {
+        "case": "CSV Unknown",
+        "needsAgent": true,
+        "mode": "agent",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2,
+        "mapping": "Item Code→mpn; Available→qty; Maker→brand; Lot→dateCode",
+        "candidateMpns": ["TPS54560DDAR", "STM32F103C8T6"]
+      },
+      {
+        "case": "Image",
+        "needsAgent": true,
+        "mode": "agent",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "candidates": 2,
+        "candidateMpns": ["TPS54560DDAR", "STM32F103C8T6"]
+      },
+      {
+        "case": "Large Excel",
+        "needsAgent": true,
+        "mode": "agent",
+        "viaHarness": true,
+        "route": "harness",
+        "toolsCalled": ["import_apply_mapping", "import_classify", "import_normalize_text", "import_parse_request", "import_table_preview", "import_validate_mapping", "import_validate_rows"],
+        "inputDataRows": 180,
+        "previewRows": 8,
+        "candidates": 180,
+        "mapping": "Item Code→mpn; Available→qty; Maker→brand; Lot→dateCode",
+        "agentPayload": "header plus bounded sample only; deterministic Core applied the mapping to all rows"
+      }
+    ]
+  },
+  "radarPage": {
+    "productionUrl": "https://radar.newmindchen.com/import",
+    "localAndProductionPreview": [
+      {"case": "Narrative Text", "preview": true, "platformLabel": true, "candidates": 2},
+      {"case": "Unknown Excel EN", "preview": true, "platformLabel": true, "candidates": 2},
+      {"case": "CSV Unknown", "preview": true, "platformLabel": true, "candidates": 2},
+      {"case": "Image", "preview": true, "platformLabel": true, "candidates": 2}
+    ],
+    "confirmExecuted": false,
+    "tunnelIngress": "radar.newmindchen.com → http://127.0.0.1:8082"
+  },
+  "mpnProvenance": {
+    "input": ["TPS54560DDAR", "STM32F103C8T6"],
+    "candidateValuesPreserved": true,
+    "normalization": "NFKC + trim; uppercase is only a lookup-key operation"
+  }
+}
