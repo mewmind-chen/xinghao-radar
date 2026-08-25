@@ -1,10 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  AGENT_IMPORT_REQUEST_BUDGET_MS,
   candidateToImportRow,
+  extractViaPlatform,
   researchPartViaPlatform,
   researchPartViaPlatformWithOutcome,
 } from "../src/lib/server/agent-platform.ts";
+import { resolveImportExtract } from "../src/lib/server/import-contract.ts";
 import { platformPartToHqb, mapHqbResponse } from "../src/lib/server/knowledge-map.ts";
 import { radarContextFromFlags } from "../src/lib/server/radar-context-provider.ts";
 import { runPartAnalysisFlow } from "../src/lib/server/part-analysis-flow.ts";
@@ -112,6 +115,66 @@ test("part research exposes safe downgrade reasons for 401 and timeout", async (
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("narrative Import waits past the former 30s window for Platform candidates", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalTimeout = AbortSignal.timeout;
+  let timeoutSeen = null;
+  globalThis.fetch = async (_url, init) => {
+    assert.equal(init?.signal, undefined, "the compressed latency test supplies its own signal stub");
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        usedAi: true,
+        viaHarness: true,
+        route: "harness",
+        candidates: [{ mpn: "TPS54560DDAR", qty: 1000 }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  AbortSignal.timeout = (timeoutMs) => {
+    timeoutSeen = timeoutMs;
+    // Compress a simulated 31s Platform response into 35ms. The regression
+    // fails if the Radar Import budget is still the former 30,000ms window.
+    if (timeoutMs <= 30_000) throw new Error("request budget is still limited to 30s");
+    return undefined;
+  };
+  try {
+    const raw = await extractViaPlatform({
+      kind: "offer",
+      sourceType: "text",
+      text: "客户要 TPS54560DDAR 1000pcs，现货。",
+    });
+    assert.equal(timeoutSeen, AGENT_IMPORT_REQUEST_BUDGET_MS);
+    assert.equal(raw.status, 200);
+    assert.equal(raw.body?.viaHarness, true);
+    assert.equal(raw.body?.route, "harness");
+    assert.equal(raw.body?.candidates?.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    AbortSignal.timeout = originalTimeout;
+  }
+  assert.ok(AGENT_IMPORT_REQUEST_BUDGET_MS > 30_000);
+});
+
+test("a genuine Platform timeout keeps the existing text fallback semantics", async () => {
+  const out = await resolveImportExtract(
+    {
+      kind: "offer",
+      sourceType: "text",
+      text: "客户要 TPS54560DDAR 1000pcs，现货。",
+    },
+    {
+      extractViaPlatform: async () => ({ status: 0, body: null, failureReason: "timeout" }),
+    },
+  );
+  assert.equal(out.extractOrigin, "local_fallback");
+  assert.equal(out.extractState, "platform_unavailable");
+  assert.equal(out.rows.length, 1);
+  assert.equal(out.rows[0].mpn, "TPS54560DDAR");
 });
 
 test("provider exception still calls Platform without context, then falls back to HQB", async () => {

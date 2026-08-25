@@ -10,6 +10,10 @@ function nid(): string {
 }
 
 export const AGENT_API_URL = (process.env.AGENT_API_URL || "http://127.0.0.1:8787").replace(/\/+$/, "");
+// Import is allowed to cover the Platform HTTP guard's 120s deadline plus a
+// small response/transport buffer. Production evidence showed Harness
+// narrative extraction can take more than the former 30s client window.
+export const AGENT_IMPORT_REQUEST_BUDGET_MS = 150_000;
 // This credential belongs only to electronics-agent-platform. Do not reuse a
 // generic AGENT_API_TOKEN: that makes an accidental cross-service deployment
 // grant Radar more authority than it needs.
@@ -139,7 +143,11 @@ export async function extractViaPlatform(input: {
   fileBase64?: string;
   mime?: string;
 }): Promise<{ status: number; body: unknown | null; failureReason?: PlatformFailureReason }> {
-  const { body, failureReason, status } = await postJson("/v1/import/extract", { ...input, mode: "auto" }, 30_000);
+  const { body, failureReason, status } = await postJson(
+    "/v1/import/extract",
+    { ...input, mode: "auto" },
+    AGENT_IMPORT_REQUEST_BUDGET_MS,
+  );
   return { status, body, failureReason };
 }
 
