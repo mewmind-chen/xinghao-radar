@@ -47,7 +47,7 @@ async function runNarrative(run) {
   const page = await browser.newPage();
   const startedAt = Date.now();
   try {
-    await page.goto(`${radarUrl}/import`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.goto(`${radarUrl}/import`, { waitUntil: "networkidle", timeout: 30_000 });
     await page.locator("textarea").fill(narrative);
     await page.getByRole("button", { name: /识别预览/ }).click();
     await waitForOutcome(page);
@@ -55,7 +55,7 @@ async function runNarrative(run) {
   } catch (err) {
     return summarize("Narrative Text", run, startedAt, "", err instanceof Error ? err.message : String(err));
   } finally {
-    await page.close();
+    await page.close({ runBeforeUnload: false });
   }
 }
 
@@ -63,22 +63,32 @@ async function runFile(filename, inputIndex, caseName) {
   const page = await browser.newPage();
   const startedAt = Date.now();
   try {
-    await page.goto(`${radarUrl}/import`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.goto(`${radarUrl}/import`, { waitUntil: "networkidle", timeout: 30_000 });
     await page.locator("input[type=file]").nth(inputIndex).setInputFiles(join(here, filename));
     await waitForOutcome(page);
     return summarize(caseName, null, startedAt, await page.locator("body").innerText());
   } catch (err) {
     return summarize(caseName, null, startedAt, "", err instanceof Error ? err.message : String(err));
   } finally {
-    await page.close();
+    await page.close({ runBeforeUnload: false });
   }
 }
 
 const results = [];
-for (let run = 1; run <= narrativeRuns; run += 1) results.push(await runNarrative(run));
-results.push(await runFile("unknown-en.xlsx", 0, "Unknown Excel"));
-results.push(await runFile("unknown-en.csv", 0, "Unknown CSV"));
-results.push(await runFile("unknown-image.png", 1, "Image"));
+for (let run = 1; run <= narrativeRuns; run += 1) {
+  const result = await runNarrative(run);
+  results.push(result);
+  console.error(`[smoke] ${JSON.stringify(result)}`);
+}
+for (const [filename, inputIndex, caseName] of [
+  ["unknown-en.xlsx", 0, "Unknown Excel"],
+  ["unknown-en.csv", 0, "Unknown CSV"],
+  ["unknown-image.png", 1, "Image"],
+]) {
+  const result = await runFile(filename, inputIndex, caseName);
+  results.push(result);
+  console.error(`[smoke] ${JSON.stringify(result)}`);
+}
 
 console.log(JSON.stringify({ radarUrl, waitMs, narrativeRuns, results }, null, 2));
 await browser.close();
