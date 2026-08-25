@@ -77,8 +77,8 @@ Agent Import never writes Radar DB. `confirmImport` remains the explicit human-c
 
 ## Regression checks
 
-- Radar: `npm run typecheck`, `npm test`, and `npm run build` (including PGlite runtime asset copy) are required and recorded in the handoff.
-- Platform: contracts and full existing Platform test suite are run on `fix/agent-import-recovery`; the only Platform files in this branch are the structural opaque-data validation fix and its contract regression test.
+- Radar: `npm run typecheck` passed; `npm test` passed **235/235**; `npm run build` passed and verified `pglite.data`, `pglite.wasm`, and `initdb.wasm` in the production output.
+- Platform: `npm test` passed **161/161** on `fix/agent-import-recovery`; the only Platform files in this branch are the structural opaque-data validation fix and its contract regression test.
 - No Part, Company, Market Source, Firecrawl, AnySearch, ICNet, Mouser, Plugin, or new database schema changes are included.
 
 Machine-readable case results, model routes, mappings, tool calls, source-key state, and production-page observations are in `results.json`.

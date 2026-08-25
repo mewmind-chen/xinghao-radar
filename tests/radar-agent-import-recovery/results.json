@@ -187,5 +187,11 @@
     "input": ["TPS54560DDAR", "STM32F103C8T6"],
     "candidateValuesPreserved": true,
     "normalization": "NFKC + trim; uppercase is only a lookup-key operation"
+  },
+  "verification": {
+    "radarTypecheck": "PASS",
+    "radarTests": "235/235 PASS",
+    "radarBuild": "PASS; PGlite data/wasm/initdb assets verified",
+    "platformTests": "161/161 PASS"
   }
 }
