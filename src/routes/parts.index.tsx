@@ -76,9 +76,9 @@ function PartsPage() {
               to="/parts/$partId"
               params={{ partId: p.id }}
               search={{ from: "parts", q: q || undefined, filter }}
-              className="flex flex-col gap-1 px-4 py-3 hover:bg-secondary/50 md:flex-row md:items-center md:justify-between"
+              className="flex items-start justify-between gap-3 px-4 py-3 hover:bg-secondary/50 md:items-center"
             >
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                 <Mpn value={p.mpn} />
                 {p.brandCode && <span className="text-xs text-muted-foreground">{p.brandCode}</span>}
                 {p.category && <span className="text-xs text-muted-foreground">{p.category}</span>}
@@ -89,7 +89,11 @@ function PartsPage() {
                 )}
                 <HitBadges flags={p.flags} />
               </div>
-              <div className="font-mono text-xs text-muted-foreground tabular">{p.stockLine}</div>
+              {p.onHandLabel && (
+                <div className="shrink-0 text-right font-mono text-sm font-medium text-foreground tabular">
+                  {p.onHandLabel}
+                </div>
+              )}
             </Link>
           </li>
         ))}

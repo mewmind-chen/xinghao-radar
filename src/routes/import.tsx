@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Camera, ClipboardPaste, FileSpreadsheet, Image, Mic } from "lucide-react";
 import { confirmImport, parseImport } from "@/lib/server/import";
 import { sampleImportText, parseQty, correctTradeText } from "@/lib/domain";
-import type { ImportKind, ImportRow, ImportSource } from "@/lib/types";
+import type { CostTax, Currency, ImportKind, ImportRow, ImportSource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -29,6 +29,9 @@ function ImportPage() {
   const [aiAvailable, setAiAvailable] = useState(true);
   const [channel, setChannel] = useState("");
   const [customer, setCustomer] = useState("");
+  const [supplier, setSupplier] = useState("");
+  const [currency, setCurrency] = useState<Currency>("CNY");
+  const [tax, setTax] = useState<CostTax>("exclusive");
   const [warehouseId, setWarehouseId] = useState("");
   const [channels, setChannels] = useState<{ id: string; name: string }[]>([]);
   const [customers, setCustomers] = useState<{ id: string; name: string }[]>([]);
@@ -48,6 +51,10 @@ function ImportPage() {
   const albumRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    const preset = new URLSearchParams(window.location.search).get("kind");
+    if (preset === "stock" || preset === "transit" || preset === "offer" || preset === "inquiry" || preset === "mixed") {
+      setKind(preset);
+    }
     const draft = sessionStorage.getItem("import-draft");
     if (draft) {
       sessionStorage.removeItem("import-draft");
@@ -58,7 +65,14 @@ function ImportPage() {
   const parseMut = useMutation({
     mutationFn: (input: Parameters<typeof parseImport>[0]["data"]) => parseImport({ data: input }),
     onSuccess: (r) => {
-      setRows(r.rows);
+      const fallbackWarehouseCode = r.warehouses.find((w) => w.id === (warehouseId || r.warehouses[0]?.id))?.code ?? null;
+      setRows(r.rows.map((row) => kind === "stock" ? {
+        ...row,
+        warehouse: row.warehouse ?? fallbackWarehouseCode,
+        channel: (row.channel ?? supplier) || null,
+        costCurrency: row.costAmount == null ? row.costCurrency : row.costCurrency ?? currency,
+        costTax: row.costAmount == null ? row.costTax : row.costTax ?? tax,
+      } : row));
       setUsedAi(r.usedAi);
       setExtractOrigin(r.extractOrigin ?? null);
       setExtractState(r.extractState ?? null);
@@ -95,6 +109,9 @@ function ImportPage() {
           defaultChannel: channel || undefined,
           defaultCustomer: customer || undefined,
           defaultWarehouseId: warehouseId || undefined,
+          defaultSupplier: supplier || undefined,
+          defaultCurrency: currency,
+          defaultTax: tax,
           rows,
         },
       });
@@ -124,6 +141,10 @@ function ImportPage() {
     parseMut.mutate({
       kind,
       sourceType: src,
+      defaultWarehouseId: warehouseId || undefined,
+      defaultSupplier: supplier || undefined,
+      defaultCurrency: currency,
+      defaultTax: tax,
       filename: file.name,
       fileBase64: b64,
       mime: file.type,
@@ -147,6 +168,24 @@ function ImportPage() {
     rec.start();
     toast.message("正在听…");
   }
+
+  function stockRowError(row: ImportRow): string | null {
+    if (kind !== "stock" && row.kind !== "stock") return null;
+    if (!row.mpn.trim()) return "型号为空";
+    if (row.qty == null || !Number.isInteger(row.qty) || row.qty <= 0) return "数量必须为正整数";
+    if (!row.warehouse && !warehouseId) return "缺少仓库";
+    if (row.costAmount == null) return row.costCurrency || row.costTax ? "成本为空时不能保留币种或税别" : null;
+    if (!Number.isFinite(row.costAmount) || row.costAmount < 0) return "成本无效";
+    const rowCurrency = row.costCurrency ?? currency;
+    const rowTax = row.costTax ?? tax;
+    if (!rowCurrency) return "缺少币种";
+    if (rowCurrency === "USD" && rowTax !== "none") return "美元税别必须为无";
+    if (rowCurrency === "CNY" && rowTax !== "exclusive" && rowTax !== "inclusive") return "人民币请选择含或未";
+    return null;
+  }
+
+  const selectedCount = rows?.filter((r) => r.selected).length ?? 0;
+  const blockingCount = rows?.filter((r) => r.selected && stockRowError(r)).length ?? 0;
 
   return (
     <div className="mx-auto max-w-5xl space-y-4">
@@ -215,15 +254,46 @@ function ImportPage() {
             </div>
           )}
           {(kind === "stock" || kind === "mixed") && (
-            <div>
-              <Label>默认仓库</Label>
-              <NativeSelect value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
-                {warehouses.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.code}
-                  </option>
-                ))}
-              </NativeSelect>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <Label>默认仓库</Label>
+                <NativeSelect value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
+                  <option value="">请选择</option>
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.code}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </div>
+              <div>
+                <Label>默认供应商</Label>
+                <Input list="imp-supplier" value={supplier} onChange={(e) => setSupplier(e.target.value)} />
+                <datalist id="imp-supplier">
+                  {channels.map((c) => <option key={c.id} value={c.name} />)}
+                </datalist>
+              </div>
+              <div>
+                <Label>默认币种</Label>
+                <ChoiceButtons
+                  value={currency}
+                  options={[{ value: "USD", label: "USD" }, { value: "CNY", label: "CNY" }]}
+                  onChange={(v) => {
+                    const next = v as Currency;
+                    setCurrency(next);
+                    if (next === "USD") setTax("none");
+                  }}
+                />
+              </div>
+              <div>
+                <Label>人民币税别</Label>
+                <ChoiceButtons
+                  value={currency === "USD" ? "none" : tax}
+                  options={[{ value: "none", label: "无" }, { value: "exclusive", label: "未" }, { value: "inclusive", label: "含" }]}
+                  disabled={currency === "USD"}
+                  onChange={(v) => setTax(v as CostTax)}
+                />
+              </div>
             </div>
           )}
         </div>
@@ -238,7 +308,15 @@ function ImportPage() {
             disabled={parseMut.isPending || !text.trim()}
             onClick={() => {
               setSourceType("text");
-              parseMut.mutate({ kind, sourceType: "text", text });
+              parseMut.mutate({
+                kind,
+                sourceType: "text",
+                text,
+                defaultWarehouseId: warehouseId || undefined,
+                defaultSupplier: supplier || undefined,
+                defaultCurrency: currency,
+                defaultTax: tax,
+              });
             }}
           >
             <ClipboardPaste className="size-4" />
@@ -333,20 +411,21 @@ function ImportPage() {
                       ? " · AI 识别（Platform）"
                       : ""}
             </h2>
-            <Button disabled={confirmMut.isPending} onClick={() => confirmMut.mutate()}>
-              确认写入
+            <Button disabled={confirmMut.isPending || selectedCount === 0 || blockingCount > 0} onClick={() => confirmMut.mutate()}>
+              确认写入 {selectedCount} 行
             </Button>
           </div>
           <p className="mb-3 text-xs text-muted-foreground">
             型号请人工核对。疑似重复已勾掉，若确为新事件可重新勾选。
             {extractMessage ? ` ${extractMessage}` : ""}
+            {blockingCount > 0 ? ` 有 ${blockingCount} 行存在阻断错误，修正后才能确认。` : ""}
           </p>
-          <ul className="space-y-2">
+          <ul className="min-w-0 space-y-2">
             {rows.map((row, idx) => (
               <li
                 key={row.id}
                 className={cn(
-                  "rounded-lg border border-border px-3 py-2",
+                  "min-w-0 overflow-hidden rounded-lg border border-border px-3 py-2",
                   row.duplicate && "border-warn/40 bg-warn/5",
                 )}
               >
@@ -363,17 +442,28 @@ function ImportPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <Mpn value={row.mpn} />
-                      <span className="text-[11px] text-muted-foreground">{labelKind(row.kind)}</span>
+                      <span className="text-[11px] text-muted-foreground">{labelKind(kind === "stock" ? "stock" : row.kind)}</span>
                       {row.duplicate && (
                         <span className="text-[11px] text-warn">{row.duplicateReason}</span>
                       )}
                     </div>
-                    <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
-                      <Mini label="数量" value={row.qtyRaw ?? (row.qty != null ? String(row.qty) : "")} onChange={(v) => patch(idx, { qtyRaw: v, qty: parseQty(v) })} />
-                      <Mini label="DC" value={row.dateCode ?? ""} onChange={(v) => patch(idx, { dateCode: v })} />
-                      <Mini label="渠道" value={row.channel ?? ""} onChange={(v) => patch(idx, { channel: v })} />
-                      <Mini label="客户" value={row.customer ?? ""} onChange={(v) => patch(idx, { customer: v })} />
-                    </div>
+                    {(kind === "stock" || row.kind === "stock") ? (
+                      <div className="mt-2 grid min-w-0 grid-cols-2 gap-2 md:grid-cols-6">
+                        <Mini label="数量" value={row.qtyRaw ?? (row.qty != null ? String(row.qty) : "")} onChange={(v) => patch(idx, { qtyRaw: v, qty: parseQty(v) })} />
+                        <Mini label="DC" value={row.dateCode ?? ""} onChange={(v) => patch(idx, { dateCode: v })} />
+                        <Mini label="供应商" value={row.channel ?? ""} onChange={(v) => patch(idx, { channel: v })} />
+                        <label className="block"><span className="text-[10px] text-muted-foreground">仓库</span><NativeSelect className="mt-0.5 h-8 w-full text-xs" value={row.warehouse ?? ""} onChange={(e) => patch(idx, { warehouse: e.target.value || null })}><option value="">默认仓库</option>{warehouses.map((w) => <option key={w.id} value={w.code}>{w.code}</option>)}</NativeSelect></label>
+                        <Mini label="成本金额" value={row.costAmount == null ? "" : String(row.costAmount)} onChange={(v) => patch(idx, { costAmount: v.trim() === "" ? null : Number(v) })} />
+                        <label className="block min-w-0"><span className="text-[10px] text-muted-foreground">币种 / 税</span><div className="mt-0.5 grid min-w-0 grid-cols-2 gap-1"><NativeSelect className="h-8 min-w-0 px-1 text-xs" value={row.costCurrency ?? ""} onChange={(e) => patch(idx, { costCurrency: (e.target.value || null) as Currency | null, costTax: e.target.value === "USD" ? "none" : row.costTax })}><option value="">—</option><option value="USD">USD</option><option value="CNY">CNY</option></NativeSelect><NativeSelect className="h-8 min-w-0 px-1 text-xs" value={row.costCurrency === "USD" ? "none" : row.costTax ?? ""} disabled={row.costCurrency === "USD"} onChange={(e) => patch(idx, { costTax: (e.target.value || null) as CostTax | null })}><option value="">—</option><option value="none">无</option><option value="exclusive">未</option><option value="inclusive">含</option></NativeSelect></div></label>
+                      </div>
+                    ) : (
+                      <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
+                        <Mini label="数量" value={row.qtyRaw ?? (row.qty != null ? String(row.qty) : "")} onChange={(v) => patch(idx, { qtyRaw: v, qty: parseQty(v) })} />
+                        <Mini label="DC" value={row.dateCode ?? ""} onChange={(v) => patch(idx, { dateCode: v })} />
+                        <Mini label="渠道" value={row.channel ?? ""} onChange={(v) => patch(idx, { channel: v })} />
+                        <Mini label="客户" value={row.customer ?? ""} onChange={(v) => patch(idx, { customer: v })} />
+                      </div>
+                    )}
                     {row.note && <p className="mt-1 truncate text-[11px] text-muted-foreground">{row.note}</p>}
                   </div>
                 </div>
@@ -408,6 +498,40 @@ function Mini({
         className="mt-0.5 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
       />
     </label>
+  );
+}
+
+function ChoiceButtons({
+  value,
+  options,
+  onChange,
+  disabled = false,
+  compact = false,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <div className={cn("flex min-w-0 max-w-full rounded-md border border-input bg-background p-0.5", disabled && "opacity-50")}>
+      {options.map((option) => (
+        <button
+          key={option.value || "empty"}
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange(option.value)}
+          className={cn(
+            "min-h-8 min-w-0 flex-1 truncate rounded px-2 text-xs text-muted-foreground",
+            compact && "min-w-0 px-0.5 text-[10px]",
+            value === option.value && "bg-secondary font-medium text-foreground shadow-sm",
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
   );
 }
 

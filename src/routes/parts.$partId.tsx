@@ -7,11 +7,12 @@ import { updatePartIdentity } from "@/lib/server/parts";
 import { listStock } from "@/lib/server/stock";
 import { receiveTransit, stockAdjust, stockMeta, stockOutbound, stockTransfer } from "@/lib/server/stock";
 import { setOfferValid, setInquiryValid, toggleWatch } from "@/lib/server/market";
-import { analyzePartMpn, getPartAnalysis, getPartReview, submitPartReview } from "@/lib/server/knowledge";
+import { analyzePartMpn, getPartAnalysis } from "@/lib/server/knowledge";
 import type { PartKnowledgeAnalysis } from "@/lib/server/knowledge";
 import {
   formatCost,
   formatEtaLabel,
+  formatInventoryQty,
   formatMd,
   formatMovementLine,
   formatOfferLine,
@@ -21,19 +22,18 @@ import {
   parseQty,
 } from "@/lib/domain";
 import { HitBadges } from "@/components/hit-badges";
-import { Mpn } from "@/components/mpn";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -168,37 +168,6 @@ function PartDetail() {
     staleTime: 60_000,
   });
 
-  // 人工决定（接受/拒绝/修正）。Radar 持久化最终动作，平台不写业务决定。
-  const reviewQuery = useQuery({
-    queryKey: ["part-review", d?.part.mpn],
-    queryFn: () => getPartReview({ data: { mpn: d?.part.mpn ?? "" } }),
-    enabled: Boolean(d?.part.mpn),
-    staleTime: 30_000,
-  });
-  const [reviewNote, setReviewNote] = useState("");
-  const [correctedJson, setCorrectedJson] = useState("");
-  const reviewMut = useMutation({
-    mutationFn: (decision: "accept" | "reject" | "corrected") =>
-      submitPartReview({
-        data: {
-          mpn: d?.part.mpn ?? "",
-          decision,
-          note: reviewNote.trim() || undefined,
-          correctedJson: decision === "corrected" && correctedJson.trim() ? correctedJson.trim() : undefined,
-        },
-      }),
-    onSuccess: (r) => {
-      qc.invalidateQueries({ queryKey: ["part-review"] });
-      if (r.ok) {
-        setReviewNote("");
-        setCorrectedJson("");
-        toast.success("人工决定已保存（业务系统持有）");
-      } else {
-        toast.error(r.error || "保存决定失败");
-      }
-    },
-  });
-
   if (q.isLoading) {
     return (
       <div className="mx-auto max-w-4xl space-y-3">
@@ -217,34 +186,6 @@ function PartDetail() {
   const validInq = d.inquiries.filter((i) => i.isValid);
   const histInq = d.inquiries.filter((i) => !i.isValid);
 
-  const timeline = [
-    ...d.offers.map((o) => ({
-      t: o.offeredAt,
-      key: "o" + o.id,
-      node: (
-        <span>
-          渠道 {o.channelName} 推 {formatOfferLine(o)}
-          {!o.isValid && <span className="ml-2 text-muted-foreground">无效</span>}
-        </span>
-      ),
-    })),
-    ...d.inquiries.map((i) => ({
-      t: i.inquiredAt,
-      key: "i" + i.id,
-      node: (
-        <span>
-          客户 {i.customerName} 询 {i.qty != null ? formatQty(i.qty) : "—"}
-          {!i.isValid && <span className="ml-2 text-muted-foreground">无效</span>}
-        </span>
-      ),
-    })),
-    ...d.movements.map((m) => ({
-      t: m.happenedAt,
-      key: "m" + m.id,
-      node: <span className="font-mono tabular">{formatMovementLine(m)}</span>,
-    })),
-  ].sort((a, b) => (a.t < b.t ? 1 : -1));
-
   return (
     <div className="mx-auto max-w-4xl space-y-5">
       <Link to="/parts" className="inline-flex items-center gap-1 text-sm text-muted-foreground">
@@ -253,35 +194,35 @@ function PartDetail() {
       </Link>
 
       <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-        <Link
-          to="/parts/$partId"
-          params={{ partId: ctxPrev?.id ?? "" }}
-          search={ctx}
-          title={ctxPrev?.mpn}
-          className={cn(
-            "shrink-0 rounded-md border border-border px-2 py-1",
-            ctxPrev ? "hover:bg-secondary hover:text-foreground" : "pointer-events-none opacity-40",
-          )}
-          aria-disabled={!ctxPrev}
-        >
-          ← 上一个
-        </Link>
+        {ctxPrev ? (
+          <Link
+            to="/parts/$partId"
+            params={{ partId: ctxPrev.id }}
+            search={ctx}
+            title={ctxPrev.mpn}
+            className="shrink-0 rounded-md border border-border px-2 py-1 hover:bg-secondary hover:text-foreground"
+          >
+            ← 上一个
+          </Link>
+        ) : (
+          <span className="shrink-0 rounded-md border border-border px-2 py-1 opacity-40">← 上一个</span>
+        )}
         <span className="tabular">
           {ctxList.data ? (ctxIdx >= 0 ? `${ctxIdx + 1} / ${ctxList.data.length}` : "—") : "…"}
         </span>
-        <Link
-          to="/parts/$partId"
-          params={{ partId: ctxNext?.id ?? "" }}
-          search={ctx}
-          title={ctxNext?.mpn}
-          className={cn(
-            "shrink-0 rounded-md border border-border px-2 py-1",
-            ctxNext ? "hover:bg-secondary hover:text-foreground" : "pointer-events-none opacity-40",
-          )}
-          aria-disabled={!ctxNext}
-        >
-          下一个 →
-        </Link>
+        {ctxNext ? (
+          <Link
+            to="/parts/$partId"
+            params={{ partId: ctxNext.id }}
+            search={ctx}
+            title={ctxNext.mpn}
+            className="shrink-0 rounded-md border border-border px-2 py-1 hover:bg-secondary hover:text-foreground"
+          >
+            下一个 →
+          </Link>
+        ) : (
+          <span className="shrink-0 rounded-md border border-border px-2 py-1 opacity-40">下一个 →</span>
+        )}
       </div>
       <header className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -307,7 +248,7 @@ function PartDetail() {
               title="修正完整型号/品牌（录入错误时）"
             >
               <PenLine className="size-3.5" />
-              修正
+              型号修正
             </Button>
             <Button
               variant={d.watched ? "hit" : "outline"}
@@ -324,17 +265,7 @@ function PartDetail() {
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-medium">我的库存</h2>
-          <div className="flex gap-1">
-            <Button size="sm" variant="outline" onClick={() => setOp("out")}>
-              出
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setOp("move")}>
-              调
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setOp("adj")}>
-              修
-            </Button>
-          </div>
+          <span className="text-xs text-muted-foreground">请在具体批次上操作</span>
         </div>
         {onHandLots.length === 0 && <p className="text-sm text-muted-foreground">无在库。</p>}
         <ul className="space-y-2">
@@ -342,7 +273,12 @@ function PartDetail() {
             <li key={l.id} className="rounded-lg bg-secondary/60 px-3 py-2">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <span className="font-medium">{l.warehouseCode}</span>
-                <span className="font-mono tabular">{formatQty(l.qtyRemaining)}</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono tabular">{formatInventoryQty(l.qtyRemaining)}</span>
+                  <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("out"); }}>出库</Button>
+                  <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("move"); }}>调拨</Button>
+                  <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("adj"); }}>修正</Button>
+                </div>
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 {[
@@ -367,7 +303,7 @@ function PartDetail() {
                 <li key={l.id} className="rounded-lg bg-warn/10 px-3 py-2">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <span>
-                      途 {formatQty(l.qtyRemaining)}
+                      途 {formatInventoryQty(l.qtyRemaining)}
                       {l.etaDate || l.etaText
                         ? ` · ${formatEtaLabel({ etaDate: l.etaDate, etaText: l.etaText, precision: l.etaPrecision })}`
                         : ""}
@@ -517,20 +453,6 @@ function PartDetail() {
       </section>
 
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
-        <h2 className="mb-3 text-sm font-medium">型号动态</h2>
-        <ul className="space-y-2 text-sm">
-          {timeline.slice(0, 40).map((ev) => (
-            <li key={ev.key} className="flex gap-3">
-              <span className="w-14 shrink-0 whitespace-nowrap font-mono text-xs text-muted-foreground tabular">
-                {formatMd(ev.t)}
-              </span>
-              <span className="min-w-0">{ev.node}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <div className="mb-2 flex items-center justify-between gap-2">
           <h2 className="text-sm font-medium">产品知识</h2>
           <Button
@@ -570,66 +492,6 @@ function PartDetail() {
           analysis={analyzeMut.data}
           loading={analyzeMut.isPending}
         />
-        {reviewQuery.data?.decision && (
-          <p className="mt-2 rounded-lg bg-secondary/40 px-3 py-2 text-[11px] text-muted-foreground">
-            人工决定：
-            {reviewQuery.data.decision === "accept"
-              ? "已接受"
-              : reviewQuery.data.decision === "reject"
-                ? "已拒绝"
-                : "已修正"}
-            {reviewQuery.data.reviewedAt
-              ? ` · ${new Date(reviewQuery.data.reviewedAt).toLocaleString("zh-CN", { hour12: false })}`
-              : ""}
-            {reviewQuery.data.note ? ` · ${reviewQuery.data.note}` : ""}
-          </p>
-        )}
-        <div className="mt-2 space-y-2">
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => reviewMut.mutate("accept")}
-              disabled={reviewMut.isPending || !d?.part.mpn}
-            >
-              接受此分析
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => reviewMut.mutate("reject")}
-              disabled={reviewMut.isPending || !d?.part.mpn}
-            >
-              拒绝此分析
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                if (!correctedJson.trim()) {
-                  toast.error("修正需要填写修正后的 JSON");
-                  return;
-                }
-                reviewMut.mutate("corrected");
-              }}
-              disabled={reviewMut.isPending || !d?.part.mpn}
-            >
-              提交修正
-            </Button>
-          </div>
-          <Textarea
-            value={correctedJson}
-            onChange={(e) => setCorrectedJson(e.target.value)}
-            placeholder="修正后的分析 JSON（可选；提交修正时必填）"
-            className="min-h-[64px] font-mono text-xs"
-          />
-          <Textarea
-            value={reviewNote}
-            onChange={(e) => setReviewNote(e.target.value)}
-            placeholder="备注（可选）"
-            className="min-h-[40px] text-xs"
-          />
-        </div>
       </section>
 
       <CorrectPartDialog
@@ -649,9 +511,9 @@ function PartDetail() {
           setOp(null);
           setLotId(null);
         }}
-        partId={partId}
         warehouses={meta.data?.warehouses ?? []}
         lotId={lotId}
+        onHandQty={onHandLots.find((l) => l.id === lotId)?.qtyRemaining}
         transitQty={transitLots.find((l) => l.id === lotId)?.qtyRemaining}
         onDone={() => {
           qc.invalidateQueries();
@@ -821,6 +683,17 @@ function CorrectPartDialog({
   const [pkg, setPkg] = useState("");
   const [fetched, setFetched] = useState(false);
 
+  useEffect(() => {
+    if (!open) return;
+    setMpn("");
+    setBrand("");
+    setCategory("");
+    setPkg("");
+    setFetched(false);
+    const resetRestoredValue = window.setTimeout(() => setMpn(""), 50);
+    return () => window.clearTimeout(resetRestoredValue);
+  }, [open, current.mpn]);
+
   const analyzeMut = useMutation({
     mutationFn: () => analyzePartMpn({ data: { mpn: mpn.trim() } }),
     onSuccess: (r) => {
@@ -828,13 +701,13 @@ function CorrectPartDialog({
         toast.error(r.error ?? "分析失败");
         return;
       }
-      // 自动带入立创标准型号/品牌/封装，供人工删减后保存
+      // 只做资料带入，不保存；最终仍需人工确认后点击保存。
       if (r.resolvedMpn) setMpn(r.resolvedMpn);
       if (r.resolvedBrand) setBrand(r.resolvedBrand.split(/[（(]/)[0].trim());
       if (r.resolvedCategory) setCategory(r.resolvedCategory);
       if (r.resolvedPackage) setPkg(r.resolvedPackage);
       setFetched(true);
-      toast.success("已带入立创标准资料，可删减尾缀后保存");
+      toast.success("已带入资料，请人工检查后保存");
     },
   });
 
@@ -873,7 +746,9 @@ function CorrectPartDialog({
               <Input
                 value={mpn}
                 onChange={(e) => setMpn(e.target.value)}
-                placeholder="如 AD9631ARZ-REEL7"
+                placeholder="输入待查询的完整型号"
+                name="correctedMpn"
+                autoComplete="new-password"
                 className="font-mono"
               />
               <Button
@@ -882,16 +757,13 @@ function CorrectPartDialog({
                 disabled={!mpn.trim() || analyzeMut.isPending}
                 onClick={() => analyzeMut.mutate()}
               >
-                {analyzeMut.isPending ? "查询中…" : "分析带入"}
+                {analyzeMut.isPending ? "查询中…" : "一键填写"}
               </Button>
             </div>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              点击「分析带入」自动查立创标准型号；包装尾缀如 -REEL7 可直接删掉。
-            </p>
           </div>
           {fetched && (
             <p className="rounded-md bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-700">
-              已带入立创标准资料，改为标准型号后保存
+              已带入资料，仍可人工检查后保存
             </p>
           )}
           <div>
@@ -920,37 +792,41 @@ function CorrectPartDialog({
 function StockOpDialog({
   open,
   onClose,
-  partId,
   warehouses,
   lotId,
+  onHandQty,
   transitQty,
   onDone,
 }: {
   open: null | "out" | "move" | "adj" | "recv";
   onClose: () => void;
-  partId: string;
   warehouses: { id: string; code: string; isActive: boolean }[];
   lotId: string | null;
+  onHandQty?: number;
   transitQty?: number;
   onDone: () => void;
 }) {
   const [wh, setWh] = useState(warehouses[0]?.id ?? "");
   const [wh2, setWh2] = useState(warehouses[1]?.id ?? warehouses[0]?.id ?? "");
   const [qty, setQty] = useState("");
+  const [countedQty, setCountedQty] = useState("");
   const title =
     open === "out" ? "出库" : open === "move" ? "调拨" : open === "adj" ? "修正" : open === "recv" ? "在途转入库" : "";
 
   async function submit() {
     try {
       const n = parseQty(qty) ?? Number(qty);
-      if (!Number.isFinite(n) || n === 0) throw new Error("数量无效");
-      if (open === "out") await stockOutbound({ data: { partId, warehouseId: wh, qty: n } });
+      if (open === "adj") {
+        const actual = Number(countedQty);
+        if (!Number.isInteger(actual) || actual < 0) throw new Error("盘点数量必须是大于等于 0 的整数");
+        await stockAdjust({ data: { lotId: lotId ?? "", countedQty: actual } });
+      }
+      if (open !== "adj" && (!Number.isFinite(n) || n <= 0)) throw new Error("数量无效");
+      if (open === "out" && lotId) await stockOutbound({ data: { lotId, qty: n } });
       if (open === "move")
         await stockTransfer({
-          data: { partId, fromWarehouseId: wh, toWarehouseId: wh2, qty: n },
+          data: { lotId: lotId ?? "", toWarehouseId: wh2, qty: n },
         });
-      if (open === "adj")
-        await stockAdjust({ data: { partId, warehouseId: wh, qtyDelta: n } });
       if (open === "recv" && lotId)
         await receiveTransit({ data: { lotId, warehouseId: wh, qty: n } });
       toast.success("已记录流水");
@@ -961,8 +837,8 @@ function StockOpDialog({
   }
 
   return (
-    <Dialog open={Boolean(open)} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent>
+    <Sheet open={Boolean(open)} onOpenChange={(v) => !v && onClose()}>
+      <SheetContent side="bottom" className="max-h-[86vh] overflow-y-auto md:inset-y-0 md:right-0 md:left-auto md:bottom-auto md:h-full md:max-h-none md:w-[440px] md:rounded-none md:p-6">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
@@ -1002,17 +878,18 @@ function StockOpDialog({
                 ))}
               </NativeSelect>
               <p className="mt-1 text-xs text-muted-foreground">
-                剩余在途 {transitQty != null ? formatQty(transitQty) : "—"} · 途→仓不增加总敞口
+                剩余在途 {transitQty != null ? formatInventoryQty(transitQty) : "—"} · 途→仓不增加总敞口
               </p>
             </div>
           )}
           <div>
-            <Label>{open === "adj" ? "调整数量（可负）" : "数量"}</Label>
-            <Input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="1000 或 1K" />
+            <Label>{open === "adj" ? "盘点数量" : "数量"}</Label>
+            <Input value={open === "adj" ? countedQty : qty} onChange={(e) => open === "adj" ? setCountedQty(e.target.value) : setQty(e.target.value)} placeholder={open === "adj" ? String(onHandQty ?? 0) : "1000 或 1K"} />
+            {open === "adj" && <p className="mt-1 text-xs text-muted-foreground">当前 {formatInventoryQty(onHandQty ?? 0)}，输入盘点后的实际数量。</p>}
           </div>
           <Button onClick={submit}>确认</Button>
         </div>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }

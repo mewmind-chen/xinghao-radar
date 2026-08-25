@@ -30,6 +30,14 @@ export async function sqlClient(): Promise<Sql> {
   return getSql();
 }
 
+export async function withTransaction<T>(
+  sql: Sql,
+  fn: (tx: Sql) => Promise<T>,
+): Promise<T> {
+  if (!sql.transaction) throw new Error("数据库事务不可用");
+  return sql.transaction(fn);
+}
+
 export async function logOp(
   sql: Sql,
   action: string,

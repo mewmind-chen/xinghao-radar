@@ -70,6 +70,12 @@ export function formatQty(n: number | null | undefined): string {
   return `${sign}${abs.toLocaleString("zh-CN")}`;
 }
 
+/** 库存界面统一的业务数量文案；大数仍使用 K/M 紧凑显示，小数不展示内部单位。 */
+export function formatInventoryQty(n: number | null | undefined): string {
+  const value = formatQty(n);
+  return value === "—" || /[KMG]$/i.test(value) ? value : `${value}片`;
+}
+
 export function parseQty(raw: string | null | undefined): number | null {
   if (raw == null) return null;
   let s = raw.normalize("NFKC").trim().replace(/,/g, "").replace(/\s+/g, "");
@@ -102,11 +108,23 @@ export function formatCost(
   const n = typeof amount === "string" ? Number(amount) : amount;
   if (!Number.isFinite(n)) return "";
   const body = trimNum(n);
-  if (currency === "USD") return `$${body}`;
-  if (currency === "CNY" && tax === "exclusive") return `¥${body}⁻`;
-  if (currency === "CNY" && tax === "inclusive") return `¥${body}⁺`;
+  if (currency === "USD") return `$${n.toFixed(2)}`;
+  if (currency === "CNY" && tax === "exclusive") return `¥${body}未`;
+  if (currency === "CNY" && tax === "inclusive") return `¥${body}含`;
   if (currency === "CNY") return `¥${body}`;
   return body;
+}
+
+/** 手机列表只保留两位年份和“+”，详情仍显示原始 DC。 */
+export function formatStockDateCode(dateCode: string | null | undefined): string {
+  if (!dateCode) return "";
+  const normalized = dateCode.trim();
+  const match = normalized.match(/^(\d{2})\d{2}\+?$/);
+  return match ? `${match[1]}+` : normalized;
+}
+
+export function movementAction(type: string): string {
+  return MOVEMENT_LABEL[type] ?? "流水";
 }
 
 export function parseCost(raw: string | null | undefined): {
@@ -155,7 +173,7 @@ export function parseLeadTime(
   if (/现货|当天|即有|stock/i.test(s)) {
     return { etaDate: isoDate(now), precision: "stock", original };
   }
-  const md = s.match(/(?:^|[^\d])(\d{1,2})[\/.\-月](\d{1,2})日?/);
+  const md = s.match(/(?:^|[^\d])(\d{1,2})[/.\-月](\d{1,2})日?/);
   if (md) {
     const month = Number(md[1]);
     const day = Number(md[2]);
@@ -399,22 +417,28 @@ export function formatMovementLine(m: {
   happenedAt: string;
   fromWarehouseCode?: string | null;
   toWarehouseCode?: string | null;
+  note?: string | null;
 }): string {
   const d = formatMd(m.happenedAt);
-  const q = formatQty(m.qty);
+  const q = formatInventoryQty(m.qty);
   switch (m.type) {
     case "in":
-      return `${d} +${q} ${m.toWarehouseCode ?? ""}`.trim();
+      return `${d} 入 +${q}`;
     case "out":
-      return `${d} -${q} ${m.fromWarehouseCode ?? ""}`.trim();
+      return `${d} 出 −${q}`;
     case "transfer":
-      return `${d} 调 ${q} ${m.fromWarehouseCode ?? ""}→${m.toWarehouseCode ?? ""}`;
+      return `${d} 调 ${q} ${m.fromWarehouseCode ?? "?"}→${m.toWarehouseCode ?? "?"}`;
     case "adjust":
-      return `${d} 修 ${m.fromWarehouseCode ? "-" : "+"}${q} ${m.fromWarehouseCode ?? m.toWarehouseCode ?? ""}`.trim();
+      {
+        const counted = m.note?.match(/修\s*(\d+)\s*→\s*(\d+)/);
+        return counted
+          ? `${d} 修 ${formatInventoryQty(Number(counted[1]))}→${formatInventoryQty(Number(counted[2]))}`
+          : `${d} 修 ${q}`;
+      }
     case "transit_open":
       return `${d} 途 +${q}`;
     case "transit_in":
-      return `${d} 途→${m.toWarehouseCode ?? ""} ${q}`;
+      return `${d} 途→${m.toWarehouseCode ?? "?"} ${q}`;
     default:
       return `${d} ${m.type} ${q}`;
   }
