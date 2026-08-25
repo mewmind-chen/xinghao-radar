@@ -135,12 +135,13 @@ export async function analyzePartMpnWithDependencies(
       const { platformPartToHqb } = await import("./knowledge-map");
       const mapped = mapHqbResponse(platformPartToHqb(flow.platform));
       if (mapped.ok) {
-        await persistAnalysis(mpn, mapped, deps.saveAnalysis);
-        return mapped;
+        const result = { ...mapped, analysisSource: "platform" as const };
+        await persistAnalysis(mpn, result, deps.saveAnalysis);
+        return result;
       }
       return mapped;
     }
-    const result = mapHqbResponse(flow.fallback);
+    const result = { ...mapHqbResponse(flow.fallback), analysisSource: "local_fallback" as const };
     if (result.ok) await persistAnalysis(mpn, result, deps.saveAnalysis);
     return result;
   } catch (err) {

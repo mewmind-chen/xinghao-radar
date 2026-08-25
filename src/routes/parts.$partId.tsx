@@ -555,6 +555,14 @@ function PartKnowledgePanel({
 
   return (
     <div className="mt-3 space-y-3">
+      {analysis.analysisSource === "local_fallback" && (
+        <div role="status" className="rounded-lg border border-amber-300/70 bg-amber-50 px-3 py-2 text-amber-950 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-100">
+          <p className="text-sm font-medium">本地降级结果</p>
+          <p className="mt-1 text-xs leading-5">
+            这是降级信息，不是 Platform Intelligence。已使用本地数据。事实、写库和最终决定仍由工作台与人工负责。
+          </p>
+        </div>
+      )}
       <div className="flex gap-3">
         {lcsc?.imageUrl ? (
           <a href={lcsc.url || "#"} target="_blank" rel="noreferrer" className="shrink-0">

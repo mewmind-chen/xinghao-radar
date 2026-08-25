@@ -16,6 +16,8 @@ export type KnowledgeReplacement = {
 export type PartKnowledgeAnalysis = {
   ok: boolean;
   error?: string;
+  /** Where the analysis was obtained; local fallback is not Platform Intelligence. */
+  analysisSource?: "platform" | "local_fallback";
   analyzedAt?: string;
   sourceUrl?: string;
   truncated?: boolean;
