@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520">
+  <rect width="1200" height="520" fill="#ffffff"/>
+  <text x="70" y="90" font-family="Arial, sans-serif" font-size="42" fill="#111111">Supplier quotation - redacted acceptance fixture</text>
+  <line x1="70" y1="125" x2="1130" y2="125" stroke="#333333" stroke-width="2"/>
+  <text x="80" y="205" font-family="Arial, sans-serif" font-size="36" fill="#111111">TPS54560DDAR   1000 PCS   TI   24+   ready stock</text>
+  <text x="80" y="285" font-family="Arial, sans-serif" font-size="36" fill="#111111">STM32F103C8T6   500 PCS   ST   no special lot</text>
+  <text x="80" y="410" font-family="Arial, sans-serif" font-size="28" fill="#555555">For import-agent recovery testing only. No customer data.</text>
+</svg>

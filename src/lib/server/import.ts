@@ -75,7 +75,10 @@ async function markDuplicates(sql: Awaited<ReturnType<typeof sqlClient>>, rows: 
           and coalesce(o.qty, -1) = coalesce(${row.qty}, -1)
           and coalesce(o.date_code,'') = coalesce(${row.dateCode ?? ""}, '')
           and o.is_tp = ${row.isTp}
-          and coalesce(o.price_amount, -1) = coalesce(${row.priceAmount ?? null}, -1)
+          -- price_amount is numeric; keep the NULL sentinel numeric as well.
+          -- Otherwise PGlite/Postgres infer the parameter as integer from -1
+          -- and reject valid decimal prices such as 1.32 during preview.
+          and coalesce(o.price_amount, -1::numeric) = coalesce(${row.priceAmount ?? null}::numeric, -1::numeric)
           and (${chName} = '' or ch.name = ${chName})
         limit 3
       `;
