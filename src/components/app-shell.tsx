@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -18,6 +18,7 @@ import { RedirectToSignIn, UserButton } from "@/lib/auth/gates";
 import { authEnabled } from "@/lib/auth/client";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { getCurrentAccess, exitIdentityCheck } from "@/lib/server/auth";
+import { IdentityCheckPill } from "@/components/identity-check-pill";
 
 /** 桌面侧栏：全部功能 */
 const NAV = [
@@ -54,11 +55,40 @@ export function AppShell({ children }: { children: ReactNode }) {
     staleTime: 2_000,
   });
   const [q, setQ] = useState("");
+  const [isMobileViewport, setIsMobileViewport] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches,
+  );
 
   const exitCheck = useMutation({
     mutationFn: () => exitIdentityCheck(),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["current-access"] }); void navigate({ to: "/users" }); },
   });
+  const { mutate: restoreMobileIdentity } = useMutation({
+    mutationFn: () => exitIdentityCheck(),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["current-access"] });
+    },
+  });
+  const mobileRecoveryAttempted = useRef(false);
+  const needsMobileIdentityRecovery = isMobileViewport && accessQuery.data?.isImpersonating === true;
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsMobileViewport(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!needsMobileIdentityRecovery) {
+      mobileRecoveryAttempted.current = false;
+      return;
+    }
+    if (mobileRecoveryAttempted.current) return;
+    mobileRecoveryAttempted.current = true;
+    restoreMobileIdentity();
+  }, [needsMobileIdentityRecovery, restoreMobileIdentity]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -86,6 +116,15 @@ export function AppShell({ children }: { children: ReactNode }) {
     return <main className="grid min-h-dvh place-items-center text-sm text-muted-foreground">正在检查登录状态…</main>;
   }
   if (authEnabled && !user) return <RedirectToSignIn />;
+  if (authEnabled && isMobileViewport && (accessQuery.isPending || needsMobileIdentityRecovery)) {
+    return (
+      <div className="min-h-dvh bg-background text-foreground">
+        <main className="grid min-h-dvh place-items-center px-6 text-center text-sm text-muted-foreground">
+          正在恢复账户权限…
+        </main>
+      </div>
+    );
+  }
 
   const permissions = accessQuery.data?.permissions ?? [];
   const canSee = (access: (typeof NAV)[number]["access"]) =>
@@ -147,7 +186,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               />
             </div>
           </form>
-          <div className="min-w-0"><UserButton role={accessQuery.data?.actorRole ?? null} /></div>
+          {accessQuery.data?.isImpersonating && (
+            <IdentityCheckPill
+              displayName={accessQuery.data.displayName}
+              exiting={exitCheck.isPending}
+              onExit={() => exitCheck.mutate()}
+            />
+          )}
+          <div className="shrink-0"><UserButton /></div>
           {/* 设置在右上角（不常用入口，移动端可见） */}
           {permissions.includes("settings.manage") && (
             <Link
@@ -159,12 +205,6 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Link>
           )}
         </header>
-        {accessQuery.data?.isImpersonating && (
-          <div className="hidden items-center justify-between gap-3 border-b border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 md:flex md:px-5">
-            <span>正在检查：{accessQuery.data.displayName}</span>
-            <button type="button" className="underline underline-offset-2" onClick={() => exitCheck.mutate()} disabled={exitCheck.isPending}>退出检查</button>
-          </div>
-        )}
         {authEnabled && accessQuery.data && !accessQuery.data.role && (
           <div className="mx-3 mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 md:mx-5">
             当前账号尚未配置业务角色，请联系老板；此账号不会读取或写入业务数据。

@@ -112,6 +112,9 @@ const LOCAL_DEV_ORIGINS: string[] = [
   "http://localhost:8085",
   "http://127.0.0.1:8085",
   "http://[::1]:8085",
+  "http://localhost:8086",
+  "http://127.0.0.1:8086",
+  "http://[::1]:8086",
 ];
 const baseURL = explicitBaseURL ?? {
   // Include loopback hosts so dynamic baseURL resolves for local email/password
@@ -217,7 +220,7 @@ export const auth = betterAuth({
   session: { cookieCache: { enabled: true, maxAge: 300 } },
 
   // Local email/password — toggled only via `./email-password` (not a plugin).
-  ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true } } : {}),
+  ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true, disableSignUp: true } } : {}),
 
   // `__Host-` prefixed cookies: the browser REFUSES any same-named cookie that
   // carries a `Domain` attribute, so a sibling `*.grok.me` app cannot "toss" a

@@ -3,14 +3,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import {
   assignLegacyPotential,
+  createAppUser,
   listAppUsers,
   listLegacyPotential,
   listPermissionGroups,
+  setUserPassword,
   startIdentityCheck,
   updateAppUser,
   updatePermissionGroup,
   type AppUserRow,
+  type CreateAppUserInput,
   type PermissionGroupRow,
+  type SetUserPasswordInput,
+  type UpdateAppUserInput,
 } from "@/lib/server/auth";
 import {
   APP_ROLES,
@@ -26,6 +31,9 @@ import {
 } from "@/lib/auth/roles";
 import { useAppAccess } from "@/lib/auth/use-app-access";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
@@ -37,17 +45,36 @@ function UsersPage() {
   const access = useAppAccess();
   const q = useQuery({ queryKey: ["app-users"], queryFn: () => listAppUsers() });
   const legacyQ = useQuery({ queryKey: ["legacy-potential"], queryFn: () => listLegacyPotential() });
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [manageUser, setManageUser] = useState<AppUserRow | null>(null);
   const [groupOpen, setGroupOpen] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState<PermissionGroupKey>("boss");
   const [draftPermissions, setDraftPermissions] = useState<Permission[]>([]);
   const isBoss = access.access?.role === "老板" && !access.access.isImpersonating;
 
-  const roleMut = useMutation({
-    mutationFn: (data: { userId: string; role: AppRole | null }) => updateAppUser({ data }),
+  const createMut = useMutation({
+    mutationFn: (data: CreateAppUserInput) => createAppUser({ data }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["app-users"] });
-      toast.success("角色已保存");
+      setCreateOpen(false);
+      toast.success("用户已创建");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+  const updateMut = useMutation({
+    mutationFn: (data: UpdateAppUserInput) => updateAppUser({ data }),
+    onSuccess: (user) => {
+      void qc.invalidateQueries({ queryKey: ["app-users"] });
+      setManageUser(user);
+      toast.success("用户资料已保存");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+  const passwordMut = useMutation({
+    mutationFn: (data: SetUserPasswordInput) => setUserPassword({ data }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["app-users"] });
+      toast.success("密码已修改，旧会话已失效");
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -103,11 +130,12 @@ function UsersPage() {
             用户只分配角色；同一角色的所有人自动使用同一套权限设置。
           </p>
         </div>
-        {isBoss && (
+        {isBoss && <div className="flex flex-wrap gap-2">
+          <Button onClick={() => setCreateOpen(true)}>新建用户</Button>
           <Button variant={groupOpen ? "default" : "outline"} onClick={() => setGroupOpen((open) => !open)}>
             {groupOpen ? "收起权限组" : "设置权限组"}
           </Button>
-        )}
+        </div>}
       </div>
 
       <div className="hidden overflow-hidden rounded-xl bg-card shadow-[var(--shadow-border)] lg:block">
@@ -125,11 +153,9 @@ function UsersPage() {
               <UserDesktopRow
                 key={user.userId}
                 user={user}
-                rolePending={roleMut.isPending}
-                busy={busyId === user.userId}
+                isCurrent={user.userId === access.access?.actorUserId}
                 checking={checkMut.isPending}
-                onRole={(role) => roleMut.mutate({ userId: user.userId, role })}
-                onToggleStatus={() => toggleStatus(user, setBusyId)}
+                onManage={() => setManageUser(user)}
                 onCheck={() => checkMut.mutate(user.userId)}
               />
             ))}
@@ -142,10 +168,8 @@ function UsersPage() {
           <UserMobileCard
             key={user.userId}
             user={user}
-            rolePending={roleMut.isPending}
-            busy={busyId === user.userId}
-            onRole={(role) => roleMut.mutate({ userId: user.userId, role })}
-            onToggleStatus={() => toggleStatus(user, setBusyId)}
+            isCurrent={user.userId === access.access?.actorUserId}
+            onManage={() => setManageUser(user)}
           />
         ))}
       </div>
@@ -183,59 +207,50 @@ function UsersPage() {
           </div>
         </section>
       )}
+      {isBoss && (
+        <UserCreateDialog open={createOpen} saving={createMut.isPending} onOpenChange={setCreateOpen} onSubmit={(data) => createMut.mutate(data)} />
+      )}
+      {isBoss && manageUser && (
+        <UserManagementDialog
+          user={manageUser}
+          isCurrent={manageUser.userId === access.access?.actorUserId}
+          saving={updateMut.isPending}
+          passwordSaving={passwordMut.isPending}
+          onOpenChange={(open) => { if (!open) setManageUser(null); }}
+          onSave={(data) => updateMut.mutate(data)}
+          onPassword={(data) => passwordMut.mutate(data)}
+          onCheck={() => checkMut.mutate(manageUser.userId)}
+          checking={checkMut.isPending}
+        />
+      )}
     </div>
   );
-
-  function toggleStatus(user: AppUserRow, setBusy: (id: string | null) => void) {
-    setBusy(user.userId);
-    updateAppUser({ data: { userId: user.userId, status: user.status === "active" ? "disabled" : "active" } })
-      .then(() => qc.invalidateQueries({ queryKey: ["app-users"] }))
-      .catch((err: Error) => toast.error(err.message))
-      .finally(() => setBusy(null));
-  }
 }
 
-function UserRole({ user, pending, onRole }: { user: AppUserRow; pending: boolean; onRole: (role: AppRole | null) => void }) {
+function UserRole({ user }: { user: AppUserRow }) {
   return (
     <div className="flex min-w-0 items-center gap-2">
-      <NativeSelect
-        className="h-9 w-32"
-        value={user.role ?? ""}
-        onChange={(e) => onRole((e.target.value || null) as AppRole | null)}
-        disabled={pending}
-        aria-label={`${user.displayName}角色`}
-      >
-        <option value="">未配置</option>
-        {APP_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}
-      </NativeSelect>
+      <span>{user.role ?? "未配置"}</span>
       {user.role && <span className="text-xs text-muted-foreground">套用：{user.permissionGroupName}</span>}
     </div>
   );
 }
 
-function StatusButton({ user, busy, onToggle }: { user: AppUserRow; busy: boolean; onToggle: () => void }) {
-  return (
-    <Button size="sm" variant={user.status === "active" ? "outline" : "ghost"} disabled={busy} onClick={onToggle}>
-      {busy ? "保存中…" : user.status === "active" ? "启用中" : "已停用"}
-    </Button>
-  );
+function StatusBadge({ status }: { status: AppUserRow["status"] }) {
+  return <span className={status === "active" ? "text-emerald-700" : "text-muted-foreground"}>{status === "active" ? "启用" : "已停用"}</span>;
 }
 
 function UserDesktopRow({
   user,
-  rolePending,
-  busy,
+  isCurrent,
   checking,
-  onRole,
-  onToggleStatus,
+  onManage,
   onCheck,
 }: {
   user: AppUserRow;
-  rolePending: boolean;
-  busy: boolean;
+  isCurrent: boolean;
   checking: boolean;
-  onRole: (role: AppRole | null) => void;
-  onToggleStatus: () => void;
+  onManage: () => void;
   onCheck: () => void;
 }) {
   return (
@@ -244,11 +259,12 @@ function UserDesktopRow({
         <div>{user.displayName}</div>
         <div className="font-mono text-xs text-muted-foreground">{user.email}</div>
       </td>
-      <td className="px-4 py-3"><UserRole user={user} pending={rolePending} onRole={onRole} /></td>
-      <td className="px-4 py-3"><StatusButton user={user} busy={busy} onToggle={onToggleStatus} /></td>
+      <td className="px-4 py-3"><UserRole user={user} /></td>
+      <td className="px-4 py-3"><StatusBadge status={user.status} /></td>
       <td className="px-4 py-3 text-right">
         <div className="flex justify-end gap-2">
-          <Button size="sm" variant="ghost" onClick={onCheck} disabled={checking}>检查权限</Button>
+          <Button size="sm" variant="outline" onClick={onManage}>管理</Button>
+          {!isCurrent && <Button size="sm" variant="ghost" onClick={onCheck} disabled={checking}>检查权限</Button>}
         </div>
       </td>
     </tr>
@@ -257,16 +273,12 @@ function UserDesktopRow({
 
 function UserMobileCard({
   user,
-  rolePending,
-  busy,
-  onRole,
-  onToggleStatus,
+  isCurrent,
+  onManage,
 }: {
   user: AppUserRow;
-  rolePending: boolean;
-  busy: boolean;
-  onRole: (role: AppRole | null) => void;
-  onToggleStatus: () => void;
+  isCurrent: boolean;
+  onManage: () => void;
 }) {
   return (
     <article className="rounded-xl bg-card p-3 shadow-[var(--shadow-border)]">
@@ -275,10 +287,182 @@ function UserMobileCard({
           <div className="truncate text-sm font-medium">{user.displayName}</div>
           <div className="truncate font-mono text-xs text-muted-foreground">{user.email}</div>
         </div>
-        <StatusButton user={user} busy={busy} onToggle={onToggleStatus} />
+        <StatusBadge status={user.status} />
       </div>
-      <div className="mt-3"><UserRole user={user} pending={rolePending} onRole={onRole} /></div>
-    </article>
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <UserRole user={user} />
+        <Button size="sm" variant="outline" onClick={onManage}>管理{isCurrent ? "（本人）" : ""}</Button>
+      </div>
+  </article>
+  );
+}
+
+function UserCreateDialog({
+  open,
+  saving,
+  onOpenChange,
+  onSubmit,
+}: {
+  open: boolean;
+  saving: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (data: CreateAppUserInput) => void;
+}) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [role, setRole] = useState<AppRole>("跟进人");
+  const [status, setStatus] = useState<"active" | "disabled">("active");
+
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setEmail("");
+      setPassword("");
+      setConfirmation("");
+      setRole("跟进人");
+      setStatus("active");
+    }
+  }, [open]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>新建用户</DialogTitle>
+          <DialogDescription>直接设置正式登录密码和角色；不会生成临时密码，也不会要求首次登录修改。</DialogDescription>
+        </DialogHeader>
+        <form
+          className="grid gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmit({ name, email, password, passwordConfirmation: confirmation, role, status });
+          }}
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div><Label htmlFor="new-user-name">姓名</Label><Input id="new-user-name" value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" required /></div>
+            <div><Label htmlFor="new-user-email">登录账号</Label><Input id="new-user-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required /></div>
+            <div><Label htmlFor="new-user-password">密码</Label><Input id="new-user-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></div>
+            <div><Label htmlFor="new-user-confirm">确认密码</Label><Input id="new-user-confirm" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" minLength={8} required /></div>
+            <div><Label htmlFor="new-user-role">角色</Label><NativeSelect id="new-user-role" value={role} onChange={(event) => setRole(event.target.value as AppRole)} required>{APP_ROLES.map((item) => <option key={item} value={item}>{item}</option>)}</NativeSelect></div>
+            <div><Label htmlFor="new-user-status">状态</Label><NativeSelect id="new-user-status" value={status} onChange={(event) => setStatus(event.target.value as "active" | "disabled")}><option value="active">启用</option><option value="disabled">停用</option></NativeSelect></div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+            <Button type="submit" disabled={saving}>{saving ? "创建中…" : "创建用户"}</Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function UserManagementDialog({
+  user,
+  isCurrent,
+  saving,
+  passwordSaving,
+  onOpenChange,
+  onSave,
+  onPassword,
+  onCheck,
+  checking,
+}: {
+  user: AppUserRow;
+  isCurrent: boolean;
+  saving: boolean;
+  passwordSaving: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSave: (data: UpdateAppUserInput) => void;
+  onPassword: (data: SetUserPasswordInput) => void;
+  onCheck: () => void;
+  checking: boolean;
+}) {
+  const [mode, setMode] = useState<"profile" | "password">("profile");
+  const [name, setName] = useState(user.displayName);
+  const [email, setEmail] = useState(user.email);
+  const [role, setRole] = useState<AppRole | "">(user.role ?? "");
+  const [status, setStatus] = useState(user.status);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+
+  useEffect(() => {
+    setMode("profile");
+    setName(user.displayName);
+    setEmail(user.email);
+    setRole(user.role ?? "");
+    setStatus(user.status);
+    setNewPassword("");
+    setConfirmation("");
+  }, [user]);
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>管理用户</DialogTitle>
+          <DialogDescription>{user.displayName} · {user.email}</DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-wrap gap-2 border-b border-border pb-3">
+          <Button type="button" size="sm" variant={mode === "profile" ? "default" : "outline"} onClick={() => setMode("profile")}>编辑资料</Button>
+          {!isCurrent && <Button type="button" size="sm" variant={mode === "password" ? "default" : "outline"} onClick={() => { setMode("password"); setNewPassword(""); setConfirmation(""); }}>修改密码</Button>}
+          {!isCurrent && <Button type="button" size="sm" variant="ghost" className="hidden md:inline-flex" onClick={onCheck} disabled={checking}>{checking ? "检查中…" : "检查权限"}</Button>}
+        </div>
+        {mode === "profile" ? (
+          <form
+            className="grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const data: UpdateAppUserInput = { userId: user.userId, name, email };
+              if (!isCurrent) {
+                data.role = role || null;
+                data.status = status;
+              }
+              onSave(data);
+            }}
+          >
+            <div><Label htmlFor="manage-user-name">姓名</Label><Input id="manage-user-name" value={name} onChange={(event) => setName(event.target.value)} required /></div>
+            <div><Label htmlFor="manage-user-email">登录账号</Label><Input id="manage-user-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="manage-user-role">角色</Label>
+                <NativeSelect id="manage-user-role" value={role} disabled={isCurrent} onChange={(event) => setRole(event.target.value as AppRole | "")}>
+                  <option value="">未配置</option>
+                  {APP_ROLES.map((item) => <option key={item} value={item}>{item}</option>)}
+                </NativeSelect>
+              </div>
+              <div>
+                <Label htmlFor="manage-user-status">状态</Label>
+                <NativeSelect id="manage-user-status" value={status} disabled={isCurrent} onChange={(event) => setStatus(event.target.value as "active" | "disabled")}>
+                  <option value="active">启用</option><option value="disabled">停用</option>
+                </NativeSelect>
+              </div>
+            </div>
+            <div className="rounded-lg bg-secondary/60 px-3 py-2 text-xs text-muted-foreground">
+              权限组由角色固定映射：{user.permissionGroupName ?? "未配置权限组"}。不能为单个用户选择权限组或添加权限例外。
+              {isCurrent && <span className="ml-1">当前会话不能修改自己的角色或状态。</span>}
+            </div>
+            <div className="flex justify-end gap-2 pt-2"><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>关闭</Button><Button type="submit" disabled={saving}>{saving ? "保存中…" : "保存资料"}</Button></div>
+          </form>
+        ) : (
+          <form
+            className="grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onPassword({ targetUserId: user.userId, newPassword, newPasswordConfirmation: confirmation });
+              setNewPassword("");
+              setConfirmation("");
+            }}
+          >
+            <p className="text-sm text-muted-foreground">为其他用户设置新密码。保存后旧密码和旧会话立即失效，不会触发首次登录修改。</p>
+            <div><Label htmlFor="manage-user-new-password">新密码</Label><Input id="manage-user-new-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></div>
+            <div><Label htmlFor="manage-user-confirm-password">确认新密码</Label><Input id="manage-user-confirm-password" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" minLength={8} required /></div>
+            <div className="flex justify-end gap-2 pt-2"><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>关闭</Button><Button type="submit" disabled={passwordSaving}>{passwordSaving ? "保存中…" : "保存新密码"}</Button></div>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 
