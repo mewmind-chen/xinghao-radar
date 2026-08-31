@@ -1,4 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
+import { getCurrentPrincipal, potentialScopeFor, requireRole } from "@/lib/auth/authorization.server";
 import { ensureSeed } from "./seed";
 import {
   ensurePart,
@@ -20,15 +22,19 @@ export type PartListItem = Part & {
   analysisAt: string | null;
 };
 
-export const bootstrap = createServerFn({ method: "GET" }).handler(async () => {
+export const bootstrap = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
+  requireRole(await getCurrentPrincipal(context.bearerToken), "model.read");
   const sql = await sqlClient();
   await ensureSeed(sql);
   return { ok: true as const };
 });
 
 export const searchParts = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
   .validator((input: { q?: string; filter?: "all" | "stock" | "hit" | "watch" }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    requireRole(principal, "model.read");
     const sql = await sqlClient();
     await ensureSeed(sql);
     const q = (data.q ?? "").trim();
@@ -51,6 +57,9 @@ export const searchParts = createServerFn({ method: "GET" })
     const flags = await matchFlagsForParts(
       sql,
       parts.map((p) => p.id),
+      undefined,
+      principal.userId,
+      potentialScopeFor(principal),
     );
     let items: PartListItem[] = parts.map((p) => {
       const f = flags.get(p.id)!;
@@ -72,15 +81,18 @@ export const searchParts = createServerFn({ method: "GET" })
   });
 
 export const getPartDetail = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
   .validator((input: { id: string }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    requireRole(principal, "model.read");
     const sql = await sqlClient();
     await ensureSeed(sql);
     const partRows = await sql`select * from parts where id = ${data.id} limit 1`;
     if (!partRows[0]) throw new Error("型号不存在");
     const part = mapPart(partRows[0]);
     const settings = await getSettings(sql);
-    const flagsMap = await matchFlagsForParts(sql, [part.id], settings);
+    const flagsMap = await matchFlagsForParts(sql, [part.id], settings, principal.userId, potentialScopeFor(principal));
     const flags = flagsMap.get(part.id)!;
 
     const lots = await sql`
@@ -101,21 +113,23 @@ export const getPartDetail = createServerFn({ method: "GET" })
       order by m.happened_at desc
       limit 80
     `;
-    const offers = await sql`
+    const offers = principal.role === "跟进人" ? [] : await sql`
       select o.*, ch.name as channel_name, ch.is_active as channel_active
       from channel_offers o
       join channels ch on ch.id = o.channel_id
       where o.part_id = ${part.id} and o.deleted_at is null
       order by o.is_valid desc, o.offered_at desc
     `;
-    const inquiries = await sql`
+    const inquiries = principal.role === "跟进人" ? [] : await sql`
       select i.*, c.name as customer_name, c.is_active as customer_active
       from customer_inquiries i
       join customers c on c.id = i.customer_id
       where i.part_id = ${part.id} and i.deleted_at is null
       order by i.is_valid desc, i.inquired_at desc
     `;
-    const watched = await sql`select 1 from watchlist where part_id = ${part.id} limit 1`;
+    const watched = principal.potentialEnabled
+      ? await sql`select 1 from potential_models where user_id = ${principal.userId} and part_id = ${part.id} limit 1`
+      : [];
 
     return {
       part,
@@ -201,8 +215,10 @@ export const getPartDetail = createServerFn({ method: "GET" })
   });
 
 export const createPart = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { mpn: string; brand?: string; category?: string; package?: string }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "model.write");
     const sql = await sqlClient();
     const part = await ensurePart(sql, data.mpn, {
       brand: data.brand,
@@ -224,6 +240,7 @@ export const createPart = createServerFn({ method: "POST" })
  * - 已保存的型号分析记录随新 key 迁移（保留时间戳）。
  */
 export const updatePartIdentity = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator(
     (input: {
       id: string;
@@ -235,7 +252,8 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
       params?: string;
     }) => input,
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "model.write");
     const sql = await sqlClient();
     const mpn = displayMpn(data.mpn ?? "");
     if (!mpn) throw new Error("型号不能为空");

@@ -24,6 +24,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useAppAccess } from "@/lib/auth/use-app-access";
 
 export const Route = createFileRoute("/stock")({ component: StockPage });
 
@@ -58,6 +59,7 @@ function stockLineKey(item: StockItem): string {
 }
 
 function StockPage() {
+  const access = useAppAccess();
   const [wh, setWh] = useState("all");
   const [q, setQ] = useState("");
   const [mode, setMode] = useState<null | "in" | "transit">(null);
@@ -91,11 +93,13 @@ function StockPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <a href="/import?kind=stock" className="inline-flex">
+          {access.can("inventory.import") && <a href="/import?kind=stock" className="inline-flex">
             <Button variant="outline"><ClipboardList className="size-4" />批量入库</Button>
-          </a>
-          <Button variant="outline" onClick={() => setMode("transit")}>记在途</Button>
-          <Button onClick={() => setMode("in")}><Plus className="size-4" />入库</Button>
+          </a>}
+          {access.can("stock.write") && <>
+            <Button variant="outline" onClick={() => setMode("transit")}>记在途</Button>
+            <Button onClick={() => setMode("in")}><Plus className="size-4" />入库</Button>
+          </>}
         </div>
       </div>
 
@@ -158,7 +162,7 @@ function StockPage() {
       </ul>
 
       <InboundDialog open={mode} onClose={() => setMode(null)} warehouses={d?.warehouses ?? []} />
-      <LotSheet lot={selected} onClose={() => setSelected(null)} warehouses={d?.warehouses ?? []} />
+      <LotSheet lot={selected} onClose={() => setSelected(null)} warehouses={d?.warehouses ?? []} canWrite={access.can("stock.write")} canFixModel={access.can("model.write")} />
     </div>
   );
 }
@@ -216,10 +220,14 @@ function LotSheet({
   lot,
   onClose,
   warehouses,
+  canWrite,
+  canFixModel,
 }: {
   lot: StockItem | null;
   onClose: () => void;
   warehouses: { id: string; code: string; isActive: boolean }[];
+  canWrite: boolean;
+  canFixModel: boolean;
 }) {
   const qc = useQueryClient();
   const [op, setOp] = useState<null | "in" | "out" | "move" | "adjust" | "cost" | "receive" | "edit">(null);
@@ -306,19 +314,19 @@ function LotSheet({
           <DialogHeader>
             <DialogTitle className="pr-8 text-lg">{lot.mpn}</DialogTitle>
             <p className="text-sm text-muted-foreground">{lot.warehouseCode ?? "在途"} · {formatInventoryQty(lot.qtyRemaining)}{lot.dateCode ? ` · DC${lot.dateCode}` : ""}{formatCost(lot.costAmount, lot.costCurrency, lot.costTax) ? ` · ${formatCost(lot.costAmount, lot.costCurrency, lot.costTax)}` : ""}</p>
-            <p className="text-xs text-muted-foreground">供应商：{lot.supplierName ?? "未填写"} <button type="button" className="ml-1 text-primary underline-offset-2 hover:underline" onClick={() => setOp("edit")}>补充</button></p>
-            <a className="text-xs text-primary underline-offset-2 hover:underline" href={`/parts/${lot.partId}?from=stock&q=`}>型号修正</a>
+            <p className="text-xs text-muted-foreground">供应商：{lot.supplierName ?? "未填写"} {canWrite && <button type="button" className="ml-1 text-primary underline-offset-2 hover:underline" onClick={() => setOp("edit")}>补充</button>}</p>
+            {canFixModel && <a className="text-xs text-primary underline-offset-2 hover:underline" href={`/parts/${lot.partId}?from=stock&q=`}>型号修正</a>}
           </DialogHeader>
 
           <div className="flex flex-wrap gap-2">
-            {lot.status === "on_hand" && <>
+            {canWrite && lot.status === "on_hand" && <>
               <Button size="sm" className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-300" onClick={() => openOperation("in")}>入</Button>
               <Button size="sm" className="bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-950/30 dark:text-red-300" onClick={() => openOperation("out")}>出</Button>
               <Button size="sm" className="bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/30 dark:text-blue-300" onClick={() => openOperation("move")}>调</Button>
               <Button size="sm" className="bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-950/30 dark:text-amber-300" onClick={() => openOperation("adjust")}>修</Button>
             </>}
-            {lot.status === "in_transit" && <Button size="sm" className="bg-teal-50 text-teal-700 hover:bg-teal-100 dark:bg-teal-950/30 dark:text-teal-300" onClick={() => openOperation("receive")}>途→仓</Button>}
-            <Button size="sm" variant="outline" onClick={() => setOp("cost")}>成本</Button>
+            {canWrite && lot.status === "in_transit" && <Button size="sm" className="bg-teal-50 text-teal-700 hover:bg-teal-100 dark:bg-teal-950/30 dark:text-teal-300" onClick={() => openOperation("receive")}>途→仓</Button>}
+            {canWrite && <Button size="sm" variant="outline" onClick={() => setOp("cost")}>成本</Button>}
           </div>
 
           {op && <div className="grid gap-2 rounded-lg border border-border bg-secondary/30 p-3">

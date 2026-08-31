@@ -1,9 +1,13 @@
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
+import { getCurrentPrincipal, potentialScopeFor, requireRole } from "@/lib/auth/authorization.server";
 import { formatStockLine, startOfTodayIso } from "@/lib/domain";
 import { getSettings, listWarehouses, matchFlagsForParts, sqlClient } from "./helpers";
 import { ensureSeed } from "./seed";
 
-export const getWorkbench = createServerFn({ method: "GET" }).handler(async () => {
+export const getWorkbench = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
+  const principal = await getCurrentPrincipal(context.bearerToken);
+  requireRole(principal, "market.read");
   const sql = await sqlClient();
   await ensureSeed(sql);
   const settings = await getSettings(sql);
@@ -30,7 +34,7 @@ export const getWorkbench = createServerFn({ method: "GET" }).handler(async () =
     set.add(e.k);
   }
   const ids = [...byPart.keys()];
-  const flags = await matchFlagsForParts(sql, ids, settings);
+  const flags = await matchFlagsForParts(sql, ids, settings, principal.userId, potentialScopeFor(principal));
   const parts =
     ids.length === 0
       ? []
@@ -97,7 +101,7 @@ export const getWorkbench = createServerFn({ method: "GET" }).handler(async () =
     select count(distinct part_id)::int as n from stock_lots
     where deleted_at is null and status = 'in_transit' and qty_remaining > 0
   `;
-  const watchN = await sql<{ n: number }>`select count(*)::int as n from watchlist`;
+  const watchN = await sql<{ n: number }>`select count(*)::int as n from potential_models where user_id = ${principal.userId}`;
   return {
     settings,
     warehouses,

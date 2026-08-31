@@ -1,15 +1,20 @@
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
+import { getCurrentPrincipal, requireRole, ForbiddenError } from "@/lib/auth/authorization.server";
 import { iso } from "@/lib/domain";
 import { getSettings, listWarehouses, logOp, nid, sqlClient, withTransaction } from "./helpers";
 import { ensureSeed } from "./seed";
 
-export const getAppSettings = createServerFn({ method: "GET" }).handler(async () => {
+export const getAppSettings = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
+  requireRole(await getCurrentPrincipal(context.bearerToken), "settings.read");
   const sql = await sqlClient();
   await ensureSeed(sql);
   const settings = await getSettings(sql);
   const warehouses = await listWarehouses(sql);
   const batches = await sql`
-    select * from import_batches order by created_at desc limit 30
+    select b.*, u.email as creator_email, u."name" as creator_name
+    from import_batches b left join "user" u on u."id" = b.created_by
+    order by b.created_at desc limit 30
   `;
   const logs = await sql`
     select * from op_logs order by created_at desc limit 40
@@ -36,6 +41,8 @@ export const getAppSettings = createServerFn({ method: "GET" }).handler(async ()
       filename: r.filename ? String(r.filename) : null,
       createdAt: iso(r.created_at),
       undoneAt: r.undone_at ? String(r.undone_at) : null,
+      createdBy: r.created_by ? String(r.created_by) : null,
+      creatorName: r.creator_name ? String(r.creator_name) : null,
     })),
     logs: logs.map((r) => ({
       id: String(r.id),
@@ -49,8 +56,10 @@ export const getAppSettings = createServerFn({ method: "GET" }).handler(async ()
 });
 
 export const updateWindows = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { inquiryWindowDays: number; offerWindowDays: number }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.write");
     const sql = await sqlClient();
     await sql`
       insert into app_settings (key, value) values ('inquiry_window_days', ${String(data.inquiryWindowDays)})
@@ -64,8 +73,10 @@ export const updateWindows = createServerFn({ method: "POST" })
   });
 
 export const upsertWarehouse = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { id?: string; code: string; name: string }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.write");
     const sql = await sqlClient();
     const code = data.code.trim();
     const name = data.name.trim() || code;
@@ -83,16 +94,49 @@ export const upsertWarehouse = createServerFn({ method: "POST" })
   });
 
 export const setWarehouseActive = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { id: string; isActive: boolean }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.write");
     const sql = await sqlClient();
     await sql`update warehouses set is_active = ${data.isActive} where id = ${data.id}`;
     return { ok: true as const };
   });
 
+export const listImportBatches = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    requireRole(principal, "model.read");
+    const sql = await sqlClient();
+    const rows = principal.role === "老板"
+      ? await sql`select * from import_batches order by created_at desc limit 30`
+      : await sql`select * from import_batches where created_by = ${principal.userId} order by created_at desc limit 30`;
+    return rows.map((r) => ({
+      id: String(r.id),
+      kind: String(r.kind),
+      sourceType: String(r.source_type),
+      filename: r.filename ? String(r.filename) : null,
+      createdAt: iso(r.created_at),
+      undoneAt: r.undone_at ? String(r.undone_at) : null,
+      createdBy: r.created_by ? String(r.created_by) : null,
+      canRevoke: !r.undone_at && (principal.role === "老板" || principal.role === "跟进人"),
+    }));
+  });
+
 export const undoImportBatch = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { id: string }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    if (principal.role !== "老板") {
+      if (principal.role !== "跟进人") throw new ForbiddenError("无权撤销导入批次");
+      const sql = await sqlClient();
+      const owner = await sql`select created_by from import_batches where id = ${data.id} limit 1`;
+      if (!owner[0] || String(owner[0].created_by ?? "") !== principal.userId) {
+        throw new ForbiddenError("跟进人只能撤销自己创建且未发生后续动作的批次");
+      }
+    }
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
       const batch = await tx`select * from import_batches where id = ${data.id} for update`;

@@ -18,7 +18,7 @@
  * @returns {string}
  */
 export function migrationName(path) {
-  return path.split("/").pop() ?? path;
+  return path.split(/[\\/]/).pop() ?? path;
 }
 
 /**

@@ -8,7 +8,7 @@ import { useCurrentUser, useCurrentUserState } from "./use-current-user";
  *
  * With auth on, visitors are signed out until they authenticate — in the sandbox
  * live preview too, which does real sign-in. The shared dev user appears only
- * when auth is disabled (`VITE_AUTH_ENABLED=false`, the shipped default).
+ * when no real auth method is enabled.
  * While the session is still resolving, gates that care about signed-out state
  * render nothing so there's no signed-out flash on hard reload.
  */
@@ -81,7 +81,7 @@ export function UserButton() {
           }}
           className="cursor-pointer text-sm underline-offset-4 opacity-70 hover:underline disabled:cursor-wait disabled:no-underline"
         >
-          {signingOut ? "Signing out…" : "Sign out"}
+          {signingOut ? "正在退出…" : "退出登录"}
         </button>
       )}
     </div>

@@ -33,3 +33,4 @@ Thumbs.db
 
 # local data (PGLite 持久化目录、分析记录等)
 data/
+.preview-data/

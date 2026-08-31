@@ -1,4 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
+import { getCurrentPrincipal, potentialScopeFor, requirePotential, requireRole } from "@/lib/auth/authorization.server";
 import { formatStockLine, iso } from "@/lib/domain";
 import type { CostTax, Currency, MatchFlags } from "@/lib/types";
 import {
@@ -17,14 +19,18 @@ import {
 } from "./helpers";
 import { ensureSeed } from "./seed";
 
-export const listChannels = createServerFn({ method: "GET" }).handler(async () => {
+export const listChannels = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
+  const principal = await getCurrentPrincipal(context.bearerToken);
+  requireRole(principal, "market.read");
   const sql = await sqlClient();
   await ensureSeed(sql);
   const rows = await sql`select * from channels order by is_active desc, name`;
   return rows.map(mapChannel);
 });
 
-export const listCustomers = createServerFn({ method: "GET" }).handler(async () => {
+export const listCustomers = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
+  const principal = await getCurrentPrincipal(context.bearerToken);
+  requireRole(principal, "market.read");
   const sql = await sqlClient();
   await ensureSeed(sql);
   const rows = await sql`select * from customers order by is_active desc, name`;
@@ -32,22 +38,28 @@ export const listCustomers = createServerFn({ method: "GET" }).handler(async () 
 });
 
 export const upsertChannel = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { name: string }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     return ensureChannel(sql, data.name);
   });
 
 export const upsertCustomer = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { name: string }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     return ensureCustomer(sql, data.name);
   });
 
 export const setChannelActive = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { id: string; isActive: boolean }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     await sql`update channels set is_active = ${data.isActive} where id = ${data.id}`;
     await logOp(sql, data.isActive ? "enable" : "disable", "channel", data.id);
@@ -55,8 +67,10 @@ export const setChannelActive = createServerFn({ method: "POST" })
   });
 
 export const setCustomerActive = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { id: string; isActive: boolean }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     await sql`update customers set is_active = ${data.isActive} where id = ${data.id}`;
     await logOp(sql, data.isActive ? "enable" : "disable", "customer", data.id);
@@ -85,11 +99,14 @@ export type OfferListItem = {
 };
 
 export const listOffers = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
   .validator(
     (input: { scope?: "valid" | "history" | "all"; q?: string; channelId?: string } | undefined) =>
       input ?? {},
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    requireRole(principal, "market.read");
     const sql = await sqlClient();
     await ensureSeed(sql);
     const settings = await getSettings(sql);
@@ -106,6 +123,8 @@ export const listOffers = createServerFn({ method: "GET" })
       sql,
       [...new Set(rows.map((r) => String(r.part_id)))],
       settings,
+      principal.userId,
+      potentialScopeFor(principal),
     );
     let items: OfferListItem[] = rows.map((r) => {
       const f = flags.get(String(r.part_id)) ?? null;
@@ -162,11 +181,14 @@ export type InquiryListItem = {
 };
 
 export const listInquiries = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
   .validator(
     (input: { scope?: "valid" | "history" | "all"; q?: string; customerId?: string } | undefined) =>
       input ?? {},
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    requireRole(principal, "market.read");
     const sql = await sqlClient();
     await ensureSeed(sql);
     const settings = await getSettings(sql);
@@ -183,6 +205,8 @@ export const listInquiries = createServerFn({ method: "GET" })
       sql,
       [...new Set(rows.map((r) => String(r.part_id)))],
       settings,
+      principal.userId,
+      potentialScopeFor(principal),
     );
     let items: InquiryListItem[] = rows.map((r) => {
       const f = flags.get(String(r.part_id)) ?? null;
@@ -218,6 +242,7 @@ export const listInquiries = createServerFn({ method: "GET" })
   });
 
 export const createOffer = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator(
     (input: {
       channel: string;
@@ -231,7 +256,8 @@ export const createOffer = createServerFn({ method: "POST" })
       leadTimeText?: string;
     }) => input,
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     const part = await ensurePart(sql, data.mpn, { source: "渠道" });
     const ch = await ensureChannel(sql, data.channel);
@@ -246,13 +272,16 @@ export const createOffer = createServerFn({ method: "POST" })
       )
     `;
     await sql`update parts set updated_at = now() where id = ${part.id}`;
-    const flags = await matchFlagsForParts(sql, [part.id]);
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    const flags = await matchFlagsForParts(sql, [part.id], undefined, principal.userId, potentialScopeFor(principal));
     return { id, partId: part.id, flags: flags.get(part.id)! };
   });
 
 export const createInquiry = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { customer: string; mpn: string; qty?: number | null }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     const part = await ensurePart(sql, data.mpn, { source: "询价" });
     const cu = await ensureCustomer(sql, data.customer);
@@ -262,13 +291,16 @@ export const createInquiry = createServerFn({ method: "POST" })
       values (${id}, ${cu.id}, ${part.id}, ${data.qty ?? null})
     `;
     await sql`update parts set updated_at = now() where id = ${part.id}`;
-    const flags = await matchFlagsForParts(sql, [part.id]);
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    const flags = await matchFlagsForParts(sql, [part.id], undefined, principal.userId, potentialScopeFor(principal));
     return { id, partId: part.id, flags: flags.get(part.id)! };
   });
 
 export const setOfferValid = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { ids: string[]; isValid: boolean }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     for (const id of data.ids) {
       await sql`
@@ -282,8 +314,10 @@ export const setOfferValid = createServerFn({ method: "POST" })
   });
 
 export const setInquiryValid = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { ids: string[]; isValid: boolean }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     for (const id of data.ids) {
       await sql`
@@ -297,8 +331,10 @@ export const setInquiryValid = createServerFn({ method: "POST" })
   });
 
 export const softDeleteOffers = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { ids: string[] }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     for (const id of data.ids) {
       await sql`update channel_offers set deleted_at = now() where id = ${id}`;
@@ -308,8 +344,10 @@ export const softDeleteOffers = createServerFn({ method: "POST" })
   });
 
 export const softDeleteInquiries = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { ids: string[] }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     for (const id of data.ids) {
       await sql`update customer_inquiries set deleted_at = now() where id = ${id}`;
@@ -318,17 +356,31 @@ export const softDeleteInquiries = createServerFn({ method: "POST" })
     return { ok: true as const };
   });
 
-export const listWatchlist = createServerFn({ method: "GET" }).handler(async () => {
+export const listWatchlist = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+  const principal = requirePotential(await getCurrentPrincipal(context.bearerToken), "potential.read");
   const sql = await sqlClient();
   await ensureSeed(sql);
-  const rows = await sql`
-    select w.part_id, w.note, w.added_at, p.*
-    from watchlist w join parts p on p.id = w.part_id
-    order by w.added_at desc
-  `;
+  const rows = principal.role === "跟进人"
+    ? await sql`
+        select w.part_id, w.note, w.created_at as added_at, p.*
+        from potential_models w join parts p on p.id = w.part_id
+        where w.user_id = ${principal.userId}
+        order by w.created_at desc
+      `
+    : await sql`
+        select w.part_id, max(w.note) as note, max(w.created_at) as added_at, p.*
+        from potential_models w join parts p on p.id = w.part_id
+        group by w.part_id, p.id
+        order by max(w.created_at) desc
+      `;
   const flags = await matchFlagsForParts(
     sql,
     rows.map((r) => String(r.part_id)),
+    undefined,
+    principal.userId,
+    potentialScopeFor(principal),
   );
   return rows.map((r) => {
     const f = flags.get(String(r.part_id))!;
@@ -346,16 +398,18 @@ export const listWatchlist = createServerFn({ method: "GET" }).handler(async () 
 });
 
 export const toggleWatch = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { partId: string; on: boolean; note?: string }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    const principal = requirePotential(await getCurrentPrincipal(context.bearerToken), "potential.write");
     const sql = await sqlClient();
     if (data.on) {
       await sql`
-        insert into watchlist (part_id, note) values (${data.partId}, ${data.note ?? null})
-        on conflict (part_id) do update set note = excluded.note
+        insert into potential_models (user_id, part_id, note) values (${principal.userId}, ${data.partId}, ${data.note ?? null})
+        on conflict (user_id, part_id) do update set note = excluded.note
       `;
     } else {
-      await sql`delete from watchlist where part_id = ${data.partId}`;
+      await sql`delete from potential_models where user_id = ${principal.userId} and part_id = ${data.partId}`;
     }
     return { ok: true as const };
   });

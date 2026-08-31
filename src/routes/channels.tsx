@@ -25,11 +25,14 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
+import { useAppAccess } from "@/lib/auth/use-app-access";
 
 export const Route = createFileRoute("/channels")({ component: ChannelsPage });
 
 function ChannelsPage() {
   const qc = useQueryClient();
+  const access = useAppAccess();
+  const canWrite = access.can("market.write");
   const [scope, setScope] = useState<"valid" | "history" | "all">("valid");
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<string[]>([]);
@@ -52,10 +55,10 @@ function ChannelsPage() {
           <h1 className="text-xl font-medium">渠道货源</h1>
           <p className="text-sm text-muted-foreground">只记货源事实。无效退出匹配，历史仍在。</p>
         </div>
-        <Button onClick={() => setOpen(true)}>
+        {canWrite && <Button onClick={() => setOpen(true)}>
           <Plus className="size-4" />
           记一笔
-        </Button>
+        </Button>}
       </div>
       <div className="flex flex-wrap gap-2">
         <NativeSelect className="w-32" value={scope} onChange={(e) => setScope(e.target.value as typeof scope)}>
@@ -65,7 +68,7 @@ function ChannelsPage() {
         </NativeSelect>
         <Input className="max-w-xs" value={q} onChange={(e) => setQ(e.target.value)} placeholder="型号 / 渠道" />
       </div>
-      {sel.length > 0 && (
+      {canWrite && sel.length > 0 && (
         <div className="flex flex-wrap gap-2 rounded-lg bg-secondary px-3 py-2 text-sm">
           已选 {sel.length}
           <Button
@@ -138,20 +141,20 @@ function ChannelsPage() {
               <span className="text-sm">{ch.name}</span>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 {ch.isActive ? "启用" : "停用"}
-                <Switch
+                {canWrite && <Switch
                   checked={ch.isActive}
                   onCheckedChange={(v) =>
                     setChannelActive({ data: { id: ch.id, isActive: v } }).then(() =>
                       qc.invalidateQueries(),
                     )
                   }
-                />
+                />}
               </div>
             </li>
           ))}
         </ul>
       </section>
-      <OfferDialog open={open} onOpenChange={setOpen} channels={channels.map((c) => c.name)} />
+      {canWrite && <OfferDialog open={open} onOpenChange={setOpen} channels={channels.map((c) => c.name)} />}
     </div>
   );
 }
