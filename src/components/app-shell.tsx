@@ -28,7 +28,7 @@ const NAV = [
   { to: "/inquiries", label: "客户询价", icon: ClipboardList, access: "market.read" },
   { to: "/watchlist", label: "潜力型号", icon: Star, access: "potential.read" },
   { to: "/import", label: "智能导入", icon: Upload, access: "import" },
-  { to: "/settings", label: "设置", icon: Settings, access: "settings.read" },
+  { to: "/settings", label: "设置", icon: Settings, access: "settings.manage" },
   { to: "/users", label: "用户与权限", icon: Settings, access: "users.manage" },
 ] as const;
 
@@ -147,9 +147,9 @@ export function AppShell({ children }: { children: ReactNode }) {
               />
             </div>
           </form>
-          <div className="flex items-center gap-3"><UserButton /></div>
+          <div className="min-w-0"><UserButton role={accessQuery.data?.actorRole ?? null} /></div>
           {/* 设置在右上角（不常用入口，移动端可见） */}
-          {permissions.includes("settings.read") && (
+          {permissions.includes("settings.manage") && (
             <Link
               to="/settings"
               className="flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground md:hidden"
@@ -160,7 +160,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           )}
         </header>
         {accessQuery.data?.isImpersonating && (
-          <div className="flex items-center justify-between gap-3 border-b border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 md:px-5">
+          <div className="hidden items-center justify-between gap-3 border-b border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 md:flex md:px-5">
             <span>正在检查：{accessQuery.data.displayName}</span>
             <button type="button" className="underline underline-offset-2" onClick={() => exitCheck.mutate()} disabled={exitCheck.isPending}>退出检查</button>
           </div>

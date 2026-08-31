@@ -113,21 +113,21 @@ export const getPartDetail = createServerFn({ method: "GET" })
       order by m.happened_at desc
       limit 80
     `;
-    const offers = principal.role === "跟进人" ? [] : await sql`
+    const offers = !principal.permissions.includes("market.read") ? [] : await sql`
       select o.*, ch.name as channel_name, ch.is_active as channel_active
       from channel_offers o
       join channels ch on ch.id = o.channel_id
       where o.part_id = ${part.id} and o.deleted_at is null
       order by o.is_valid desc, o.offered_at desc
     `;
-    const inquiries = principal.role === "跟进人" ? [] : await sql`
+    const inquiries = !principal.permissions.includes("market.read") ? [] : await sql`
       select i.*, c.name as customer_name, c.is_active as customer_active
       from customer_inquiries i
       join customers c on c.id = i.customer_id
       where i.part_id = ${part.id} and i.deleted_at is null
       order by i.is_valid desc, i.inquired_at desc
     `;
-    const watched = principal.potentialEnabled
+    const watched = principal.permissions.includes("potential.read")
       ? await sql`select 1 from potential_models where user_id = ${principal.userId} and part_id = ${part.id} limit 1`
       : [];
 

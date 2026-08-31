@@ -362,7 +362,7 @@ export const listWatchlist = createServerFn({ method: "GET" })
   const principal = requirePotential(await getCurrentPrincipal(context.bearerToken), "potential.read");
   const sql = await sqlClient();
   await ensureSeed(sql);
-  const rows = principal.role === "跟进人"
+  const rows = !principal.permissions.includes("market.read")
     ? await sql`
         select w.part_id, w.note, w.created_at as added_at, p.*
         from potential_models w join parts p on p.id = w.part_id

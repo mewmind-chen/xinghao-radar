@@ -3,7 +3,16 @@ import { getRequest } from "@tanstack/react-start/server";
 import { getSql, type Sql } from "@/lib/db";
 import { realAuthEnabled, readSessionToken } from "./server";
 import { DEV_USER_ID, getSessionUser, UnauthorizedError } from "./verify.server";
-import { APP_ROLES, type AppRole, type Permission, roleHasPermission } from "./roles";
+import {
+  APP_ROLES,
+  type AppRole,
+  type Permission,
+  type PermissionGroupKey,
+  permissionsFromGroupRow,
+  permissionGroupKeyForRole,
+  permissionGroupNameForRole,
+  scopeForPermissions,
+} from "./roles";
 
 export { APP_ROLES } from "./roles";
 export type { AppRole, Permission } from "./roles";
@@ -22,8 +31,12 @@ export type AppPrincipal = {
   email: string;
   displayName: string;
   role: AppRole | null;
+  actorRole: AppRole | null;
+  actorDisplayName: string;
   status: UserStatus;
-  potentialEnabled: boolean;
+  permissionGroupKey: PermissionGroupKey | null;
+  permissionGroupName: string | null;
+  permissions: Permission[];
   isImpersonating: boolean;
   sessionKey: string;
 };
@@ -38,6 +51,19 @@ export class ForbiddenError extends Error {
 
 export function isAppRole(value: unknown): value is AppRole {
   return typeof value === "string" && (APP_ROLES as readonly string[]).includes(value);
+}
+
+async function permissionsForRole(sql: Sql, role: AppRole): Promise<Permission[]> {
+  const key = permissionGroupKeyForRole(role);
+  const rows = await sql`
+    select role_key, display_name, permissions
+    from permission_groups
+    where role_key = ${key}
+    limit 1
+  `;
+  const permissions = permissionsFromGroupRow(role, rows[0]);
+  if (!permissions) throw new ForbiddenError("当前权限组不可用，请联系老板处理");
+  return permissions;
 }
 
 function sessionKeyFor(bearerToken?: string): string {
@@ -110,37 +136,41 @@ export async function requirePrincipal(
     if (!target[0] || String(target[0].status) !== "active") throw new ForbiddenError("被检查账号已停用");
     effective = target[0];
   }
+  const role = isAppRole(effective.role) ? effective.role : null;
+  const permissions = role ? await permissionsForRole(sql, role) : [];
+  const permissionGroupKey = role ? permissionGroupKeyForRole(role) : null;
+  const permissionGroupName = permissionGroupNameForRole(role);
   return {
     userId: targetId,
     actorUserId: identity.id,
     email: String(effective.email),
     displayName: String(effective.display_name),
-    role: isAppRole(effective.role) ? effective.role : null,
+    role,
+    actorRole: isAppRole(own.role) ? own.role : null,
+    actorDisplayName: String(own.display_name),
     status: String(effective.status) as UserStatus,
-    potentialEnabled: Boolean(effective.potential_enabled),
+    permissionGroupKey,
+    permissionGroupName,
+    permissions,
     isImpersonating: targetId !== identity.id,
     sessionKey: key,
   };
 }
 
 export function requireRole(principal: AppPrincipal, permission: Permission): AppPrincipal {
-  if (!principal.role || !roleHasPermission(principal.role, permission)) {
-    throw new ForbiddenError(`无权执行：${permission}`);
+  if (!principal.role || !principal.permissions.includes(permission)) {
+    throw new ForbiddenError("无权执行该操作");
   }
   return principal;
 }
 
 export function requirePotential(principal: AppPrincipal, permission: "potential.read" | "potential.write"): AppPrincipal {
   requireRole(principal, permission);
-  if (!principal.potentialEnabled) {
-    throw new ForbiddenError("潜力型号权限未开启");
-  }
   return principal;
 }
 
 export function potentialScopeFor(principal: AppPrincipal): "all" | "own" | "none" {
-  if (!principal.potentialEnabled) return "none";
-  return principal.role === "跟进人" ? "own" : "all";
+  return scopeForPermissions(principal.role, principal.permissions);
 }
 
 export function requireRealBoss(principal: AppPrincipal): AppPrincipal {
@@ -162,7 +192,7 @@ export function requireImportKind(principal: AppPrincipal, kind: string): AppPri
   if (kind === "stock" || kind === "transit") return requireRole(principal, "inventory.import");
   if (kind === "offer" || kind === "inquiry") return requireRole(principal, "market.write");
   if (kind === "mixed") {
-    if (roleHasPermission(principal.role, "inventory.import") || roleHasPermission(principal.role, "market.write")) {
+    if (principal.permissions.includes("inventory.import") || principal.permissions.includes("market.write")) {
       return principal;
     }
   }

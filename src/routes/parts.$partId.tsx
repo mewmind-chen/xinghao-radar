@@ -66,7 +66,7 @@ function PartDetail() {
   const canStockWrite = access.can("stock.write");
   const canMarketWrite = access.can("market.write");
   const canModelWrite = access.can("model.write");
-  const canPotentialWrite = access.can("potential.write") && Boolean(access.access?.potentialEnabled);
+  const canPotentialWrite = access.can("potential.write");
   const q = useQuery({
     queryKey: ["part", partId],
     queryFn: () => getPartDetail({ data: { id: partId } }),

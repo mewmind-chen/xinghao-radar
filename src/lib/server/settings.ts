@@ -6,52 +6,14 @@ import { getSettings, listWarehouses, logOp, nid, sqlClient, withTransaction } f
 import { ensureSeed } from "./seed";
 
 export const getAppSettings = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
-  requireRole(await getCurrentPrincipal(context.bearerToken), "settings.read");
+  requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
   const sql = await sqlClient();
   await ensureSeed(sql);
   const settings = await getSettings(sql);
   const warehouses = await listWarehouses(sql);
-  const batches = await sql`
-    select b.*, u.email as creator_email, u."name" as creator_name
-    from import_batches b left join "user" u on u."id" = b.created_by
-    order by b.created_at desc limit 30
-  `;
-  const logs = await sql`
-    select * from op_logs order by created_at desc limit 40
-  `;
-  const channels = await sql`select * from channels order by name`;
-  const customers = await sql`select * from customers order by name`;
   return {
     settings,
     warehouses,
-    channels: channels.map((r) => ({
-      id: String(r.id),
-      name: String(r.name),
-      isActive: Boolean(r.is_active),
-    })),
-    customers: customers.map((r) => ({
-      id: String(r.id),
-      name: String(r.name),
-      isActive: Boolean(r.is_active),
-    })),
-    batches: batches.map((r) => ({
-      id: String(r.id),
-      kind: String(r.kind),
-      sourceType: String(r.source_type),
-      filename: r.filename ? String(r.filename) : null,
-      createdAt: iso(r.created_at),
-      undoneAt: r.undone_at ? String(r.undone_at) : null,
-      createdBy: r.created_by ? String(r.created_by) : null,
-      creatorName: r.creator_name ? String(r.creator_name) : null,
-    })),
-    logs: logs.map((r) => ({
-      id: String(r.id),
-      action: String(r.action),
-      entityType: String(r.entity_type),
-      entityId: String(r.entity_id),
-      detail: r.detail ? String(r.detail) : null,
-      createdAt: iso(r.created_at),
-    })),
   };
 });
 
@@ -59,7 +21,7 @@ export const updateWindows = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { inquiryWindowDays: number; offerWindowDays: number }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.write");
+    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
     const sql = await sqlClient();
     await sql`
       insert into app_settings (key, value) values ('inquiry_window_days', ${String(data.inquiryWindowDays)})
@@ -76,7 +38,7 @@ export const upsertWarehouse = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { id?: string; code: string; name: string }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.write");
+    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
     const sql = await sqlClient();
     const code = data.code.trim();
     const name = data.name.trim() || code;
@@ -97,7 +59,7 @@ export const setWarehouseActive = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { id: string; isActive: boolean }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.write");
+    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
     const sql = await sqlClient();
     await sql`update warehouses set is_active = ${data.isActive} where id = ${data.id}`;
     return { ok: true as const };

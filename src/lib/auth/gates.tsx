@@ -49,13 +49,14 @@ export function RedirectToSignIn({ to = SIGN_IN_PATH }: { to?: string }) {
  * `design-ui` skill). Sign-out is only shown when auth is enabled (the
  * disabled-auth dev user has nothing to sign out of).
  */
-export function UserButton() {
+export function UserButton({ role = null }: { role?: string | null }) {
   const user = useCurrentUser();
   // Sign-out can take a moment (and can fail when deployed), so the control
   // shows it is working and cannot be fired twice.
   const [signingOut, setSigningOut] = useState(false);
   if (!user) return null;
-  const label = user.displayName ?? user.primaryEmail ?? "Account";
+  const name = user.displayName ?? user.primaryEmail ?? "用户";
+  const label = role ? `${name} · ${role}` : name;
   return (
     <div className="flex items-center gap-2">
       {user.profileImageUrl ? (
@@ -69,7 +70,7 @@ export function UserButton() {
           {label.charAt(0).toUpperCase()}
         </span>
       )}
-      <span className="text-sm font-medium">{label}</span>
+      <span className="min-w-0 max-w-[132px] truncate text-xs font-medium sm:max-w-[220px] sm:text-sm">{label}</span>
       {authEnabled && (
         <button
           type="button"

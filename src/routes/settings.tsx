@@ -1,26 +1,27 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   getAppSettings,
   setWarehouseActive,
-  undoImportBatch,
   updateWindows,
   upsertWarehouse,
 } from "@/lib/server/settings";
-import { formatWhen } from "@/lib/domain";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import { useAppAccess } from "@/lib/auth/use-app-access";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
 function SettingsPage() {
   const qc = useQueryClient();
-  const q = useQuery({ queryKey: ["settings"], queryFn: () => getAppSettings() });
+  const access = useAppAccess();
+  const canManageSettings = access.can("settings.manage");
+  const q = useQuery({ queryKey: ["settings"], queryFn: () => getAppSettings(), enabled: canManageSettings });
   const d = q.data;
   const [inq, setInq] = useState<number | null>(null);
   const [off, setOff] = useState<number | null>(null);
@@ -29,6 +30,10 @@ function SettingsPage() {
 
   const inquiry = inq ?? d?.settings.inquiryWindowDays ?? 90;
   const offer = off ?? d?.settings.offerWindowDays ?? 30;
+
+  if (access.access && !canManageSettings) {
+    return <p className="text-sm text-muted-foreground">无权查看系统设置。</p>;
+  }
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -119,49 +124,6 @@ function SettingsPage() {
         </div>
       </section>
 
-      <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
-        <h2 className="mb-3 text-sm font-medium">导入批次</h2>
-        <ul className="space-y-2 text-sm">
-          {d?.batches.map((b) => (
-            <li key={b.id} className="flex items-center justify-between gap-2">
-              <span>
-                {b.kind} · {b.sourceType} {b.filename ?? ""} · {formatWhen(b.createdAt)}
-                {b.undoneAt && <span className="ml-2 text-muted-foreground">已撤销</span>}
-              </span>
-              {!b.undoneAt && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() =>
-                    undoImportBatch({ data: { id: b.id } })
-                      .then(() => {
-                        qc.invalidateQueries();
-                        toast.success("批次已撤销");
-                      })
-                      .catch((e: Error) => toast.error(e.message))
-                  }
-                >
-                  撤销
-                </Button>
-              )}
-            </li>
-          ))}
-          {d?.batches.length === 0 && (
-            <li className="text-muted-foreground">还没有导入批次。</li>
-          )}
-        </ul>
-      </section>
-
-      <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
-        <h2 className="mb-3 text-sm font-medium">操作日志</h2>
-        <ul className="space-y-1 font-mono text-xs text-muted-foreground">
-          {d?.logs.map((l) => (
-            <li key={l.id}>
-              {formatWhen(l.createdAt)} · {l.action} · {l.entityType} · {l.detail ?? l.entityId}
-            </li>
-          ))}
-        </ul>
-      </section>
     </div>
   );
 }

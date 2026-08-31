@@ -2,19 +2,18 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
-import { APP_ROLES, ROLE_PERMISSIONS, roleHasPermission } from "../src/lib/auth/roles.ts";
+import { APP_ROLES, DEFAULT_PERMISSION_GROUPS, ROLE_TO_PERMISSION_GROUP } from "../src/lib/auth/roles.ts";
 
 test("四个固定角色的服务端策略互斥且覆盖预期操作", () => {
   assert.deepEqual(APP_ROLES, ["老板", "最高督察", "主管", "跟进人"]);
-  assert.equal(roleHasPermission("老板", "users.manage"), true);
-  assert.equal(roleHasPermission("最高督察", "stock.write"), false);
-  assert.equal(roleHasPermission("最高督察", "market.write"), false);
-  assert.equal(roleHasPermission("主管", "market.write"), true);
-  assert.equal(roleHasPermission("主管", "inventory.import"), false);
-  assert.equal(roleHasPermission("跟进人", "inventory.import"), true);
-  assert.equal(roleHasPermission("跟进人", "market.read"), false);
-  assert.equal(roleHasPermission(null, "model.read"), false);
-  assert.ok(ROLE_PERMISSIONS["跟进人"].includes("potential.write"));
+  assert.equal(DEFAULT_PERMISSION_GROUPS[ROLE_TO_PERMISSION_GROUP["老板"]].includes("users.manage"), true);
+  assert.equal(DEFAULT_PERMISSION_GROUPS[ROLE_TO_PERMISSION_GROUP["最高督察"]].includes("stock.write"), false);
+  assert.equal(DEFAULT_PERMISSION_GROUPS[ROLE_TO_PERMISSION_GROUP["最高督察"]].includes("market.write"), false);
+  assert.equal(DEFAULT_PERMISSION_GROUPS[ROLE_TO_PERMISSION_GROUP["主管"]].includes("market.write"), true);
+  assert.equal(DEFAULT_PERMISSION_GROUPS[ROLE_TO_PERMISSION_GROUP["主管"]].includes("inventory.import"), false);
+  assert.equal(DEFAULT_PERMISSION_GROUPS[ROLE_TO_PERMISSION_GROUP["跟进人"]].includes("inventory.import"), true);
+  assert.equal(DEFAULT_PERMISSION_GROUPS[ROLE_TO_PERMISSION_GROUP["跟进人"]].includes("market.read"), false);
+  assert.equal(DEFAULT_PERMISSION_GROUPS[ROLE_TO_PERMISSION_GROUP["跟进人"]].includes("potential.write"), false);
 });
 
 async function schema() {
