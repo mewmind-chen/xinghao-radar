@@ -1,7 +1,14 @@
 import { useState, type ReactNode } from "react";
-import { Navigate } from "@tanstack/react-router";
-import { authEnabled, signOut } from "./client";
+import { Link, Navigate } from "@tanstack/react-router";
+import { signOut } from "./client";
 import { useCurrentUser, useCurrentUserState } from "./use-current-user";
+import { KeyRound, LogOut, UserRound } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 /**
  * Auth state components — plain wrappers around `useCurrentUserState()`.
@@ -45,46 +52,41 @@ export function RedirectToSignIn({ to = SIGN_IN_PATH }: { to?: string }) {
 }
 
 /**
- * Minimal signed-in identity chip + sign-out. Restyle freely (see the
- * `design-ui` skill). Sign-out is only shown when auth is enabled (the
- * disabled-auth dev user has nothing to sign out of).
+ * Compact signed-in account menu. Role and permission-group details deliberately
+ * stay out of this global entry point; they belong on the users page.
  */
-export function UserButton({ role = null }: { role?: string | null }) {
+export function UserButton() {
   const user = useCurrentUser();
   // Sign-out can take a moment (and can fail when deployed), so the control
   // shows it is working and cannot be fired twice.
   const [signingOut, setSigningOut] = useState(false);
   if (!user) return null;
-  const name = user.displayName ?? user.primaryEmail ?? "用户";
-  const label = role ? `${name} · ${role}` : name;
   return (
-    <div className="flex items-center gap-2">
-      {user.profileImageUrl ? (
-        <img
-          src={user.profileImageUrl}
-          alt=""
-          className="h-8 w-8 rounded-full object-cover"
-        />
-      ) : (
-        <span className="grid h-8 w-8 place-items-center rounded-full bg-black/10 text-sm font-medium dark:bg-white/20">
-          {label.charAt(0).toUpperCase()}
-        </span>
-      )}
-      <span className="min-w-0 max-w-[132px] truncate text-xs font-medium sm:max-w-[220px] sm:text-sm">{label}</span>
-      {authEnabled && (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
         <button
           type="button"
+          className="flex size-10 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+          aria-label="账户菜单"
+        >
+          <UserRound className="size-5" aria-hidden="true" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-40">
+        <DropdownMenuItem asChild>
+          <Link to="/account"><KeyRound className="size-4" />修改密码</Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem
           disabled={signingOut}
-          onClick={() => {
+          onSelect={(event) => {
+            event.preventDefault();
             setSigningOut(true);
-            // Success navigates away; on failure re-enable so it can be retried.
             void signOut().catch(() => setSigningOut(false));
           }}
-          className="cursor-pointer text-sm underline-offset-4 opacity-70 hover:underline disabled:cursor-wait disabled:no-underline"
         >
-          {signingOut ? "正在退出…" : "退出登录"}
-        </button>
-      )}
-    </div>
+          <LogOut className="size-4" />退出登录
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
+import { auth } from "@/lib/auth/server";
 import {
   APP_ROLES,
   type AppRole,
@@ -51,6 +52,94 @@ export type LegacyPotentialRow = {
   assignedUsers: number;
 };
 
+type UserStatus = "active" | "disabled";
+
+export type CreateAppUserInput = {
+  name: string;
+  email: string;
+  password: string;
+  passwordConfirmation: string;
+  role: AppRole;
+  status: UserStatus;
+};
+
+export type UpdateAppUserInput = {
+  userId: string;
+  name?: string;
+  email?: string;
+  role?: AppRole | null;
+  status?: UserStatus;
+};
+
+export type SetUserPasswordInput = {
+  targetUserId: string;
+  newPassword: string;
+  newPasswordConfirmation: string;
+};
+
+export type ChangeOwnPasswordInput = {
+  currentPassword: string;
+  newPassword: string;
+  newPasswordConfirmation: string;
+};
+
+function hasOwn(input: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(input, key);
+}
+
+function assertExactKeys(input: object, allowed: readonly string[], message: string): void {
+  const allowedSet = new Set(allowed);
+  if (Object.keys(input).some((key) => !allowedSet.has(key))) throw new ForbiddenError(message);
+}
+
+function requiredText(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new ForbiddenError(`${label}不能为空`);
+  return value.trim();
+}
+
+function normalizeLogin(value: unknown): string {
+  const email = requiredText(value, "登录账号").toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new ForbiddenError("登录账号格式不正确");
+  return email;
+}
+
+async function validatePassword(password: unknown, label = "密码"): Promise<string> {
+  if (typeof password !== "string") throw new ForbiddenError(`${label}不能为空`);
+  const ctx = await auth.$context;
+  const min = ctx.password.config.minPasswordLength;
+  const max = ctx.password.config.maxPasswordLength;
+  if (password.length < min) throw new ForbiddenError(`${label}长度不能少于${min}位`);
+  if (password.length > max) throw new ForbiddenError(`${label}长度不能超过${max}位`);
+  return password;
+}
+
+async function appUserById(sql: Awaited<ReturnType<typeof getSql>>, userId: string): Promise<AppUserRow> {
+  const rows = await sql`
+    select u."id" as user_id, coalesce(au.email, u."email") as email,
+      coalesce(au.display_name, u."name") as display_name,
+      au.role, coalesce(au.status, 'active') as status,
+      coalesce(au.created_at, u."createdAt") as created_at
+    from "user" u left join app_users au on au.user_id = u."id"
+    where u."id" = ${userId} limit 1
+  `;
+  if (!rows[0]) throw new Error("用户不存在");
+  return mapUser(rows[0]);
+}
+
+async function deleteTargetSessions(userId: string): Promise<void> {
+  const ctx = await auth.$context;
+  await ctx.internalAdapter.deleteUserSessions(userId);
+}
+
+async function assertCredentialAccount(userId: string) {
+  const ctx = await auth.$context;
+  const account = (await ctx.internalAdapter.findAccounts(userId)).find(
+    (candidate) => candidate.providerId === "credential" && candidate.password,
+  );
+  if (!account?.password) throw new ForbiddenError("该用户没有可用的密码登录账号");
+  return { ctx, account, password: account.password };
+}
+
 function mapUser(row: Record<string, unknown>): AppUserRow {
   return {
     userId: String(row.user_id),
@@ -71,6 +160,55 @@ export const getCurrentAccess = createServerFn({ method: "GET" })
     return principal;
   });
 
+export const createAppUser = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: CreateAppUserInput) => input)
+  .handler(async ({ data, context }) => {
+    const principal = requireRealBoss(await requirePrincipal(context.bearerToken, { ignoreIdentityCheck: true }));
+    requireRole(principal, "users.manage");
+    assertExactKeys(
+      data as Record<string, unknown>,
+      ["name", "email", "password", "passwordConfirmation", "role", "status"],
+      "创建用户参数不合法",
+    );
+    const name = requiredText(data.name, "姓名");
+    const email = normalizeLogin(data.email);
+    const password = await validatePassword(data.password);
+    if (password !== data.passwordConfirmation) throw new ForbiddenError("两次输入的密码不一致");
+    if (!isAppRole(data.role)) throw new ForbiddenError("角色不合法");
+    if (data.status !== "active" && data.status !== "disabled") throw new ForbiddenError("状态不合法");
+
+    const ctx = await auth.$context;
+    const existing = await ctx.internalAdapter.findUserByEmail(email);
+    if (existing) throw new ForbiddenError("登录账号已存在");
+    const passwordHash = await ctx.password.hash(password);
+    let created: { id: string } | null = null;
+    try {
+      created = await ctx.internalAdapter.createUser({
+        email,
+        name,
+        image: null,
+        emailVerified: false,
+      });
+      await ctx.internalAdapter.linkAccount({
+        userId: created.id,
+        providerId: "credential",
+        accountId: created.id,
+        password: passwordHash,
+      });
+      const sql = await getSql();
+      await sql`
+        insert into app_users (user_id, email, display_name, role, status)
+        values (${created.id}, ${email}, ${name}, ${data.role}, ${data.status})
+      `;
+      return await appUserById(sql, created.id);
+    } catch (error) {
+      if (created) await ctx.internalAdapter.deleteUser(created.id).catch(() => undefined);
+      if (error instanceof ForbiddenError) throw error;
+      throw new ForbiddenError("创建用户失败，请检查登录账号是否已存在");
+    }
+  });
+
 export const listAppUsers = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
@@ -88,37 +226,119 @@ export const listAppUsers = createServerFn({ method: "GET" })
     return rows.map(mapUser);
   });
 
+async function updateRoleAndStatus(
+  sql: Awaited<ReturnType<typeof getSql>>,
+  userId: string,
+  role: AppRole | null | undefined,
+  status: UserStatus | undefined,
+): Promise<void> {
+  if (!sql.transaction) throw new Error("当前数据库不支持事务");
+  await sql.transaction(async (tx) => {
+    // Lock every currently valid boss before counting. This serializes concurrent
+    // demotions/disables so the last valid boss cannot disappear between checks.
+    await tx`select user_id from app_users where role = '老板' and status = 'active' for update`;
+    const current = await tx`select role, status from app_users where user_id = ${userId} for update`;
+    if (!current[0]) throw new Error("用户不存在");
+    const currentRole = isAppRole(current[0].role) ? current[0].role : null;
+    const nextRole = role === undefined ? currentRole : role;
+    const nextStatus = status === undefined ? String(current[0].status) : status;
+    if (
+      currentRole === "老板" &&
+      String(current[0].status) === "active" &&
+      (nextRole !== "老板" || nextStatus !== "active")
+    ) {
+      const remaining = await tx`
+        select count(*)::int as count from app_users
+        where role = '老板' and status = 'active' and user_id <> ${userId}
+      `;
+      if (Number(remaining[0]?.count ?? 0) < 1) throw new ForbiddenError("系统必须保留至少一名有效老板");
+    }
+    await tx`
+      update app_users
+      set role = ${nextRole}, status = ${nextStatus}, updated_at = now()
+      where user_id = ${userId}
+    `;
+    if (nextStatus !== "active") await tx`delete from "session" where "userId" = ${userId}`;
+  });
+}
+
 export const updateAppUser = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((input: { userId: string; role?: AppRole | null; status?: "active" | "disabled" }) => input)
+  .validator((input: UpdateAppUserInput) => input)
   .handler(async ({ data, context }) => {
     const principal = requireRealBoss(await requirePrincipal(context.bearerToken, { ignoreIdentityCheck: true }));
     requireRole(principal, "users.manage");
-    const incoming = data as Record<string, unknown>;
-    const userUpdateKeys = new Set(["userId", "role", "status"]);
-    if (Object.keys(incoming).some((key) => !userUpdateKeys.has(key))) {
-      throw new ForbiddenError("用户只能分配角色和状态");
+    assertExactKeys(data as Record<string, unknown>, ["userId", "name", "email", "role", "status"], "用户参数不合法");
+    const userId = requiredText(data.userId, "用户");
+    const hasProfile = hasOwn(data, "name") || hasOwn(data, "email");
+    const hasRoleStatus = hasOwn(data, "role") || hasOwn(data, "status");
+    if (!hasProfile && !hasRoleStatus) throw new ForbiddenError("没有需要保存的用户资料");
+    if (userId === principal.actorUserId && hasRoleStatus) {
+      throw new ForbiddenError("老板不能在当前会话中修改自己的角色或状态");
     }
-    if (data.role !== undefined && data.role !== null && !APP_ROLES.includes(data.role)) {
-      throw new ForbiddenError("角色不合法");
-    }
-    if (data.userId === principal.actorUserId && data.status === "disabled") {
-      throw new ForbiddenError("不能停用当前老板账号");
-    }
+    if (hasOwn(data, "role") && data.role !== null && !isAppRole(data.role)) throw new ForbiddenError("角色不合法");
+    if (hasOwn(data, "status") && data.status !== "active" && data.status !== "disabled") throw new ForbiddenError("状态不合法");
+
     const sql = await getSql();
-    const identity = await sql`select "id", "email", "name" from "user" where "id" = ${data.userId} limit 1`;
+    const identity = await sql`select "id", "email", "name" from "user" where "id" = ${userId} limit 1`;
     if (!identity[0]) throw new Error("用户不存在");
-    await sql`
-      insert into app_users (user_id, email, display_name)
-      values (${data.userId}, ${String(identity[0].email).toLowerCase()}, ${String(identity[0].name)})
-      on conflict (user_id) do nothing
+    const name = hasOwn(data, "name") ? requiredText(data.name, "姓名") : String(identity[0].name);
+    const email = hasOwn(data, "email") ? normalizeLogin(data.email) : String(identity[0].email).toLowerCase();
+    const duplicate = await sql`
+      select "id" from "user" where lower(trim("email")) = ${email} and "id" <> ${userId} limit 1
     `;
-    if (data.role !== undefined) {
-      await sql`update app_users set role = ${data.role}, updated_at = now() where user_id = ${data.userId}`;
+    if (duplicate[0]) throw new ForbiddenError("登录账号已存在");
+    if (hasProfile) {
+      const ctx = await auth.$context;
+      await ctx.internalAdapter.updateUser(userId, { name, email });
+      await sql`
+        insert into app_users (user_id, email, display_name)
+        values (${userId}, ${email}, ${name})
+        on conflict (user_id) do update set email = excluded.email, display_name = excluded.display_name, updated_at = now()
+      `;
     }
-    if (data.status !== undefined) {
-      await sql`update app_users set status = ${data.status}, updated_at = now() where user_id = ${data.userId}`;
-    }
+    if (hasRoleStatus) await updateRoleAndStatus(sql, userId, data.role, data.status);
+    return await appUserById(sql, userId);
+  });
+
+export const setUserPassword = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: SetUserPasswordInput) => input)
+  .handler(async ({ data, context }) => {
+    const principal = requireRealBoss(await requirePrincipal(context.bearerToken, { ignoreIdentityCheck: true }));
+    requireRole(principal, "users.manage");
+    assertExactKeys(data as Record<string, unknown>, ["targetUserId", "newPassword", "newPasswordConfirmation"], "密码参数不合法");
+    const targetUserId = requiredText(data.targetUserId, "目标用户");
+    if (targetUserId === principal.actorUserId) throw new ForbiddenError("请使用账户菜单修改自己的密码");
+    const password = await validatePassword(data.newPassword, "新密码");
+    if (password !== data.newPasswordConfirmation) throw new ForbiddenError("两次输入的新密码不一致");
+    const sql = await getSql();
+    const target = await sql`select "id" from "user" where "id" = ${targetUserId} limit 1`;
+    if (!target[0]) throw new Error("用户不存在");
+    const ctx = await auth.$context;
+    const passwordHash = await ctx.password.hash(password);
+    const account = (await ctx.internalAdapter.findAccounts(targetUserId)).find((candidate) => candidate.providerId === "credential");
+    if (account) await ctx.internalAdapter.updateAccount(account.id, { password: passwordHash });
+    else await ctx.internalAdapter.linkAccount({ userId: targetUserId, providerId: "credential", accountId: targetUserId, password: passwordHash });
+    await deleteTargetSessions(targetUserId);
+    return { ok: true as const };
+  });
+
+export const changeOwnPassword = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: ChangeOwnPasswordInput) => input)
+  .handler(async ({ data, context }) => {
+    const principal = await requirePrincipal(context.bearerToken, { allowUnconfigured: true, ignoreIdentityCheck: true });
+    assertExactKeys(data as Record<string, unknown>, ["currentPassword", "newPassword", "newPasswordConfirmation"], "密码参数不合法");
+    if (typeof data.currentPassword !== "string") throw new ForbiddenError("当前密码不正确");
+    const password = await validatePassword(data.newPassword, "新密码");
+    if (password !== data.newPasswordConfirmation) throw new ForbiddenError("两次输入的新密码不一致");
+    const { ctx, account, password: currentHash } = await assertCredentialAccount(principal.actorUserId);
+    const valid = await ctx.password.verify({ hash: currentHash, password: data.currentPassword });
+    if (!valid) throw new ForbiddenError("当前密码不正确");
+    const passwordHash = await ctx.password.hash(password);
+    await ctx.internalAdapter.updateAccount(account.id, { password: passwordHash });
+    await deleteTargetSessions(principal.actorUserId);
     return { ok: true as const };
   });
 
