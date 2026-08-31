@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ClipboardList,
   LayoutDashboard,
@@ -13,17 +14,22 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
+import { RedirectToSignIn, UserButton } from "@/lib/auth/gates";
+import { authEnabled } from "@/lib/auth/client";
+import { useCurrentUserState } from "@/lib/auth/use-current-user";
+import { getCurrentAccess, exitIdentityCheck } from "@/lib/server/auth";
 
 /** 桌面侧栏：全部功能 */
-export const NAV = [
-  { to: "/", label: "工作台", icon: LayoutDashboard },
-  { to: "/parts", label: "型号库", icon: Radar },
-  { to: "/stock", label: "我的库存", icon: Warehouse },
-  { to: "/channels", label: "渠道货源", icon: Truck },
-  { to: "/inquiries", label: "客户询价", icon: ClipboardList },
-  { to: "/watchlist", label: "潜力型号", icon: Star },
-  { to: "/import", label: "智能导入", icon: Upload },
-  { to: "/settings", label: "设置", icon: Settings },
+const NAV = [
+  { to: "/", label: "工作台", icon: LayoutDashboard, access: "market.read" },
+  { to: "/parts", label: "型号库", icon: Radar, access: "model.read" },
+  { to: "/stock", label: "我的库存", icon: Warehouse, access: "stock.read" },
+  { to: "/channels", label: "渠道货源", icon: Truck, access: "market.read" },
+  { to: "/inquiries", label: "客户询价", icon: ClipboardList, access: "market.read" },
+  { to: "/watchlist", label: "潜力型号", icon: Star, access: "potential.read" },
+  { to: "/import", label: "智能导入", icon: Upload, access: "import" },
+  { to: "/settings", label: "设置", icon: Settings, access: "settings.manage" },
+  { to: "/users", label: "用户与权限", icon: Settings, access: "users.manage" },
 ] as const;
 
 /** 移动端底部 Tab：6 个主功能（导入在工作台内，设置在右上角） */
@@ -39,7 +45,20 @@ const MOBILE_TABS = [
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
+  const qc = useQueryClient();
+  const { user, isPending } = useCurrentUserState();
+  const accessQuery = useQuery({
+    queryKey: ["current-access"],
+    queryFn: () => getCurrentAccess(),
+    enabled: authEnabled && Boolean(user) && pathname !== "/login",
+    staleTime: 2_000,
+  });
   const [q, setQ] = useState("");
+
+  const exitCheck = useMutation({
+    mutationFn: () => exitIdentityCheck(),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["current-access"] }); void navigate({ to: "/users" }); },
+  });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -62,6 +81,19 @@ export function AppShell({ children }: { children: ReactNode }) {
     navigate({ to: "/parts", search: { q: query } });
   }
 
+  if (pathname === "/login") return <>{children}</>;
+  if (authEnabled && isPending) {
+    return <main className="grid min-h-dvh place-items-center text-sm text-muted-foreground">正在检查登录状态…</main>;
+  }
+  if (authEnabled && !user) return <RedirectToSignIn />;
+
+  const permissions = accessQuery.data?.permissions ?? [];
+  const canSee = (access: (typeof NAV)[number]["access"]) =>
+    access === "import"
+      ? permissions.includes("inventory.import") || permissions.includes("market.write")
+      : permissions.includes(access as never);
+  const nav = NAV.filter((item) => canSee(item.access));
+
   function active(to: string) {
     if (to === "/") return pathname === "/";
     return pathname === to || pathname.startsWith(to + "/");
@@ -80,7 +112,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
         <nav className="flex flex-1 flex-col gap-0.5 px-2">
-          {NAV.map((item) => (
+          {nav.map((item) => (
             <Link
               key={item.to}
               to={item.to}
@@ -115,21 +147,35 @@ export function AppShell({ children }: { children: ReactNode }) {
               />
             </div>
           </form>
+          <div className="min-w-0"><UserButton role={accessQuery.data?.actorRole ?? null} /></div>
           {/* 设置在右上角（不常用入口，移动端可见） */}
-          <Link
-            to="/settings"
-            className="flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground md:hidden"
-            aria-label="设置"
-          >
-            <Settings className="size-5" />
-          </Link>
+          {permissions.includes("settings.manage") && (
+            <Link
+              to="/settings"
+              className="flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground md:hidden"
+              aria-label="设置"
+            >
+              <Settings className="size-5" />
+            </Link>
+          )}
         </header>
+        {accessQuery.data?.isImpersonating && (
+          <div className="hidden items-center justify-between gap-3 border-b border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 md:flex md:px-5">
+            <span>正在检查：{accessQuery.data.displayName}</span>
+            <button type="button" className="underline underline-offset-2" onClick={() => exitCheck.mutate()} disabled={exitCheck.isPending}>退出检查</button>
+          </div>
+        )}
+        {authEnabled && accessQuery.data && !accessQuery.data.role && (
+          <div className="mx-3 mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 md:mx-5">
+            当前账号尚未配置业务角色，请联系老板；此账号不会读取或写入业务数据。
+          </div>
+        )}
         <main className="px-3 py-4 pb-24 md:px-6 md:pb-8">{children}</main>
       </div>
 
       {/* 移动端底部导航：6 个主功能 */}
       <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-border bg-card pb-[env(safe-area-inset-bottom)] md:hidden">
-        {MOBILE_TABS.map((item) => (
+        {MOBILE_TABS.filter((item) => nav.some((n) => n.to === item.to)).map((item) => (
           <Link
             key={item.to}
             to={item.to}

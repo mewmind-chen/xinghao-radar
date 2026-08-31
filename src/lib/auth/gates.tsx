@@ -8,7 +8,7 @@ import { useCurrentUser, useCurrentUserState } from "./use-current-user";
  *
  * With auth on, visitors are signed out until they authenticate — in the sandbox
  * live preview too, which does real sign-in. The shared dev user appears only
- * when auth is disabled (`VITE_AUTH_ENABLED=false`, the shipped default).
+ * when no real auth method is enabled.
  * While the session is still resolving, gates that care about signed-out state
  * render nothing so there's no signed-out flash on hard reload.
  */
@@ -49,13 +49,14 @@ export function RedirectToSignIn({ to = SIGN_IN_PATH }: { to?: string }) {
  * `design-ui` skill). Sign-out is only shown when auth is enabled (the
  * disabled-auth dev user has nothing to sign out of).
  */
-export function UserButton() {
+export function UserButton({ role = null }: { role?: string | null }) {
   const user = useCurrentUser();
   // Sign-out can take a moment (and can fail when deployed), so the control
   // shows it is working and cannot be fired twice.
   const [signingOut, setSigningOut] = useState(false);
   if (!user) return null;
-  const label = user.displayName ?? user.primaryEmail ?? "Account";
+  const name = user.displayName ?? user.primaryEmail ?? "用户";
+  const label = role ? `${name} · ${role}` : name;
   return (
     <div className="flex items-center gap-2">
       {user.profileImageUrl ? (
@@ -69,7 +70,7 @@ export function UserButton() {
           {label.charAt(0).toUpperCase()}
         </span>
       )}
-      <span className="text-sm font-medium">{label}</span>
+      <span className="min-w-0 max-w-[132px] truncate text-xs font-medium sm:max-w-[220px] sm:text-sm">{label}</span>
       {authEnabled && (
         <button
           type="button"
@@ -81,7 +82,7 @@ export function UserButton() {
           }}
           className="cursor-pointer text-sm underline-offset-4 opacity-70 hover:underline disabled:cursor-wait disabled:no-underline"
         >
-          {signingOut ? "Signing out…" : "Sign out"}
+          {signingOut ? "正在退出…" : "退出登录"}
         </button>
       )}
     </div>

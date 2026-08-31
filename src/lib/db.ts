@@ -1,6 +1,7 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { emailAndPasswordEnabled } from "./auth/email-password";
 
 /** Which database backend is active. */
 export type DbSource = "neon" | "pglite";
@@ -164,17 +165,25 @@ async function createPgliteSql(): Promise<Sql> {
 
   // Apply migrations/ (the single schema source) so preview matches production.
   // SQL is inlined by the bundler via import.meta.glob (no runtime fs); applied
-  // files are tracked in _migrations. The glob does not descend, so the opt-in
-  // auth schema under migrations/auth/ stays out. Runs once per module instance
+  // files are tracked in _migrations. The auth schema under migrations/auth/
+  // is included explicitly when local auth is enabled. Runs once per module instance
   // — so an HMR reload after adding a migration file applies it live — with
   // passes serialized on a global chain so concurrent callers never
   // double-apply.
   const migrate = async (): Promise<void> => {
-    const migrations = import.meta.glob("/migrations/*.sql", {
+    const appMigrations = import.meta.glob("/migrations/*.sql", {
       query: "?raw",
       import: "default",
       eager: true,
     }) as Record<string, string>;
+    const authMigrations = emailAndPasswordEnabled
+      ? (import.meta.glob("/migrations/auth/*.sql", {
+          query: "?raw",
+          import: "default",
+          eager: true,
+        }) as Record<string, string>)
+      : {};
+    const migrations = { ...appMigrations, ...authMigrations };
     const doneRows = await pg.query<{ name: string }>(
       "select name from _migrations",
     );

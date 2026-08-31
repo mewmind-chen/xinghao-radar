@@ -11,6 +11,8 @@
  */
 
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
+import { getCurrentPrincipal, requireRole } from "@/lib/auth/authorization.server";
 import { mapHqbResponse } from "./knowledge-map";
 import { getAnalysis, saveAnalysisFull, saveAnalysisReview, getAnalysisReview } from "./analysis-db";
 import type { PartKnowledgeAnalysis } from "./knowledge-map";
@@ -155,8 +157,10 @@ export async function analyzePartMpnWithDependencies(
 }
 
 export const analyzePartMpn = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { mpn: string }) => input)
-  .handler(async ({ data }): Promise<PartKnowledgeAnalysis> => {
+  .handler(async ({ data, context }): Promise<PartKnowledgeAnalysis> => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "analysis.write");
     try {
       return await analyzePartMpnWithDependencies(data.mpn, await createDefaultDependencies());
     } catch (err) {
@@ -177,8 +181,10 @@ export type StoredPartAnalysis = {
 
 /** 读取本型号已保存的分析（无则 null）。供详情页进入即展示与列表标记。 */
 export const getPartAnalysis = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
   .validator((input: { mpn: string }) => input)
-  .handler(async ({ data }): Promise<StoredPartAnalysis | null> => {
+  .handler(async ({ data, context }): Promise<StoredPartAnalysis | null> => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "analysis.read");
     const mpn = data.mpn?.trim();
     if (!mpn) return null;
     try {
@@ -212,8 +218,10 @@ export type PartReviewOutcome = {
 
 /** 保存人对该型号分析的人工决定。Radar 持久化最终动作；平台不写业务决定。 */
 export const submitPartReview = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: PartReviewInput) => input)
-  .handler(async ({ data }): Promise<PartReviewOutcome> => {
+  .handler(async ({ data, context }): Promise<PartReviewOutcome> => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "analysis.write");
     const mpn = data.mpn?.trim();
     if (!mpn) return { ok: false, error: "型号为空" };
     if (!["accept", "reject", "corrected"].includes(data.decision)) {
@@ -244,8 +252,10 @@ export type PartReviewLoaded = {
 };
 
 export const getPartReview = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
   .validator((input: { mpn: string }) => input)
-  .handler(async ({ data }): Promise<PartReviewLoaded> => {
+  .handler(async ({ data, context }): Promise<PartReviewLoaded> => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "analysis.read");
     const mpn = data.mpn?.trim();
     if (!mpn) return { decision: null };
     try {

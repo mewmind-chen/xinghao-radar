@@ -37,6 +37,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { useAppAccess } from "@/lib/auth/use-app-access";
 
 type DetailSearch = {
   /** 从哪个列表进入：型号库(parts) / 我的库存(stock)，决定上下切换的范围 */
@@ -61,6 +62,11 @@ function PartDetail() {
   const ctx = Route.useSearch();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const access = useAppAccess();
+  const canStockWrite = access.can("stock.write");
+  const canMarketWrite = access.can("market.write");
+  const canModelWrite = access.can("model.write");
+  const canPotentialWrite = access.can("potential.write");
   const q = useQuery({
     queryKey: ["part", partId],
     queryFn: () => getPartDetail({ data: { id: partId } }),
@@ -241,7 +247,7 @@ function PartDetail() {
             </p>
           </div>
           <div className="flex items-center gap-1.5">
-            <Button
+            {canModelWrite && <Button
               size="sm"
               variant="ghost"
               onClick={() => setFixOpen(true)}
@@ -249,15 +255,15 @@ function PartDetail() {
             >
               <PenLine className="size-3.5" />
               型号修正
-            </Button>
-            <Button
+            </Button>}
+            {canPotentialWrite && <Button
               variant={d.watched ? "hit" : "outline"}
               className="w-full sm:w-auto"
               onClick={() => watchMut.mutate(!d.watched)}
             >
               <Star className={cn("size-4", d.watched && "fill-current")} />
               {d.watched ? "已关注" : "潜力"}
-            </Button>
+            </Button>}
           </div>
         </div>
       </header>
@@ -275,9 +281,11 @@ function PartDetail() {
                 <span className="font-medium">{l.warehouseCode}</span>
                 <div className="flex items-center gap-2">
                   <span className="font-mono tabular">{formatInventoryQty(l.qtyRemaining)}</span>
-                  <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("out"); }}>出库</Button>
-                  <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("move"); }}>调拨</Button>
-                  <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("adj"); }}>修正</Button>
+                  {canStockWrite && <>
+                    <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("out"); }}>出库</Button>
+                    <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("move"); }}>调拨</Button>
+                    <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("adj"); }}>修正</Button>
+                  </>}
                 </div>
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
@@ -308,7 +316,7 @@ function PartDetail() {
                         ? ` · ${formatEtaLabel({ etaDate: l.etaDate, etaText: l.etaText, precision: l.etaPrecision })}`
                         : ""}
                     </span>
-                    <Button
+                    {canStockWrite && <Button
                       size="sm"
                       variant="outline"
                       onClick={() => {
@@ -317,7 +325,7 @@ function PartDetail() {
                       }}
                     >
                       转入库
-                    </Button>
+                    </Button>}
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     {[
@@ -347,7 +355,7 @@ function PartDetail() {
                 </div>
                 <div className="text-xs text-muted-foreground">{formatWhen(o.offeredAt)}</div>
               </div>
-              <Button
+              {canMarketWrite && <Button
                 size="sm"
                 variant="ghost"
                 onClick={() =>
@@ -358,7 +366,7 @@ function PartDetail() {
                 }
               >
                 无效
-              </Button>
+              </Button>}
             </li>
           ))}
         </ul>
@@ -371,7 +379,7 @@ function PartDetail() {
               {histOffers.map((o) => (
                 <li key={o.id}>
                   {o.channelName} · {formatOfferLine(o)} · {formatWhen(o.offeredAt)}
-                  <button
+                  {canMarketWrite && <button
                     className="ml-2 text-xs underline"
                     onClick={() =>
                       setOfferValid({ data: { ids: [o.id], isValid: true } }).then(() =>
@@ -380,7 +388,7 @@ function PartDetail() {
                     }
                   >
                     恢复
-                  </button>
+                  </button>}
                 </li>
               ))}
             </ul>
@@ -400,7 +408,7 @@ function PartDetail() {
                 </div>
                 <div className="text-xs text-muted-foreground">{formatWhen(i.inquiredAt)}</div>
               </div>
-              <Button
+              {canMarketWrite && <Button
                 size="sm"
                 variant="ghost"
                 onClick={() =>
@@ -411,7 +419,7 @@ function PartDetail() {
                 }
               >
                 无效
-              </Button>
+              </Button>}
             </li>
           ))}
         </ul>
@@ -424,7 +432,7 @@ function PartDetail() {
               {histInq.map((i) => (
                 <li key={i.id}>
                   {i.customerName} · {i.qty != null ? formatQty(i.qty) : "—"} · {formatWhen(i.inquiredAt)}
-                  <button
+                  {canMarketWrite && <button
                     className="ml-2 text-xs underline"
                     onClick={() =>
                       setInquiryValid({ data: { ids: [i.id], isValid: true } }).then(() =>
@@ -433,7 +441,7 @@ function PartDetail() {
                     }
                   >
                     恢复
-                  </button>
+                  </button>}
                 </li>
               ))}
             </ul>
@@ -455,7 +463,7 @@ function PartDetail() {
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <div className="mb-2 flex items-center justify-between gap-2">
           <h2 className="text-sm font-medium">产品知识</h2>
-          <Button
+          {access.can("analysis.write") && <Button
             size="sm"
             variant="outline"
             onClick={() => analyzeMut.mutate()}
@@ -466,7 +474,7 @@ function PartDetail() {
               : stored.data
                 ? "重新分析"
                 : "型号分析"}
-          </Button>
+          </Button>}
         </div>
         {(d.part.description || d.part.params) && (
           <div className="mb-2">
@@ -494,7 +502,7 @@ function PartDetail() {
         />
       </section>
 
-      <CorrectPartDialog
+      {canModelWrite && <CorrectPartDialog
         open={fixOpen}
         onClose={() => setFixOpen(false)}
         partId={partId}
@@ -503,9 +511,9 @@ function PartDetail() {
           qc.invalidateQueries();
           setFixOpen(false);
         }}
-      />
+      />}
 
-      <StockOpDialog
+      {canStockWrite && <StockOpDialog
         open={op}
         onClose={() => {
           setOp(null);
@@ -520,7 +528,7 @@ function PartDetail() {
           setOp(null);
           setLotId(null);
         }}
-      />
+      />}
     </div>
   );
 }

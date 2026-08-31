@@ -28,6 +28,7 @@ function authSchemaCopy(root) {
 
 test("_migrations keys on basename, not path", () => {
   assert.equal(migrationName("/migrations/0002_todos.sql"), "0002_todos.sql");
+  assert.equal(migrationName("C:\\migrations\\0002_todos.sql"), "0002_todos.sql");
   assert.equal(migrationName("migrations/auth/0001_auth.sql"), "0001_auth.sql");
   assert.equal(migrationName("0001_auth.sql"), "0001_auth.sql");
 });

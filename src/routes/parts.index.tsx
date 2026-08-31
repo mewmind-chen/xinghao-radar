@@ -18,6 +18,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useAppAccess } from "@/lib/auth/use-app-access";
 
 type Search = { q?: string };
 
@@ -33,6 +34,7 @@ function PartsPage() {
   const [filter, setFilter] = useState<"all" | "stock" | "hit" | "watch">("all");
   const [open, setOpen] = useState(false);
   const nav = useNavigate();
+  const access = useAppAccess();
   const list = useQuery({
     queryKey: ["parts", q, filter],
     queryFn: () => searchParts({ data: { q, filter } }),
@@ -45,10 +47,12 @@ function PartsPage() {
           <h1 className="text-xl font-medium">型号库</h1>
           <p className="text-sm text-muted-foreground">一型号一主档，点进去看完整故事。</p>
         </div>
-        <Button onClick={() => setOpen(true)}>
-          <Plus className="size-4" />
-          建档
-        </Button>
+        {access.can("model.write") && (
+          <Button onClick={() => setOpen(true)}>
+            <Plus className="size-4" />
+            建档
+          </Button>
+        )}
       </div>
       <div className="flex flex-wrap gap-2">
         <NativeSelect

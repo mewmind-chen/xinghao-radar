@@ -7,6 +7,8 @@
  */
 
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
+import { getCurrentPrincipal, potentialScopeFor, requireImportKind } from "@/lib/auth/authorization.server";
 import {
   DUPLICATE_INQUIRY_HOURS,
   DUPLICATE_OFFER_HOURS,
@@ -159,6 +161,7 @@ async function markDuplicates(
 }
 
 export const parseImport = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator(
     (input: {
       kind: ImportKind;
@@ -173,7 +176,9 @@ export const parseImport = createServerFn({ method: "POST" })
       defaultTax?: CostTax;
     }) => input,
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    requireImportKind(principal, data.kind);
     const sql = await sqlClient();
     await ensureSeed(sql);
 
@@ -248,6 +253,7 @@ export const parseImport = createServerFn({ method: "POST" })
   });
 
 export const confirmImport = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator(
     (input: {
       kind: ImportKind;
@@ -263,10 +269,12 @@ export const confirmImport = createServerFn({ method: "POST" })
       rows: ImportRow[];
     }) => input,
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
     const sql = await sqlClient();
     const selected = data.rows.filter((r) => r.selected && r.mpn);
     if (selected.length === 0) throw new Error("没有勾选可写入的行");
+    for (const row of selected) requireImportKind(principal, effectiveImportKind(row, data.kind));
     const warehouses = await listWarehouses(sql);
     for (const row of selected) {
       const kind = effectiveImportKind(row, data.kind);
@@ -327,8 +335,8 @@ export const confirmImport = createServerFn({ method: "POST" })
     return withTransaction(sql, async (tx) => {
       const batchId = nid();
       await tx`
-      insert into import_batches (id, kind, source_type, filename, raw_excerpt)
-      values (${batchId}, ${data.kind}, ${data.sourceType}, ${data.filename ?? null}, ${data.excerpt ?? null})
+      insert into import_batches (id, kind, source_type, filename, raw_excerpt, created_by)
+      values (${batchId}, ${data.kind}, ${data.sourceType}, ${data.filename ?? null}, ${data.excerpt ?? null}, ${principal.userId})
       `;
 
       const partIds: string[] = [];
@@ -341,7 +349,7 @@ export const confirmImport = createServerFn({ method: "POST" })
         partIds.push(part.id);
       }
       const uniqueIds = [...new Set(partIds)];
-      const flagsBefore = await matchFlagsForParts(tx, uniqueIds);
+      const flagsBefore = await matchFlagsForParts(tx, uniqueIds, undefined, principal.userId, potentialScopeFor(principal));
 
       for (let i = 0; i < selected.length; i++) {
         const row = selected[i];
@@ -426,7 +434,7 @@ export const confirmImport = createServerFn({ method: "POST" })
         await tx`update parts set updated_at = now() where id = ${partId}`;
       }
 
-      const flagsAfter = await matchFlagsForParts(tx, uniqueIds);
+      const flagsAfter = await matchFlagsForParts(tx, uniqueIds, undefined, principal.userId, potentialScopeFor(principal));
     const trigger: ImportKind = data.kind === "mixed" ? "offer" : data.kind;
     const summary = {
       identified: selected.length,

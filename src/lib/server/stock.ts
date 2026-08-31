@@ -1,4 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
+import { getCurrentPrincipal, potentialScopeFor, requireRole } from "@/lib/auth/authorization.server";
 import { formatStockLine, iso, parseLeadTime } from "@/lib/domain";
 import type { CostTax, Currency, PackState, StockMovement } from "@/lib/types";
 import {
@@ -126,8 +128,11 @@ function mapMovement(r: Record<string, unknown>): StockMovement {
 }
 
 export const listStock = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
   .validator((input: { warehouseId?: string; q?: string } | undefined) => input ?? {})
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    requireRole(principal, "stock.read");
     const sql = await sqlClient();
     await ensureSeed(sql);
     const warehouses = await listWarehouses(sql);
@@ -142,7 +147,7 @@ export const listStock = createServerFn({ method: "GET" })
       order by p.mpn, l.status, l.inbound_at desc
     `;
     const partIds = [...new Set(lots.map((r) => String(r.part_id)))];
-    const flags = await matchFlagsForParts(sql, partIds);
+    const flags = await matchFlagsForParts(sql, partIds, undefined, principal.userId, potentialScopeFor(principal));
     let items = lots.map((r) => ({
       id: String(r.id),
       partId: String(r.part_id),
@@ -188,8 +193,10 @@ export const listStock = createServerFn({ method: "GET" })
   });
 
 export const listLotMovements = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
   .validator((input: { lotId: string }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.read");
     const sql = await sqlClient();
     const rows = await sql`
       select m.*, fw.code as from_warehouse_code, tw.code as to_warehouse_code
@@ -203,6 +210,7 @@ export const listLotMovements = createServerFn({ method: "GET" })
   });
 
 export const stockInbound = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator(
     (input: {
       mpn: string;
@@ -218,7 +226,8 @@ export const stockInbound = createServerFn({ method: "POST" })
       supplier?: string;
     }) => input,
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     positiveInteger(data.qty);
     validateCost(data.costAmount ?? null, data.costCurrency ?? null, data.costTax ?? null);
     const sql = await sqlClient();
@@ -249,8 +258,10 @@ export const stockInbound = createServerFn({ method: "POST" })
   });
 
 export const stockOutbound = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { lotId: string; qty: number; note?: string }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     positiveInteger(data.qty);
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
@@ -266,10 +277,12 @@ export const stockOutbound = createServerFn({ method: "POST" })
   });
 
 export const stockTransfer = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator(
     (input: { lotId: string; toWarehouseId: string; qty: number; note?: string }) => input,
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     positiveInteger(data.qty);
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
@@ -305,8 +318,10 @@ export const stockTransfer = createServerFn({ method: "POST" })
   });
 
 export const stockAdjust = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { lotId: string; countedQty: number; note?: string }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     nonNegativeInteger(data.countedQty);
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
@@ -332,6 +347,7 @@ export const stockAdjust = createServerFn({ method: "POST" })
   });
 
 export const stockLotUpdate = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator(
     (input: {
       lotId: string;
@@ -342,7 +358,8 @@ export const stockLotUpdate = createServerFn({ method: "POST" })
       dateCode?: string | null;
     }) => input,
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     validateCost(data.costAmount, data.costCurrency, data.costTax);
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
@@ -378,6 +395,7 @@ export const stockLotUpdate = createServerFn({ method: "POST" })
 export const stockCostUpdate = stockLotUpdate;
 
 export const openTransit = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator(
     (input: {
       mpn: string;
@@ -390,7 +408,8 @@ export const openTransit = createServerFn({ method: "POST" })
       supplier?: string;
     }) => input,
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     positiveInteger(data.qty);
     validateCost(data.costAmount ?? null, data.costCurrency ?? null, data.costTax ?? null);
     const sql = await sqlClient();
@@ -420,8 +439,10 @@ export const openTransit = createServerFn({ method: "POST" })
   });
 
 export const receiveTransit = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((input: { lotId: string; warehouseId: string; qty: number }) => input)
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     positiveInteger(data.qty);
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
@@ -463,7 +484,8 @@ export const receiveTransit = createServerFn({ method: "POST" })
     });
   });
 
-export const stockMeta = createServerFn({ method: "GET" }).handler(async () => {
+export const stockMeta = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
+  requireRole(await getCurrentPrincipal(context.bearerToken), "stock.read");
   const sql = await sqlClient();
   await ensureSeed(sql);
   const warehouses = await listWarehouses(sql);

@@ -25,11 +25,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { useAppAccess } from "@/lib/auth/use-app-access";
 
 export const Route = createFileRoute("/inquiries")({ component: InquiriesPage });
 
 function InquiriesPage() {
   const qc = useQueryClient();
+  const access = useAppAccess();
+  const canWrite = access.can("market.write");
   const [scope, setScope] = useState<"valid" | "history" | "all">("valid");
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<string[]>([]);
@@ -48,10 +51,10 @@ function InquiriesPage() {
           <h1 className="text-xl font-medium">客户询价</h1>
           <p className="text-sm text-muted-foreground">同一客户重复询同一型号，必须新记一条。</p>
         </div>
-        <Button onClick={() => setOpen(true)}>
+        {canWrite && <Button onClick={() => setOpen(true)}>
           <Plus className="size-4" />
           记一笔
-        </Button>
+        </Button>}
       </div>
       <div className="flex flex-wrap gap-2">
         <NativeSelect className="w-32" value={scope} onChange={(e) => setScope(e.target.value as typeof scope)}>
@@ -61,7 +64,7 @@ function InquiriesPage() {
         </NativeSelect>
         <Input className="max-w-xs" value={q} onChange={(e) => setQ(e.target.value)} placeholder="型号 / 客户" />
       </div>
-      {sel.length > 0 && (
+      {canWrite && sel.length > 0 && (
         <div className="flex flex-wrap gap-2 rounded-lg bg-secondary px-3 py-2 text-sm">
           已选 {sel.length}
           <Button
@@ -139,20 +142,20 @@ function InquiriesPage() {
               <span className="text-sm">{c.name}</span>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 {c.isActive ? "启用" : "停用"}
-                <Switch
+                {canWrite && <Switch
                   checked={c.isActive}
                   onCheckedChange={(v) =>
                     setCustomerActive({ data: { id: c.id, isActive: v } }).then(() =>
                       qc.invalidateQueries(),
                     )
                   }
-                />
+                />}
               </div>
             </li>
           ))}
         </ul>
       </section>
-      <InquiryDialog open={open} onOpenChange={setOpen} customers={customers.map((c) => c.name)} />
+      {canWrite && <InquiryDialog open={open} onOpenChange={setOpen} customers={customers.map((c) => c.name)} />}
     </div>
   );
 }

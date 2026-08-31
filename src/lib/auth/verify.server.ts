@@ -1,5 +1,5 @@
 import { getRequest } from "@tanstack/react-start/server";
-import { auth, authConfigured } from "./server";
+import { auth, authConfigured, realAuthEnabled } from "./server";
 
 /**
  * Server-side session resolution (server-only).
@@ -17,7 +17,7 @@ const databaseConfigured = Boolean(process.env.DATABASE_URL?.trim());
 /** Re-export so callers can branch on it without importing `server.ts`. */
 export { authConfigured };
 
-if (databaseConfigured && !authConfigured) {
+if (databaseConfigured && !realAuthEnabled) {
   console.error(
     "[auth] DATABASE_URL is set but auth is disabled (VITE_AUTH_ENABLED=false) " +
       "— requireUserId() will reject every request (fail closed) rather than " +
@@ -56,7 +56,7 @@ export type VerifiedUser = { id: string; email: string | null };
 export async function getSessionUser(
   bearerToken?: string,
 ): Promise<VerifiedUser | null> {
-  if (!authConfigured) return null;
+  if (!realAuthEnabled) return null;
   const request = getRequest();
   if (!request) return null;
   let headers = request.headers;
@@ -75,13 +75,13 @@ export async function getSessionUser(
  * - Auth enabled -> the verified session user id; throws
  *   `UnauthorizedError` when signed out. Works in the sandbox preview too (real
  *   sign-in via the baked preview client).
- * - Auth disabled (`VITE_AUTH_ENABLED=false`) + `DATABASE_URL` set -> throw (fail
- *   closed): one shared dev user on a real database would let every visitor
- *   read/write everyone's rows.
- * - Auth disabled + no database -> the shared dev user id.
+ * - No real auth configured + `DATABASE_URL` set -> throw (fail closed): one
+ *   shared dev user on a real database would let every visitor read/write
+ *   everyone's rows.
+ * - No real auth + no database -> the shared dev user id for legacy templates.
  */
 export async function requireUserId(bearerToken?: string): Promise<string> {
-  if (!authConfigured) {
+  if (!realAuthEnabled) {
     if (databaseConfigured) {
       throw new Error(
         "Auth is disabled (VITE_AUTH_ENABLED=false) but DATABASE_URL is set — " +

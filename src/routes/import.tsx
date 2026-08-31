@@ -1,8 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Camera, ClipboardPaste, FileSpreadsheet, Image, Mic } from "lucide-react";
 import { confirmImport, parseImport } from "@/lib/server/import";
+import { listImportBatches, undoImportBatch } from "@/lib/server/settings";
+import { formatWhen } from "@/lib/domain";
 import { sampleImportText, parseQty, correctTradeText } from "@/lib/domain";
 import type { CostTax, Currency, ImportKind, ImportRow, ImportSource } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -14,11 +16,16 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Mpn } from "@/components/mpn";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { useAppAccess } from "@/lib/auth/use-app-access";
 
 export const Route = createFileRoute("/import")({ component: ImportPage });
 
 function ImportPage() {
   const qc = useQueryClient();
+  const access = useAppAccess();
+  const canMarketImport = access.can("market.write");
+  const canStockImport = access.can("inventory.import");
+  const batches = useQuery({ queryKey: ["import-batches"], queryFn: () => listImportBatches() });
   const [kind, setKind] = useState<ImportKind>("offer");
   const [text, setText] = useState("");
   const [rows, setRows] = useState<ImportRow[] | null>(null);
@@ -61,6 +68,14 @@ function ImportPage() {
       setText(correctTradeText(draft));
     }
   }, []);
+
+  useEffect(() => {
+    if (!canMarketImport && canStockImport && (kind === "offer" || kind === "inquiry" || kind === "mixed")) {
+      setKind("stock");
+    } else if (!canStockImport && (kind === "stock" || kind === "transit")) {
+      setKind("offer");
+    }
+  }, [canMarketImport, canStockImport, kind]);
 
   const parseMut = useMutation({
     mutationFn: (input: Parameters<typeof parseImport>[0]["data"]) => parseImport({ data: input }),
@@ -219,16 +234,43 @@ function ImportPage() {
         </div>
       )}
 
+      {batches.data && batches.data.length > 0 && (
+        <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
+          <h2 className="mb-2 text-sm font-medium">导入批次</h2>
+          <ul className="space-y-2 text-xs">
+            {batches.data.map((batch) => (
+              <li key={batch.id} className="flex items-center justify-between gap-3">
+                <span className="min-w-0 truncate">
+                  {batch.kind} · {batch.sourceType} {batch.filename ?? ""} · {formatWhen(batch.createdAt)}
+                  {batch.undoneAt && <span className="ml-2 text-muted-foreground">已撤销</span>}
+                </span>
+                {batch.canRevoke && !batch.undoneAt && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => undoImportBatch({ data: { id: batch.id } }).then(() => { void qc.invalidateQueries({ queryKey: ["import-batches"] }); toast.success("批次已撤销"); }).catch((err: Error) => toast.error(err.message))}
+                  >撤销</Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <div className="grid gap-3 md:grid-cols-2">
           <div>
             <Label>导入为</Label>
             <NativeSelect value={kind} onChange={(e) => setKind(e.target.value as ImportKind)}>
-              <option value="offer">渠道推货</option>
-              <option value="inquiry">客户询价</option>
-              <option value="stock">入库</option>
-              <option value="transit">在途</option>
-              <option value="mixed">自动判断</option>
+              {canMarketImport && <>
+                <option value="offer">渠道推货</option>
+                <option value="inquiry">客户询价</option>
+              </>}
+              {canStockImport && <>
+                <option value="stock">入库</option>
+                <option value="transit">在途</option>
+              </>}
+              {canMarketImport && canStockImport && <option value="mixed">自动判断</option>}
             </NativeSelect>
           </div>
           {(kind === "offer" || kind === "mixed") && (

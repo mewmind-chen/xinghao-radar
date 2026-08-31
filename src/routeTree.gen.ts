@@ -13,11 +13,14 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ChannelsRouteImport } from './routes/channels'
 import { Route as ImportRouteImport } from './routes/import'
 import { Route as InquiriesRouteImport } from './routes/inquiries'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as StockRouteImport } from './routes/stock'
+import { Route as UsersRouteImport } from './routes/users'
 import { Route as WatchlistRouteImport } from './routes/watchlist'
 import { Route as PartsIndexRouteImport } from './routes/parts.index'
 import { Route as PartsPartIdRouteImport } from './routes/parts.$partId'
+import { Route as ApiAuthSplatRouteImport } from './routes/api.auth.$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -39,6 +42,11 @@ const InquiriesRoute = InquiriesRouteImport.update({
   path: '/inquiries',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -47,6 +55,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const StockRoute = StockRouteImport.update({
   id: '/stock',
   path: '/stock',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UsersRoute = UsersRouteImport.update({
+  id: '/users',
+  path: '/users',
   getParentRoute: () => rootRouteImport,
 } as any)
 const WatchlistRoute = WatchlistRouteImport.update({
@@ -64,28 +77,39 @@ const PartsPartIdRoute = PartsPartIdRouteImport.update({
   path: '/parts/$partId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
+  id: '/api/auth/$',
+  path: '/api/auth/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/channels': typeof ChannelsRoute
   '/import': typeof ImportRoute
   '/inquiries': typeof InquiriesRoute
+  '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/stock': typeof StockRoute
+  '/users': typeof UsersRoute
   '/watchlist': typeof WatchlistRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/parts/': typeof PartsIndexRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/channels': typeof ChannelsRoute
   '/import': typeof ImportRoute
   '/inquiries': typeof InquiriesRoute
+  '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/stock': typeof StockRoute
+  '/users': typeof UsersRoute
   '/watchlist': typeof WatchlistRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/parts': typeof PartsIndexRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -93,11 +117,14 @@ export interface FileRoutesById {
   '/channels': typeof ChannelsRoute
   '/import': typeof ImportRoute
   '/inquiries': typeof InquiriesRoute
+  '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/stock': typeof StockRoute
+  '/users': typeof UsersRoute
   '/watchlist': typeof WatchlistRoute
   '/parts/$partId': typeof PartsPartIdRoute
   '/parts/': typeof PartsIndexRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -106,33 +133,42 @@ export interface FileRouteTypes {
     | '/channels'
     | '/import'
     | '/inquiries'
+    | '/login'
     | '/settings'
     | '/stock'
+    | '/users'
     | '/watchlist'
     | '/parts/$partId'
     | '/parts/'
+    | '/api/auth/$'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/channels'
     | '/import'
     | '/inquiries'
+    | '/login'
     | '/settings'
     | '/stock'
+    | '/users'
     | '/watchlist'
     | '/parts/$partId'
     | '/parts'
+    | '/api/auth/$'
   id:
     | '__root__'
     | '/'
     | '/channels'
     | '/import'
     | '/inquiries'
+    | '/login'
     | '/settings'
     | '/stock'
+    | '/users'
     | '/watchlist'
     | '/parts/$partId'
     | '/parts/'
+    | '/api/auth/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -140,11 +176,14 @@ export interface RootRouteChildren {
   ChannelsRoute: typeof ChannelsRoute
   ImportRoute: typeof ImportRoute
   InquiriesRoute: typeof InquiriesRoute
+  LoginRoute: typeof LoginRoute
   SettingsRoute: typeof SettingsRoute
   StockRoute: typeof StockRoute
+  UsersRoute: typeof UsersRoute
   WatchlistRoute: typeof WatchlistRoute
   PartsPartIdRoute: typeof PartsPartIdRoute
   PartsIndexRoute: typeof PartsIndexRoute
+  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -177,6 +216,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof InquiriesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -189,6 +235,13 @@ declare module '@tanstack/react-router' {
       path: '/stock'
       fullPath: '/stock'
       preLoaderRoute: typeof StockRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/users': {
+      id: '/users'
+      path: '/users'
+      fullPath: '/users'
+      preLoaderRoute: typeof UsersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/watchlist': {
@@ -212,6 +265,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PartsPartIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof ApiAuthSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -220,11 +280,14 @@ const rootRouteChildren: RootRouteChildren = {
   ChannelsRoute: ChannelsRoute,
   ImportRoute: ImportRoute,
   InquiriesRoute: InquiriesRoute,
+  LoginRoute: LoginRoute,
   SettingsRoute: SettingsRoute,
   StockRoute: StockRoute,
+  UsersRoute: UsersRoute,
   WatchlistRoute: WatchlistRoute,
   PartsPartIdRoute: PartsPartIdRoute,
   PartsIndexRoute: PartsIndexRoute,
+  ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -168,6 +168,8 @@ export async function matchFlagsForParts(
   sql: Sql,
   partIds: string[],
   settings?: AppSettings,
+  userId?: string,
+  potentialScope: "all" | "own" | "none" = userId ? "own" : "none",
 ): Promise<Map<string, MatchFlags>> {
   const out = new Map<string, MatchFlags>();
   if (partIds.length === 0) return out;
@@ -177,7 +179,8 @@ export async function matchFlagsForParts(
     `select l.part_id, l.status, l.qty_remaining, l.eta_date, l.eta_text, l.eta_precision, w.id as wh_id, w.code as wh_code
      from stock_lots l
      left join warehouses w on w.id = l.warehouse_id
-     where l.deleted_at is null and l.qty_remaining > 0 and l.part_id in (${placeholders})`,
+     where l.deleted_at is null and l.qty_remaining > 0
+       and l.status in ('on_hand', 'in_transit') and l.part_id in (${placeholders})`,
     partIds,
   );
   const inq = await sql.query<{ part_id: string; n: number }>(
@@ -200,10 +203,18 @@ export async function matchFlagsForParts(
      group by o.part_id`,
     partIds,
   );
-  const watch = await sql.query<{ part_id: string }>(
-    `select part_id from watchlist where part_id in (${placeholders})`,
-    partIds,
-  );
+  const watch = potentialScope === "all"
+    ? await sql.query<{ part_id: string }>(
+        `select distinct part_id from potential_models where part_id in (${placeholders})`,
+        partIds,
+      )
+    : potentialScope === "own" && userId
+      ? await sql.query<{ part_id: string }>(
+          `select part_id from potential_models where user_id = $${partIds.length + 1}
+           and part_id in (${placeholders})`,
+          [...partIds, userId],
+        )
+      : [];
   const watchSet = new Set(watch.map((r) => r.part_id));
   const inqMap = new Map(inq.map((r) => [r.part_id, r.n]));
   const offMap = new Map(off.map((r) => [r.part_id, r.n]));
