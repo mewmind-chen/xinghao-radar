@@ -33,4 +33,20 @@ for (const required of ["pglite.data", "pglite.wasm", "initdb.wasm"]) {
     throw new Error(`[build] FAILED: required PGlite runtime missing: ${required}`);
   }
 }
+
+// Single-bundle (inlineDynamicImports) builds inline the PGlite JS loader into
+// the server entry, which resolves its runtime files relative to the entry
+// directory (__server.func/) instead of _libs/. Mirror them there so the same
+// production build works in both split and single-file layouts.
+const entryRoot = resolve(root, ".vercel/output/functions/__server.func");
+if (existsSync(entryRoot)) {
+  for (const name of ["pglite.data", "pglite.wasm", "initdb.wasm"]) {
+    const target = resolve(entryRoot, name);
+    copyFileSync(resolve(targetDir, name), target);
+    if (!existsSync(target) || statSync(target).size <= 0) {
+      throw new Error(`[build] FAILED: PGlite runtime mirror missing at ${target}`);
+    }
+  }
+  console.log("[build] PGlite runtime mirrored to server entry (single-bundle layout).");
+}
 console.log("[build] PGlite runtime verified (data/wasm/initdb).");

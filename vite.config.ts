@@ -178,6 +178,10 @@ export default defineConfig(({ command, isPreview }) => ({
             // manifest + head-tag middleware). Nitro v3 defaults serverDir to
             // false, so removing this silently unwires /?install=1 on deploys.
             serverDir: "./server",
+            // ServerFn (createSsrRpc) splits into mutually-importing chunks and
+            // dies with "createSsrRpc is not a function" at SSR load; a single
+            // bundle keeps the definition above its top-level callers.
+            inlineDynamicImports: true,
           }),
         ]
       : []),
