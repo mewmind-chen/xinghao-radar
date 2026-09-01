@@ -146,6 +146,10 @@ function authPopupPlugin(): Plugin {
 // The dev server starts once `src/router.tsx` and `src/routes/` exist — see
 // AGENTS.md § "First scaffold".
 export default defineConfig(({ command, isPreview }) => ({
+  // Vite 8 defaults to iOS/Safari 16.4. Transpile the client bundle further
+  // back for older iPhones and embedded WeChat/enterprise WebViews that would
+  // otherwise leave the server-rendered auth placeholder on screen forever.
+  build: { target: ["es2018", "safari13"] },
   server: {
     host: "0.0.0.0",
     port: 8080,

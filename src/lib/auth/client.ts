@@ -21,6 +21,10 @@ import { GROK_PROVIDERS } from "./providers";
 export const authClient = createAuthClient({
   plugins: [genericOAuthClient()],
   fetchOptions: {
+    // Mobile WebViews can leave a fetch pending indefinitely when their network
+    // changes underneath them. Better Auth clears `isPending` when this aborts,
+    // so the route can recover instead of displaying the auth check forever.
+    timeout: 10_000,
     onRequest(ctx) {
       const token = getBearerToken();
       if (token) ctx.headers.set("Authorization", `Bearer ${token}`);

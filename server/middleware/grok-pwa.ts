@@ -30,10 +30,26 @@ interface GrokPwaEvent {
   req: { method: string; headers: Headers };
 }
 
+// Documents must always revalidate so a mobile browser cannot retain an older
+// HTML shell that refers to JavaScript chunks from a newer deployment. This is
+// deliberately applied only after Nitro identifies an HTML response; hashed
+// static assets keep their platform-provided immutable caching policy.
+const DOCUMENT_CACHE_CONTROL = "no-cache, no-store, must-revalidate";
+
 function requestHost(event: GrokPwaEvent): string {
   return (
     event.req.headers.get("x-forwarded-host") ?? event.req.headers.get("host") ?? event.url.host
   );
+}
+
+function preventDocumentCaching(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", DOCUMENT_CACHE_CONTROL);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function injectHeadStreaming(response: Response, host: string): Response {
@@ -91,7 +107,7 @@ export default async function grokPwaMiddleware(
     return new Response(html, {
       headers: {
         "content-type": "text/html; charset=utf-8",
-        "cache-control": "no-cache",
+        "cache-control": DOCUMENT_CACHE_CONTROL,
       },
     });
   }
@@ -101,11 +117,13 @@ export default async function grokPwaMiddleware(
   const result = await next();
   if (
     result instanceof Response &&
-    result.body &&
-    String(result.headers.get("content-type") ?? "").includes("text/html") &&
-    !result.headers.get("content-encoding")
+    String(result.headers.get("content-type") ?? "").includes("text/html")
   ) {
-    return injectHeadStreaming(result, requestHost(event));
+    const documentResponse = preventDocumentCaching(result);
+    if (documentResponse.body && !documentResponse.headers.get("content-encoding")) {
+      return injectHeadStreaming(documentResponse, requestHost(event));
+    }
+    return documentResponse;
   }
   return result;
 }
