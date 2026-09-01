@@ -43,6 +43,16 @@ const MOBILE_TABS = [
   { to: "/watchlist", label: "潜力型号", icon: Star },
 ] as const;
 
+const MOBILE_MEDIA_QUERY = "(max-width: 767px)";
+
+function isMobileViewportNow(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia(MOBILE_MEDIA_QUERY).matches
+  );
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
@@ -55,9 +65,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     staleTime: 2_000,
   });
   const [q, setQ] = useState("");
-  const [isMobileViewport, setIsMobileViewport] = useState(
-    () => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches,
-  );
+  const [isMobileViewport, setIsMobileViewport] = useState(isMobileViewportNow);
 
   const exitCheck = useMutation({
     mutationFn: () => exitIdentityCheck(),
@@ -73,11 +81,17 @@ export function AppShell({ children }: { children: ReactNode }) {
   const needsMobileIdentityRecovery = isMobileViewport && accessQuery.data?.isImpersonating === true;
 
   useEffect(() => {
-    const media = window.matchMedia("(max-width: 767px)");
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(MOBILE_MEDIA_QUERY);
     const update = () => setIsMobileViewport(media.matches);
     update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
+    // Safari/iOS before 14 only exposes the legacy MediaQueryList listener API.
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", update);
+      return () => media.removeEventListener("change", update);
+    }
+    media.addListener(update);
+    return () => media.removeListener(update);
   }, []);
 
   useEffect(() => {

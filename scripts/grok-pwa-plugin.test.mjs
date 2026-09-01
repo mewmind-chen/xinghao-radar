@@ -417,6 +417,14 @@ test("nitro middleware and its bundled assets exist", () => {
   readFileSync(join(TEMPLATE_ROOT, "public/__grok/install/styles.css"));
 });
 
+test("nitro disables caching only for HTML document responses", () => {
+  const middleware = readFileSync(join(TEMPLATE_ROOT, "server/middleware/grok-pwa.ts"), "utf8");
+  assert.match(middleware, /DOCUMENT_CACHE_CONTROL = "no-cache, no-store, must-revalidate"/);
+  assert.match(middleware, /function preventDocumentCaching\(response: Response\)/);
+  assert.match(middleware, /headers\.set\("cache-control", DOCUMENT_CACHE_CONTROL\)/);
+  assert.match(middleware, /includes\("text\/html"\)/);
+});
+
 test("vite plugin bakes og identity as a virtual module", () => {
   const plugin = readFileSync(join(TEMPLATE_ROOT, "scripts/grok-pwa-plugin.mjs"), "utf8");
   assert.match(plugin, /virtual:grok-og-identity/);
