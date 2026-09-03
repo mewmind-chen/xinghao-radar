@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Radar Import Lab</title>
+    <style>
+      :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17202a; background: #f5f7fa; }
+      body { margin: 0; } main { max-width: 1180px; margin: 0 auto; padding: 28px 18px 60px; }
+      h1 { margin: 0 0 6px; font-size: 25px; } p { color: #5b6774; }
+      section { background: white; border: 1px solid #dfe5ec; border-radius: 12px; padding: 18px; margin-top: 16px; box-shadow: 0 3px 12px #16202a0a; }
+      .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; } label { display: grid; gap: 6px; font-size: 13px; color: #4d5965; }
+      textarea, select, input, button { font: inherit; } textarea { min-height: 145px; resize: vertical; } textarea, select, input[type=file] { width: 100%; box-sizing: border-box; border: 1px solid #cdd6e0; border-radius: 8px; padding: 9px; background: white; }
+      .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; } button { border: 0; border-radius: 8px; padding: 9px 14px; cursor: pointer; background: #185adb; color: white; } button.secondary { background: #e9eef5; color: #253344; } button:disabled { opacity: .5; cursor: wait; }
+      .status { padding: 10px 12px; border-radius: 8px; background: #edf3ff; color: #174ea6; white-space: pre-wrap; } .error { background: #fff0f0; color: #a12626; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; } th, td { border-bottom: 1px solid #e7ebef; padding: 8px; text-align: left; vertical-align: top; } th { background: #f7f9fb; }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; } pre { white-space: pre-wrap; overflow: auto; background: #f7f9fb; padding: 12px; border-radius: 8px; max-height: 420px; }
+      .muted { color: #75818d; font-size: 12px; } .pill { display: inline-block; padding: 3px 7px; background: #eef1f5; border-radius: 99px; margin: 2px; font-size: 12px; }
+      @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } main { padding: 20px 12px 40px; } table { display: block; overflow-x: auto; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Import Lab</h1>
+      <p>只验证提取、映射、证据和模型差异，不写入 Radar 业务数据。</p>
+      <section>
+        <div class="grid">
+          <label>业务类型提示<select id="kind"><option value="mixed">混合/自动判断</option><option value="offer">渠道推货</option><option value="inquiry">客户询价</option><option value="stock">库存入库</option><option value="transit">在途</option></select></label>
+          <label>模型模式<select id="mode"><option value="primary">Gemini 3.8 Flash</option><option value="compare">主模型 + 对照模型</option></select></label>
+          <label>文件（最大20MB）<input id="file" type="file" accept=".xlsx,.xls,.csv,.pdf,.doc,.docx,image/*" /></label>
+        </div>
+        <label style="margin-top:12px">或粘贴文本<textarea id="text" placeholder="例如：STM32F103C8T6 10K 2418 $1.15 香港现货"></textarea></label>
+        <div class="actions"><button id="runText">识别文本</button><button id="runFile" class="secondary">识别文件</button><span id="status" class="status">等待输入</span></div>
+      </section>
+      <section id="result" hidden></section>
+    </main>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const status = (text, error = false) => { const el = $("status"); el.textContent = text; el.className = `status${error ? " error" : ""}`; };
+      const b64 = (bytes) => { let out = ""; for (let i = 0; i < bytes.length; i += 0x8000) out += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(out); };
+      const typeOf = (file) => { const n = file.name.toLowerCase(); if (n.endsWith(".xlsx") || n.endsWith(".xls")) return "excel"; if (n.endsWith(".csv")) return "csv"; if (n.endsWith(".pdf")) return "pdf"; if (n.endsWith(".docx") || n.endsWith(".doc")) return "docx"; if (file.type.startsWith("image/")) return "image"; return "text"; };
+      const esc = (v) => String(v ?? "").replace(/[&<>\"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+      function renderOne(label, result) {
+        const rows = result.rows || [];
+        const issues = (result.issues || []).map((x) => `<li>${esc(x.code)}：${esc(x.message)}${x.rowId ? ` <code>${esc(x.rowId)}</code>` : ""}</li>`).join("");
+        const maps = (result.mappings || []).map((m) => `<tr><td>${esc(m.sheet)}</td><td>${esc(m.headerRow + 1)}</td><td><pre>${esc(JSON.stringify(m.columns, null, 2))}</pre></td><td>${m.needsReview ? "需要复核" : "完成"}</td></tr>`).join("");
+        const rowHtml = rows.map((r) => `<tr><td>${esc(r.kind || "待判断")}</td><td><strong>${esc(r.mpn)}</strong><div class="muted">${esc(r.verification)}${r.issues?.length ? " · " + esc(r.issues.join("；")) : ""}</div></td><td>${esc(r.brand)}</td><td>${esc(r.qtyRaw)}${r.qty != null ? ` (${esc(r.qty)})` : ""}</td><td>${esc(r.dateCode)}</td><td>${esc(r.priceAmount)} ${esc(r.priceCurrency)}${r.isTp ? " TP" : ""}</td><td><pre>${esc(JSON.stringify(r.evidence?.mpn || [], null, 2))}</pre></td></tr>`).join("");
+        const runs = (result.runs || []).map((r) => `<span class="pill">${esc(r.model)} · ${esc(r.status)} · ${esc(r.latencyMs)}ms</span>`).join("");
+        return `<h2>${esc(label)}：${esc(result.status)}</h2><p class="muted">route=${esc(result.route)} · digest=${esc(result.sourceDigest)} · ${runs}</p>${issues ? `<h3>问题</h3><ul>${issues}</ul>` : ""}${maps ? `<h3>列映射</h3><table><thead><tr><th>工作表</th><th>表头行</th><th>字段列</th><th>状态</th></tr></thead><tbody>${maps}</tbody></table>` : ""}<h3>候选行（${rows.length}）</h3><table><thead><tr><th>类型</th><th>型号/证据</th><th>品牌</th><th>数量</th><th>批次</th><th>价格</th><th>型号来源</th></tr></thead><tbody>${rowHtml || `<tr><td colspan="7">没有候选行</td></tr>`}</tbody></table><details style="margin-top:12px"><summary>完整JSON</summary><pre>${esc(JSON.stringify(result, null, 2))}</pre></details>`;
+      }
+      async function run(input) {
+        $("runText").disabled = $("runFile").disabled = true; status("正在解析并调用模型…");
+        try {
+          const response = await fetch("/import-lab/api/extract", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.message || data.error || `HTTP ${response.status}`);
+          const result = $("result"); result.hidden = false; result.innerHTML = renderOne("主结果", data.primary); if (data.comparison) result.innerHTML += `<hr/>${renderOne("对照结果", data.comparison)}`; status("完成");
+        } catch (e) { status(e.message || String(e), true); } finally { $("runText").disabled = $("runFile").disabled = false; }
+      }
+      $("runText").onclick = () => run({ kindHint: $("kind").value, modelMode: $("mode").value, source: { type: "text", text: $("text").value } });
+      $("runFile").onclick = async () => { const file = $("file").files[0]; if (!file) { status("请先选择文件", true); return; } if (file.size > 20 * 1024 * 1024) { status("文件超过20MB", true); return; } const bytes = new Uint8Array(await file.arrayBuffer()); await run({ kindHint: $("kind").value, modelMode: $("mode").value, source: { type: typeOf(file), filename: file.name, mime: file.type, contentBase64: b64(bytes) } }); };
+    </script>
+  </body>
+</html>

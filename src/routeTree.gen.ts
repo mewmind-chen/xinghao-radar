@@ -22,6 +22,7 @@ import { Route as WatchlistRouteImport } from './routes/watchlist'
 import { Route as PartsIndexRouteImport } from './routes/parts.index'
 import { Route as PartsPartIdRouteImport } from './routes/parts.$partId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api.auth.$'
+import { Route as ApiImportLabAccessRouteImport } from './routes/api.import-lab.access'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -88,6 +89,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiImportLabAccessRoute = ApiImportLabAccessRouteImport.update({
+  id: '/api/import-lab/access',
+  path: '/api/import-lab/access',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -103,6 +109,7 @@ export interface FileRoutesByFullPath {
   '/parts/$partId': typeof PartsPartIdRoute
   '/parts/': typeof PartsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/import-lab/access': typeof ApiImportLabAccessRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -118,6 +125,7 @@ export interface FileRoutesByTo {
   '/parts/$partId': typeof PartsPartIdRoute
   '/parts': typeof PartsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/import-lab/access': typeof ApiImportLabAccessRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -134,6 +142,7 @@ export interface FileRoutesById {
   '/parts/$partId': typeof PartsPartIdRoute
   '/parts/': typeof PartsIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/import-lab/access': typeof ApiImportLabAccessRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -151,6 +160,7 @@ export interface FileRouteTypes {
     | '/parts/$partId'
     | '/parts/'
     | '/api/auth/$'
+    | '/api/import-lab/access'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -166,6 +176,7 @@ export interface FileRouteTypes {
     | '/parts/$partId'
     | '/parts'
     | '/api/auth/$'
+    | '/api/import-lab/access'
   id:
     | '__root__'
     | '/'
@@ -181,6 +192,7 @@ export interface FileRouteTypes {
     | '/parts/$partId'
     | '/parts/'
     | '/api/auth/$'
+    | '/api/import-lab/access'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -197,6 +209,7 @@ export interface RootRouteChildren {
   PartsPartIdRoute: typeof PartsPartIdRoute
   PartsIndexRoute: typeof PartsIndexRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiImportLabAccessRoute: typeof ApiImportLabAccessRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -292,6 +305,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/import-lab/access': {
+      id: '/api/import-lab/access'
+      path: '/api/import-lab/access'
+      fullPath: '/api/import-lab/access'
+      preLoaderRoute: typeof ApiImportLabAccessRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -309,6 +329,7 @@ const rootRouteChildren: RootRouteChildren = {
   PartsPartIdRoute: PartsPartIdRoute,
   PartsIndexRoute: PartsIndexRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiImportLabAccessRoute: ApiImportLabAccessRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

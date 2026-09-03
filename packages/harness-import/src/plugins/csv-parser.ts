@@ -7,5 +7,5 @@ export function parseCsv(text: string): string[][] {
   return text
     .split(/\r?\n/)
     .filter((l) => l.trim())
-    .map((line) => line.split(/[,	]/).map((c) => c.trim().replace(/^"|"$/g, "")));
+    .map((line) => line.split(",").flatMap((segment) => segment.split("\t")).map((c) => c.trim().replace(/^"|"$/g, "")));
 }

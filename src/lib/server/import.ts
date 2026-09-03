@@ -27,6 +27,7 @@ import {
 import { parseCsv } from "@harness/plugins/csv-parser";
 import { parseExcel } from "@harness/plugins/excel-parser";
 import { resolveImportExtract } from "./import-contract";
+import { resolveImportWithEngine } from "./import-engine-adapter";
 import {
   ensureChannel,
   ensureCustomer,
@@ -38,6 +39,145 @@ import {
   withTransaction,
 } from "./helpers";
 import { ensureSeed } from "./seed";
+
+const IMPORT_KINDS = ["offer", "inquiry", "stock", "transit", "mixed"] as const;
+const IMPORT_SOURCES = ["excel", "csv", "pdf", "word", "image", "text"] as const;
+const MAX_IMPORT_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_IMPORT_TEXT_CHARS = 200_000;
+
+export type ParseImportInput = {
+  kind: ImportKind;
+  sourceType: ImportSource;
+  text?: string;
+  filename?: string;
+  fileBase64?: string;
+  mime?: string;
+  defaultWarehouseId?: string;
+  defaultSupplier?: string;
+  defaultCurrency?: Currency;
+  defaultTax?: CostTax;
+};
+
+type ConfirmImportInput = {
+  kind: ImportKind;
+  sourceType: ImportSource;
+  filename?: string;
+  excerpt?: string;
+  defaultChannel?: string;
+  defaultCustomer?: string;
+  defaultWarehouseId?: string;
+  defaultSupplier?: string;
+  defaultCurrency?: Currency;
+  defaultTax?: CostTax;
+  rows: ImportRow[];
+};
+
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("导入请求格式无效");
+  return value as Record<string, unknown>;
+}
+
+function optionalString(value: unknown, field: string, maxLength: number): string | undefined {
+  if (value == null || value === "") return undefined;
+  if (typeof value !== "string" || value.length > maxLength) throw new Error(`${field}格式无效`);
+  return value;
+}
+
+function optionalEnum<T extends string>(value: unknown, values: readonly T[], field: string): T | undefined {
+  if (value == null || value === "") return undefined;
+  if (typeof value !== "string" || !values.includes(value as T)) throw new Error(`${field}格式无效`);
+  return value as T;
+}
+
+function validateFileBase64(value: unknown): string | undefined {
+  const encoded = optionalString(value, "文件", Math.ceil(MAX_IMPORT_FILE_BYTES / 3) * 4 + 16);
+  if (!encoded) return undefined;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new Error("文件编码无效");
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  const bytes = Math.max(0, Math.floor(encoded.length * 3 / 4) - padding);
+  if (bytes > MAX_IMPORT_FILE_BYTES) throw new Error("文件超过 20MB 限制");
+  return encoded;
+}
+
+function validateParseImportInput(input: unknown): ParseImportInput {
+  const value = record(input);
+  const kind = optionalEnum(value.kind, IMPORT_KINDS, "业务类型");
+  const sourceType = optionalEnum(value.sourceType, IMPORT_SOURCES, "来源类型");
+  if (!kind || !sourceType) throw new Error("缺少业务类型或来源类型");
+  const text = optionalString(value.text, "文本", MAX_IMPORT_TEXT_CHARS);
+  return {
+    kind,
+    sourceType,
+    text,
+    filename: optionalString(value.filename, "文件名", 255),
+    fileBase64: validateFileBase64(value.fileBase64),
+    mime: optionalString(value.mime, "文件类型", 150),
+    defaultWarehouseId: optionalString(value.defaultWarehouseId, "默认仓库", 200),
+    defaultSupplier: optionalString(value.defaultSupplier, "默认供应商", 200),
+    defaultCurrency: optionalEnum(value.defaultCurrency, ["USD", "CNY"], "默认币种"),
+    defaultTax: optionalEnum(value.defaultTax, ["none", "exclusive", "inclusive"], "默认税别"),
+  };
+}
+
+function validateImportRows(rows: unknown): ImportRow[] {
+  if (!Array.isArray(rows) || rows.length > 5000) throw new Error("导入行数无效");
+  const stringFields = [
+    "id", "mpn", "brand", "qtyRaw", "dateCode", "leadTimeText", "etaText", "warehouse", "channel", "customer",
+    "package", "standardPack", "note", "duplicateReason", "warning",
+  ];
+  return rows.map((raw, index) => {
+    const row = record(raw);
+    if (typeof row.id !== "string" || row.id.length > 200 || typeof row.mpn !== "string" || row.mpn.length > 200) {
+      throw new Error(`第 ${index + 1} 行型号格式无效`);
+    }
+    if (typeof row.kind !== "string" || !IMPORT_KINDS.includes(row.kind as ImportKind)) throw new Error(`第 ${index + 1} 行业务类型无效`);
+    for (const field of stringFields) {
+      const fieldValue = row[field];
+      if (fieldValue != null && typeof fieldValue !== "string") throw new Error(`第 ${index + 1} 行字段格式无效`);
+      if (typeof fieldValue === "string" && fieldValue.length > 2000) throw new Error(`第 ${index + 1} 行文本过长`);
+    }
+    for (const field of ["qty", "priceAmount", "priceCurrency", "priceTax", "costAmount", "costCurrency", "costTax"] as const) {
+      const fieldValue = row[field];
+      if (fieldValue != null && fieldValue !== "" && (field.endsWith("Amount") || field === "qty") && (typeof fieldValue !== "number" || !Number.isFinite(fieldValue))) {
+        throw new Error(`第 ${index + 1} 行数值格式无效`);
+      }
+    }
+    for (const [field, values] of [
+      ["priceCurrency", ["USD", "CNY"]],
+      ["costCurrency", ["USD", "CNY"]],
+      ["priceTax", ["none", "exclusive", "inclusive"]],
+      ["costTax", ["none", "exclusive", "inclusive"]],
+      ["packState", ["full", "loose", "mixed"]],
+    ] as const) {
+      const fieldValue = row[field];
+      if (fieldValue != null && !values.includes(fieldValue as never)) throw new Error(`第 ${index + 1} 行枚举字段无效`);
+    }
+    for (const field of ["selected", "duplicate", "isTp"] as const) {
+      if (typeof row[field] !== "boolean") throw new Error(`第 ${index + 1} 行状态格式无效`);
+    }
+    return row as unknown as ImportRow;
+  });
+}
+
+function validateConfirmImportInput(input: unknown): ConfirmImportInput {
+  const value = record(input);
+  const kind = optionalEnum(value.kind, IMPORT_KINDS, "业务类型");
+  const sourceType = optionalEnum(value.sourceType, IMPORT_SOURCES, "来源类型");
+  if (!kind || !sourceType) throw new Error("缺少业务类型或来源类型");
+  return {
+    kind,
+    sourceType,
+    filename: optionalString(value.filename, "文件名", 255),
+    excerpt: optionalString(value.excerpt, "摘要", 500),
+    defaultChannel: optionalString(value.defaultChannel, "默认渠道", 200),
+    defaultCustomer: optionalString(value.defaultCustomer, "默认客户", 200),
+    defaultWarehouseId: optionalString(value.defaultWarehouseId, "默认仓库", 200),
+    defaultSupplier: optionalString(value.defaultSupplier, "默认供应商", 200),
+    defaultCurrency: optionalEnum(value.defaultCurrency, ["USD", "CNY"], "默认币种"),
+    defaultTax: optionalEnum(value.defaultTax, ["none", "exclusive", "inclusive"], "默认税别"),
+    rows: validateImportRows(value.rows),
+  };
+}
 
 function effectiveImportKind(row: ImportRow, selectedKind: ImportKind): ImportKind {
   if (selectedKind === "stock") return "stock";
@@ -162,78 +302,74 @@ async function markDuplicates(
 
 export const parseImport = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator(
-    (input: {
-      kind: ImportKind;
-      sourceType: ImportSource;
-      text?: string;
-      filename?: string;
-      fileBase64?: string;
-      mime?: string;
-      defaultWarehouseId?: string;
-      defaultSupplier?: string;
-      defaultCurrency?: Currency;
-      defaultTax?: CostTax;
-    }) => input,
-  )
+  .validator(validateParseImportInput)
   .handler(async ({ data, context }) => {
     const principal = await getCurrentPrincipal(context.bearerToken);
     requireImportKind(principal, data.kind);
     const sql = await sqlClient();
     await ensureSeed(sql);
 
-    const { extractViaPlatform } = await import("./agent-platform");
-    const resolved = await resolveImportExtract(
-      {
-        kind: data.kind,
-        sourceType: data.sourceType,
-        text: data.text ? correctTradeText(data.text) : undefined,
-        fileBase64: data.fileBase64,
-        mime: data.mime,
-        filename: data.filename,
-      },
-      {
-        readTable: async () => {
-          try {
-            if (data.sourceType === "excel" && data.fileBase64) {
-              return await parseExcel(data.fileBase64);
-            }
-            if (data.sourceType === "csv") {
-              const raw =
-                (data.text ? correctTradeText(data.text) : undefined) ??
-                (data.fileBase64 ? Buffer.from(data.fileBase64, "base64").toString("utf8") : "");
-              return raw ? parseCsv(raw) : null;
-            }
-          } catch {
-            return null;
-          }
-          return null;
-        },
-        extractViaPlatform,
-        runLocalImageFallback: async () => {
-          if (data.sourceType !== "image") return null;
-          const providers = defaultProviders();
-          const outcome = await runImportAgent(
+    const resolved = process.env.IMPORT_ENGINE_V2_ENABLED === "true"
+      ? await resolveImportWithEngine({
+          kind: data.kind,
+          sourceType: data.sourceType,
+          text: data.text ? correctTradeText(data.text) : undefined,
+          fileBase64: data.fileBase64,
+          mime: data.mime,
+          filename: data.filename,
+        })
+      : await (async () => {
+          const { extractViaPlatform } = await import("./agent-platform");
+          return resolveImportExtract(
             {
-              sourceType: "image",
               kind: data.kind,
+              sourceType: data.sourceType,
+              text: data.text ? correctTradeText(data.text) : undefined,
               fileBase64: data.fileBase64,
               mime: data.mime,
               filename: data.filename,
             },
-            providers,
+            {
+              readTable: async () => {
+                try {
+                  if (data.sourceType === "excel" && data.fileBase64) return await parseExcel(data.fileBase64);
+                  if (data.sourceType === "csv") {
+                    const raw =
+                      (data.text ? correctTradeText(data.text) : undefined) ??
+                      (data.fileBase64 ? Buffer.from(data.fileBase64, "base64").toString("utf8") : "");
+                    return raw ? parseCsv(raw) : null;
+                  }
+                } catch {
+                  return null;
+                }
+                return null;
+              },
+              extractViaPlatform,
+              runLocalImageFallback: async () => {
+                if (data.sourceType !== "image") return null;
+                const providers = defaultProviders();
+                const outcome = await runImportAgent(
+                  {
+                    sourceType: "image",
+                    kind: data.kind,
+                    fileBase64: data.fileBase64,
+                    mime: data.mime,
+                    filename: data.filename,
+                  },
+                  providers,
+                );
+                if (!outcome?.rows.length) return null;
+                return { rows: outcome.rows, usedAi: outcome.usedAi };
+              },
+            },
           );
-          if (!outcome?.rows.length) return null;
-          return { rows: outcome.rows, usedAi: outcome.usedAi };
-        },
-      },
-    );
+        })();
 
     const rows = resolved.rows.map((row) =>
       data.kind === "stock" ? { ...row, kind: "stock" as const } : row,
     );
     const usedAi = resolved.usedAi;
-    const providers = defaultProviders();
+    const providers = process.env.IMPORT_ENGINE_V2_ENABLED === "true" ? [] : defaultProviders();
 
     await markDuplicates(sql, rows, data.kind, data.defaultWarehouseId, data.defaultSupplier);
     const warehouses = await listWarehouses(sql);
@@ -242,7 +378,7 @@ export const parseImport = createServerFn({ method: "POST" })
     return {
       rows,
       usedAi,
-      aiAvailable: providers.some((p) => p.available()),
+      aiAvailable: resolved.aiAvailable ?? providers.some((p) => p.available()),
       extractOrigin: resolved.extractOrigin,
       extractState: resolved.extractState,
       extractMessage: resolved.extractMessage,
@@ -254,27 +390,17 @@ export const parseImport = createServerFn({ method: "POST" })
 
 export const confirmImport = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator(
-    (input: {
-      kind: ImportKind;
-      sourceType: ImportSource;
-      filename?: string;
-      excerpt?: string;
-      defaultChannel?: string;
-      defaultCustomer?: string;
-      defaultWarehouseId?: string;
-      defaultSupplier?: string;
-      defaultCurrency?: Currency;
-      defaultTax?: CostTax;
-      rows: ImportRow[];
-    }) => input,
-  )
+  .validator(validateConfirmImportInput)
   .handler(async ({ data, context }) => {
     const principal = await getCurrentPrincipal(context.bearerToken);
     const sql = await sqlClient();
     const selected = data.rows.filter((r) => r.selected && r.mpn);
     if (selected.length === 0) throw new Error("没有勾选可写入的行");
-    for (const row of selected) requireImportKind(principal, effectiveImportKind(row, data.kind));
+    for (const row of selected) {
+      const effectiveKind = effectiveImportKind(row, data.kind);
+      if (effectiveKind === "mixed") throw new Error(`${row.mpn} 业务类型未确定`);
+      requireImportKind(principal, effectiveKind);
+    }
     const warehouses = await listWarehouses(sql);
     for (const row of selected) {
       const kind = effectiveImportKind(row, data.kind);

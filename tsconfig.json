@@ -23,5 +23,5 @@
       "@harness/*": ["./packages/harness-import/src/*"]
     }
   },
-  "include": ["src", "server", "packages"]
+  "include": ["src", "server", "packages", "tools"]
 }

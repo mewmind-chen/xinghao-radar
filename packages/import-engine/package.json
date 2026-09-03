@@ -1,0 +1,7 @@
+{
+  "name": "@xinghao/import-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Project-owned import extraction engine. It extracts and validates candidates; it never writes business data."
+}

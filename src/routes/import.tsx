@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Camera, ClipboardPaste, FileSpreadsheet, Image, Mic } from "lucide-react";
-import { confirmImport, parseImport } from "@/lib/server/import";
+import { confirmImport, parseImport, type ParseImportInput } from "@/lib/server/import";
 import { listImportBatches, undoImportBatch } from "@/lib/server/settings";
 import { formatWhen } from "@/lib/domain";
 import { sampleImportText, parseQty, correctTradeText } from "@/lib/domain";
@@ -13,7 +13,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Mpn } from "@/components/mpn";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useAppAccess } from "@/lib/auth/use-app-access";
@@ -78,7 +77,7 @@ function ImportPage() {
   }, [canMarketImport, canStockImport, kind]);
 
   const parseMut = useMutation({
-    mutationFn: (input: Parameters<typeof parseImport>[0]["data"]) => parseImport({ data: input }),
+    mutationFn: (input: ParseImportInput) => parseImport({ data: input }),
     onSuccess: (r) => {
       const fallbackWarehouseCode = r.warehouses.find((w) => w.id === (warehouseId || r.warehouses[0]?.id))?.code ?? null;
       setRows(r.rows.map((row) => kind === "stock" ? {
@@ -99,12 +98,14 @@ function ImportPage() {
       if (!channel && r.channels[0]) setChannel(r.channels[0].name);
       if (!customer && r.customers[0]) setCustomer(r.customers[0].name);
       if (!warehouseId && r.warehouses[0]) setWarehouseId(r.warehouses[0].id);
-      if (r.extractState === "vision_unavailable" && r.rows.length === 0) {
+      if ((r.extractState === "vision_unavailable" || r.extractState === "provider_unavailable" || r.extractState === "provider_error") && r.rows.length === 0) {
         toast.error(r.extractMessage || "当前无法识别图片");
-      } else if (r.extractState === "needs_mapping") {
+      } else if (r.extractState === "needs_mapping" || r.extractState === "needs_review") {
         toast.error(r.extractMessage || "需要智能列映射");
       } else if (r.extractState === "platform_unavailable" && r.rows.length === 0) {
         toast.error(r.extractMessage || "Platform 暂不可用");
+      } else if ((r.extractState === "invalid_input" || r.extractState === "unsupported") && r.rows.length === 0) {
+        toast.error(r.extractMessage || "文件无法解析");
       } else if (r.rows.length === 0) {
         toast.error(r.extractMessage || "没有识别到型号");
       }
@@ -142,17 +143,19 @@ function ImportPage() {
   });
 
   async function onFile(file: File, src: ImportSource) {
+    if (file.size > 20 * 1024 * 1024) {
+      toast.error("文件超过 20MB 限制");
+      return;
+    }
     setFilename(file.name);
     setSourceType(src);
     const buf = await file.arrayBuffer();
     const bytes = new Uint8Array(buf);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    const b64 = btoa(binary);
+    const b64 = toBase64(bytes);
     if (src === "csv") {
       const t = new TextDecoder().decode(buf);
       setText(t);
-    }
+    } else setText("");
     parseMut.mutate({
       kind,
       sourceType: src,
@@ -207,7 +210,7 @@ function ImportPage() {
       <div>
         <h1 className="text-xl font-medium">智能导入</h1>
         <p className="text-sm text-muted-foreground">
-          先预览再入库。型号字符不会被擅自改写。
+          支持文本、Excel/CSV、图片、PDF 和 DOCX。先预览再入库，模型不会擅自改写型号；人工修改后必须重新勾选。
         </p>
       </div>
 
@@ -350,6 +353,7 @@ function ImportPage() {
             disabled={parseMut.isPending || !text.trim()}
             onClick={() => {
               setSourceType("text");
+              setFilename(undefined);
               parseMut.mutate({
                 kind,
                 sourceType: "text",
@@ -369,7 +373,7 @@ function ImportPage() {
           </Button>
           <Button variant="outline" onClick={() => fileRef.current?.click()}>
             <FileSpreadsheet className="size-4" />
-            Excel / CSV
+            导入文件
           </Button>
           <Button variant="outline" onClick={() => camRef.current?.click()}>
             <Camera className="size-4" />
@@ -392,16 +396,17 @@ function ImportPage() {
               const f = e.target.files?.[0];
               if (!f) return;
               const name = f.name.toLowerCase();
-              if (name.endsWith(".pdf") || name.endsWith(".doc") || name.endsWith(".docx")) {
-                toast.error("PDF / Word 请截图或复制文本后导入，型号才不会被猜错。");
-                e.target.value = "";
-                return;
-              }
               if (f.type.startsWith("image/")) {
                 void onFile(f, "image");
                 return;
               }
-              const src: ImportSource = name.endsWith(".csv") ? "csv" : "excel";
+              const src: ImportSource = name.endsWith(".csv")
+                ? "csv"
+                : name.endsWith(".pdf")
+                  ? "pdf"
+                  : name.endsWith(".doc") || name.endsWith(".docx")
+                    ? "word"
+                    : "excel";
               void onFile(f, src);
             }}
           />
@@ -441,7 +446,11 @@ function ImportPage() {
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-medium">
               预览 {rows.length} 行
-              {extractOrigin === "trusted_template"
+              {extractOrigin === "engine_deterministic"
+                ? " · 本地确定性识别"
+                : extractOrigin === "engine_ai"
+                  ? " · OpenRouter AI 识别"
+                  : extractOrigin === "trusted_template"
                 ? " · 固定模板"
                 : extractOrigin === "controlled_text"
                   ? " · 受控格式"
@@ -483,8 +492,42 @@ function ImportPage() {
                   />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <Mpn value={row.mpn} />
-                      <span className="text-[11px] text-muted-foreground">{labelKind(kind === "stock" ? "stock" : row.kind)}</span>
+                      <label className="min-w-48 max-w-full">
+                        <span className="sr-only">型号（人工核对）</span>
+                        <Input
+                          className="h-7 w-56 max-w-full px-2 font-mono text-xs"
+                          value={row.mpn}
+                          onChange={(e) => patch(idx, { mpn: e.target.value, selected: false, warning: "型号已人工修改，请再次核对" })}
+                          aria-label="型号（人工核对）"
+                        />
+                      </label>
+                      {kind === "mixed" ? (
+                        <NativeSelect
+                          className="h-7 w-auto min-w-24 px-1 text-[11px]"
+                          value={row.kind}
+                          onChange={(e) => {
+                            const nextKind = e.target.value as ImportKind;
+                            const warning = row.warning
+                              ?.split("；")
+                              .filter((message) => !message.includes("业务类型无法确定"))
+                              .join("；") || null;
+                            patch(idx, {
+                              kind: nextKind,
+                              selected: false,
+                              warning: [warning, "业务类型已人工修改，请复核写入"].filter(Boolean).join("；"),
+                            });
+                          }}
+                          aria-label={`${row.mpn} 业务类型`}
+                        >
+                          <option value="mixed">请选择类型</option>
+                          <option value="offer">推货</option>
+                          <option value="inquiry">询价</option>
+                          <option value="stock">入库</option>
+                          <option value="transit">在途</option>
+                        </NativeSelect>
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground">{labelKind(kind === "stock" ? "stock" : row.kind)}</span>
+                      )}
                       {row.duplicate && (
                         <span className="text-[11px] text-warn">{row.duplicateReason}</span>
                       )}
@@ -507,6 +550,7 @@ function ImportPage() {
                       </div>
                     )}
                     {row.note && <p className="mt-1 truncate text-[11px] text-muted-foreground">{row.note}</p>}
+                    {row.warning && <p className="mt-1 text-[11px] text-warn">{row.warning}</p>}
                   </div>
                 </div>
               </li>
@@ -588,6 +632,14 @@ function ChoiceButtons({
 
 function labelKind(k: ImportKind) {
   return { offer: "推货", inquiry: "询价", stock: "入库", transit: "在途", mixed: "混合" }[k];
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
 }
 
 type SpeechRec = {

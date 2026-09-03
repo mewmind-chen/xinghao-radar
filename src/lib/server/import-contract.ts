@@ -8,15 +8,26 @@ import {
   isTrustedImportTable,
   tableToRows,
 } from "../../../packages/harness-import/src/index.ts";
-import type { ImportKind, ImportRow, ImportSource } from "../../../packages/harness-import/src/schema.ts";
+import type { ImportKind, ImportRow, ImportSource } from "@/lib/types";
 
-export type ExtractOrigin = "platform" | "trusted_template" | "controlled_text" | "local_fallback";
+export type ExtractOrigin =
+  | "platform"
+  | "trusted_template"
+  | "controlled_text"
+  | "local_fallback"
+  | "engine_deterministic"
+  | "engine_ai";
 export type ExtractState =
   | "completed"
+  | "needs_review"
   | "needs_mapping"
   | "agent_unavailable"
   | "vision_unavailable"
   | "invalid"
+  | "invalid_input"
+  | "unsupported"
+  | "provider_unavailable"
+  | "provider_error"
   | "platform_unavailable";
 
 export type PlatformExtractRaw = {
@@ -32,6 +43,7 @@ export type ImportExtractResult = {
   extractState: ExtractState;
   extractMessage: string | null;
   calledPlatform: boolean;
+  aiAvailable?: boolean;
 };
 
 export type ImportExtractInput = {
@@ -325,4 +337,6 @@ export const EXTRACT_ORIGIN_LABEL: Record<ExtractOrigin, string> = {
   trusted_template: "固定模板",
   controlled_text: "受控格式",
   local_fallback: "本地降级",
+  engine_deterministic: "本地确定性识别",
+  engine_ai: "OpenRouter AI 识别",
 };
