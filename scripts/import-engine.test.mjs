@@ -49,6 +49,38 @@ test("import-engine: known table maps deterministically and keeps cell evidence"
   assert.equal(result.rows[0].evidence.mpn[0].type, "cell");
 });
 
+test("import-engine: text labels and compact quantities are not mistaken for MPNs", async () => {
+  let calls = 0;
+  const provider = fakeProvider({ rows: {
+    rows: [{ kind: "offer", mpn: "STM32F103C8T6", qtyRaw: "10K", priceRaw: "$1.15", evidence: [{ field: "mpn", type: "text", quote: "STM32F103C8T6" }] }],
+  } });
+  const original = provider.extract;
+  provider.extract = async (request) => { calls++; return original(request); };
+  const result = await extractImport({
+    source: { type: "text", content: "Supplier: Best Components\nItem code: STM32F103C8T6\nAvailable 10K, net $1.15" },
+    kindHint: "offer",
+  }, provider);
+  assert.equal(calls, 1);
+  assert.equal(result.route, "model_rows");
+  assert.equal(result.rows[0].mpn, "STM32F103C8T6");
+  assert.equal(result.rows[0].qty, 10000);
+  assert.equal(result.rows.some((row) => ["Supplier", "Item", "Available"].includes(row.mpn)), false);
+});
+
+test("import-engine: ordinary model-like text still uses deterministic extraction", async () => {
+  const unavailable = fakeProvider({});
+  unavailable.available = () => false;
+  const result = await extractImport({
+    source: { type: "text", content: "STM32F103C8T6 10K DC2418 $1.15 USD 现货 HK" },
+    kindHint: "offer",
+  }, unavailable);
+  assert.equal(result.status, "completed");
+  assert.equal(result.route, "deterministic");
+  assert.equal(result.rows[0].mpn, "STM32F103C8T6");
+  assert.equal(result.rows[0].qty, 10000);
+  assert.equal(result.rows[0].priceAmount, 1.15);
+});
+
 test("import-engine: unknown table asks for mapping when provider is unavailable", async () => {
   const unavailable = fakeProvider({});
   unavailable.available = () => false;

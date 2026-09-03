@@ -17,6 +17,24 @@ function issue(code: ExtractionIssue["code"], message: string): ExtractionIssue 
   return { code, message };
 }
 
+function looksLikeTextMpn(value: string): boolean {
+  const token = value.normalize("NFKC").trim();
+  if (token.length < 4 || !/[A-Za-z]/.test(token) || !/\d/.test(token)) return false;
+  // Quantities such as 10K/2W and similar compact units are not MPNs.
+  if (/^\d+(?:\.\d+)?[KMW]$/i.test(token)) return false;
+  const uppercaseLetters = (token.match(/[A-Z]/g) ?? []).length;
+  return uppercaseLetters >= 2 || /[-_.+/]/.test(token) || /^[A-Za-z]\d{3,}$/.test(token) || /^\d+[A-Z]\d/.test(token);
+}
+
+function findTextMpn(line: string): { value: string; index: number } | null {
+  const tokens = line.matchAll(/[A-Za-z0-9][A-Za-z0-9._+/-]{3,64}/g);
+  for (const match of tokens) {
+    const value = match[0];
+    if (value && looksLikeTextMpn(value)) return { value, index: match.index ?? 0 };
+  }
+  return null;
+}
+
 function safeRows(result: ExtractionResult, rows: CandidateRow[]): ExtractionResult {
   if (rows.length > MAX_OUTPUT_ROWS) result.issues.push(issue("too_many_rows", `候选结果超过 ${MAX_OUTPUT_ROWS} 行，已截断并需要复核`));
   const checked = validateCandidateRows(rows.slice(0, MAX_OUTPUT_ROWS));
@@ -38,14 +56,13 @@ function safeRows(result: ExtractionResult, rows: CandidateRow[]): ExtractionRes
 function textRows(text: string, kindHint: ImportKindHint): CandidateRow[] {
   const rows: CandidateRow[] = [];
   const lines = text.split(/\r?\n/);
-  const mpnRegex = /[A-Za-z0-9][A-Za-z0-9._+/-]{3,64}/;
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
-    const match = line.match(mpnRegex);
+    const match = findTextMpn(line);
     if (!match) continue;
-    const mpn = match[0].normalize("NFKC").trim();
+    const mpn = match.value.normalize("NFKC").trim();
     const evidence = exactSourceEvidence(text, mpn);
-    let rest = line.replace(match[0], " ");
+    let rest = `${line.slice(0, match.index)} ${line.slice(match.index + match.value.length)}`;
     const qtyMatch = rest.match(/(?:^|\s)(\d+(?:\.\d+)?\s*(?:K|k|M|m|W|w|万)?)(?=\s|$)/);
     if (qtyMatch?.[1]) rest = rest.replace(qtyMatch[1], " ");
     const dateMatch = rest.match(/(?:DC\s*)?((?:20\d{2}|2[3-9]\d{2})\+?|\d{2}\+)/i);
@@ -72,6 +89,18 @@ function textRows(text: string, kindHint: ImportKindHint): CandidateRow[] {
     if (row) rows.push(row);
   }
   return rows;
+}
+
+function hasBusinessSignal(row: CandidateRow): boolean {
+  return row.qty != null || row.priceAmount != null || row.dateCode != null || row.leadTimeText != null
+    || row.etaText != null || row.warehouse != null || row.channel != null || row.customer != null || row.isTp;
+}
+
+function hasUnattachedTextContext(text: string, rows: CandidateRow[]): boolean {
+  let remainder = text;
+  for (const row of rows) if (row.mpn) remainder = remainder.split(row.mpn).join(" ");
+  return /\d/.test(remainder)
+    || /供应商|型号|数量|可供|库存|批次|价格|单价|报价|交期|货期|渠道|仓库|现货|supplier|vendor|item\s+code|available|stock|lot|price|delivery|warehouse|maker/i.test(remainder);
 }
 
 function awaitlessMoney(value: string): { amount: number | null; currency: "USD" | "CNY" | null; tax: null; isTp: boolean } {
@@ -226,7 +255,10 @@ export async function extractImport(request: ExtractRequest, provider: Extractio
     if (!text.trim()) { result.status = "invalid_input"; result.issues.push(issue("empty_input", "没有可识别的文本")); return result; }
     if (text.length > MAX_TEXT_CHARS) { result.status = "invalid_input"; result.issues.push(issue("file_too_large", "文本超过20万字符限制")); return result; }
     const deterministic = textRows(text, request.kindHint);
-    if (deterministic.length > 0 && deterministic.every((row) => row.verification === "exact")) return safeRows(result, deterministic);
+    const deterministicOnly = deterministic.length > 0
+      && deterministic.every((row) => row.verification === "exact")
+      && (deterministic.every(hasBusinessSignal) || !hasUnattachedTextContext(text, deterministic));
+    if (deterministicOnly) return safeRows(result, deterministic);
     return modelRows(request, provider, text, undefined, false, result);
   }
   if (request.source.type === "csv" || request.source.type === "excel") {
