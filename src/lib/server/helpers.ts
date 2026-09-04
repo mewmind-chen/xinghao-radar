@@ -137,11 +137,21 @@ export async function ensurePart(
   return mapPart(created[0]);
 }
 
-export async function ensureChannel(sql: Sql, nameRaw: string): Promise<Channel> {
+export async function ensureChannel(
+  sql: Sql,
+  nameRaw: string,
+  options: { requireActive?: boolean } = { requireActive: true },
+): Promise<Channel> {
   const name = nameRaw.normalize("NFKC").trim();
   if (!name) throw new Error("渠道不能为空");
   const existing = await sql`select * from channels where name = ${name} limit 1`;
-  if (existing[0]) return mapChannel(existing[0]);
+  if (existing[0]) {
+    const channel = mapChannel(existing[0]);
+    if (options.requireActive && !channel.isActive) {
+      throw new Error(`渠道“${channel.name}”已停用，请先在“管理渠道”中恢复`);
+    }
+    return channel;
+  }
   const id = nid();
   await sql`insert into channels (id, name) values (${id}, ${name})`;
   const created = await sql`select * from channels where id = ${id}`;

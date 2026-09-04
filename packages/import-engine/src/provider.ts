@@ -145,6 +145,8 @@ export class OpenRouterProvider implements ExtractionProvider {
     const payload = {
       model: process.env[this.modelEnv] || this.model,
       temperature: 0,
+      // Keep the normal row budget for accounts with enough credit, but allow
+      // a bounded retry below when OpenRouter rejects the requested budget.
       max_tokens: request.responseKind === "mapping" ? 2500 : 6000,
       reasoning_effort: "low",
       response_format: { type: "json_schema", json_schema: { name: request.responseKind === "rows" ? "import_rows" : "import_mappings", strict: true, schema } },
@@ -155,6 +157,9 @@ export class OpenRouterProvider implements ExtractionProvider {
       ],
     };
     for (let attempt = 0; attempt < 2; attempt++) {
+      const attemptPayload = attempt === 0 || request.responseKind === "mapping"
+        ? payload
+        : { ...payload, max_tokens: 4000 };
       try {
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
           method: "POST",
@@ -165,10 +170,10 @@ export class OpenRouterProvider implements ExtractionProvider {
             "X-Title": "Xinghao Radar Import Lab",
           },
           signal: AbortSignal.timeout(90_000),
-          body: JSON.stringify(payload),
+          body: JSON.stringify(attemptPayload),
         });
         if (response.ok) return parseResponse(await response.json() as Record<string, unknown>, String(payload.model));
-        if (![408, 425, 429, 500, 502, 503, 504].includes(response.status)) return null;
+        if (![402, 408, 425, 429, 500, 502, 503, 504].includes(response.status)) return null;
       } catch {
         if (attempt === 1) return null;
       }

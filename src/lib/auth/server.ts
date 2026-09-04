@@ -115,6 +115,9 @@ const LOCAL_DEV_ORIGINS: string[] = [
   "http://localhost:8086",
   "http://127.0.0.1:8086",
   "http://[::1]:8086",
+  "http://localhost:8087",
+  "http://127.0.0.1:8087",
+  "http://[::1]:8087",
 ];
 const baseURL = explicitBaseURL ?? {
   // Include loopback hosts so dynamic baseURL resolves for local email/password

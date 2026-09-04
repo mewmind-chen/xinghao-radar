@@ -65,9 +65,31 @@ function textRows(text: string, kindHint: ImportKindHint): CandidateRow[] {
     let rest = `${line.slice(0, match.index)} ${line.slice(match.index + match.value.length)}`;
     const qtyMatch = rest.match(/(?:^|\s)(\d+(?:\.\d+)?\s*(?:K|k|M|m|W|w|万)?)(?=\s|$)/);
     if (qtyMatch?.[1]) rest = rest.replace(qtyMatch[1], " ");
-    const dateMatch = rest.match(/(?:DC\s*)?((?:20\d{2}|2[3-9]\d{2})\+?|\d{2}\+)/i);
-    const dateCode = dateMatch?.[1] ?? null;
-    if (dateMatch?.[0]) rest = rest.replace(dateMatch[0], " ");
+    const dateMatches = [...rest.matchAll(/(?<![\dA-Za-z])((?:20\d{2}|2[3-9]\d{2})\+|(?:20\d{2}|2[3-9]\d{2})(?=\s|$|[,，;；])|\d{2}\+)(?![A-Za-z])/gi)]
+      .filter((match) => {
+        const value = match[1] ?? "";
+        if (value.endsWith("+")) return true;
+        const end = (match.index ?? 0) + match[0].length;
+        return !/^\d{4}$/.test(value) || !/^\s*(?:片|pcs?|包|盘|箱)/i.test(rest.slice(end));
+      });
+    let dateCode: string | null = null;
+    if (dateMatches.length) {
+      const first = dateMatches[0]!;
+      const last = dateMatches[dateMatches.length - 1]!;
+      const firstIndex = first.index ?? 0;
+      const packagePrefix = rest.slice(0, firstIndex).match(/(\d+(?:\.\d+)?\s*(?:包|packs?)\s*)$/i)?.[1] ?? "";
+      const start = firstIndex - packagePrefix.length;
+      const end = (last.index ?? 0) + last[0].length;
+      dateCode = rest.slice(start, end).trim() || null;
+      rest = `${rest.slice(0, start)} ${rest.slice(end)}`;
+    } else {
+      const descriptiveDate = rest.match(/20\d{2}年(?:以后|之后)/);
+      if (descriptiveDate?.[0]) {
+        dateCode = descriptiveDate[0];
+        rest = rest.replace(descriptiveDate[0], " ");
+      }
+    }
+    const standardPack = rest.match(/(?:每\s*(?:包|盘|箱)?|per\s*(?:pack|tray|box))\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:片|pcs?)?/i)?.[1]?.replace(/,/g, "") ?? null;
     const price = rest.match(/(?:[$¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:元|USD|CNY)|\b\d+\.\d+\b)/i)?.[0] ?? "";
     const priceInfo = (awaitlessMoney(price));
     if (price) rest = rest.replace(price, " ");
@@ -78,7 +100,7 @@ function textRows(text: string, kindHint: ImportKindHint): CandidateRow[] {
       ? /客户|询价|求购/.test(line) ? "inquiry" : /在途|到货|月底到|交期/.test(line) ? "transit" : /入库|入仓/.test(line) ? "stock" : null
       : kindHint;
     const row = normalizeRows([{
-      mpn, kind, qtyRaw: qtyMatch?.[1] ?? null, dateCode, priceRaw: price || null,
+      mpn, kind, qtyRaw: qtyMatch?.[1] ?? null, dateCode, standardPack, priceRaw: price || null,
       priceAmount: priceInfo.amount, priceCurrency: priceInfo.currency, priceTax: priceInfo.tax,
       isTp: /\bTP\b|目标价|待报价/.test(line), leadTimeText,
       warehouse: /香港|\bHK\b/i.test(line) ? "HK" : /坂田|板田/.test(line) ? "坂田" : null,

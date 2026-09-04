@@ -10,7 +10,7 @@ export type MovementType =
   | "transit_open"
   | "transit_in";
 export type EtaPrecision = "date" | "week" | "month" | "fuzzy" | "stock";
-export type ImportKind = "offer" | "inquiry" | "stock" | "transit" | "mixed";
+export type ImportKind = "offer" | "inquiry" | "stock" | "transit" | "potential" | "mixed";
 export type ImportSource = "excel" | "csv" | "pdf" | "word" | "image" | "text";
 
 export type Warehouse = {

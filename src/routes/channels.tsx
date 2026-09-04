@@ -1,13 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, Settings2 } from "lucide-react";
 import {
   createOffer,
   listOffers,
   setChannelActive,
   setOfferValid,
   softDeleteOffers,
+  upsertChannel,
 } from "@/lib/server/market";
 import { formatOfferLine, formatWhen, parseQty } from "@/lib/domain";
 import { HitBadges } from "@/components/hit-badges";
@@ -26,6 +27,7 @@ import {
 import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
 import { useAppAccess } from "@/lib/auth/use-app-access";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 
 export const Route = createFileRoute("/channels")({ component: ChannelsPage });
 
@@ -37,12 +39,15 @@ function ChannelsPage() {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
   const list = useQuery({
     queryKey: ["offers", scope, q],
     queryFn: () => listOffers({ data: { scope, q: q || undefined } }),
   });
   const items = list.data?.items ?? [];
   const channels = list.data?.channels ?? [];
+  const activeChannels = list.data?.activeChannels ?? channels.filter((channel) => channel.isActive);
+  const disabledChannels = list.data?.disabledChannels ?? channels.filter((channel) => !channel.isActive);
 
   function toggle(id: string) {
     setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -133,29 +138,87 @@ function ChannelsPage() {
           </li>
         ))}
       </ul>
-      <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
-        <h2 className="mb-3 text-sm font-medium">渠道对象</h2>
-        <ul className="space-y-2">
-          {channels.map((ch) => (
-            <li key={ch.id} className="flex items-center justify-between gap-3">
-              <span className="text-sm">{ch.name}</span>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                {ch.isActive ? "启用" : "停用"}
-                {canWrite && <Switch
-                  checked={ch.isActive}
-                  onCheckedChange={(v) =>
-                    setChannelActive({ data: { id: ch.id, isActive: v } }).then(() =>
-                      qc.invalidateQueries(),
-                    )
-                  }
-                />}
-              </div>
-            </li>
-          ))}
-        </ul>
-      </section>
-      {canWrite && <OfferDialog open={open} onOpenChange={setOpen} channels={channels.map((c) => c.name)} />}
+      <div className="flex items-center justify-between rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+        <span>{activeChannels.length ? `当前启用 ${activeChannels.length} 个渠道` : "暂无启用渠道"} · 停用渠道不参与匹配和新增</span>
+        {canWrite && <Button size="sm" variant="outline" onClick={() => setManageOpen(true)}><Settings2 className="size-4" />管理渠道</Button>}
+      </div>
+      {canWrite && <OfferDialog open={open} onOpenChange={setOpen} channels={activeChannels.map((c) => c.name)} />}
+      {canWrite && <ChannelManager
+        open={manageOpen}
+        onOpenChange={setManageOpen}
+        activeChannels={activeChannels}
+        disabledChannels={disabledChannels}
+      />}
     </div>
+  );
+}
+
+function ChannelManager({
+  open,
+  onOpenChange,
+  activeChannels,
+  disabledChannels,
+}: {
+  open: boolean;
+  onOpenChange: (value: boolean) => void;
+  activeChannels: { id: string; name: string; isActive: boolean }[];
+  disabledChannels: { id: string; name: string; isActive: boolean }[];
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [showDisabled, setShowDisabled] = useState(false);
+  const add = useMutation({
+    mutationFn: () => upsertChannel({ data: { name } }),
+    onSuccess: (channel) => {
+      void qc.invalidateQueries({ queryKey: ["offers"] });
+      setName("");
+      if (channel.isActive) toast.success("渠道已加入启用列表");
+      else toast.message("同名渠道已停用，请在下方恢复后再使用");
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+  const toggle = useMutation({
+    mutationFn: (input: { id: string; isActive: boolean }) => setChannelActive({ data: input }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["offers"] }),
+    onError: (error: Error) => toast.error(error.message),
+  });
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-full max-w-sm overflow-y-auto max-md:inset-y-auto max-md:bottom-0 max-md:h-auto max-md:max-h-[85dvh] max-md:w-full max-md:max-w-none max-md:rounded-t-xl sm:w-96">
+        <div className="pr-6">
+          <h2 className="text-base font-medium">管理渠道</h2>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">启用渠道会参与匹配，也会出现在新增/导入候选中。停用只退出当前匹配，历史货源保留。</p>
+        </div>
+        <form className="mt-4 flex gap-2" onSubmit={(event) => { event.preventDefault(); if (name.trim()) add.mutate(); }}>
+          <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="新增渠道名称" />
+          <Button size="sm" disabled={!name.trim() || add.isPending}>添加</Button>
+        </form>
+        <div className="mt-5 space-y-2">
+          <div className="text-xs font-medium text-muted-foreground">启用中 · {activeChannels.length}</div>
+          {activeChannels.map((channel) => (
+            <div key={channel.id} className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+              <span className="min-w-0 truncate text-sm">{channel.name}</span>
+              <Switch checked={channel.isActive} onCheckedChange={(isActive) => toggle.mutate({ id: channel.id, isActive })} />
+            </div>
+          ))}
+          {!activeChannels.length && <p className="text-xs text-muted-foreground">暂无启用渠道。</p>}
+        </div>
+        <div className="mt-6 border-t border-border pt-4">
+          <button type="button" className="text-xs font-medium text-muted-foreground hover:text-foreground" onClick={() => setShowDisabled((value) => !value)}>
+            {showDisabled ? "收起停用渠道" : `显示停用渠道 · ${disabledChannels.length}`}
+          </button>
+          {showDisabled && <div className="mt-2 space-y-2">
+            {disabledChannels.map((channel) => (
+              <div key={channel.id} className="flex items-center justify-between gap-3 rounded-lg bg-secondary/50 px-3 py-2">
+                <span className="min-w-0 truncate text-sm text-muted-foreground">{channel.name}</span>
+                <Button size="sm" variant="outline" onClick={() => toggle.mutate({ id: channel.id, isActive: true })}>恢复</Button>
+              </div>
+            ))}
+            {!disabledChannels.length && <p className="text-xs text-muted-foreground">暂无停用渠道。</p>}
+          </div>}
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 

@@ -101,6 +101,10 @@ function fallbackKind(kind: ImportKind | "mixed"): ImportKind {
   return kind === "mixed" ? "offer" : kind;
 }
 
+function extractionKind(kind: ImportKind | "mixed") {
+  return kind === "potential" ? "offer" : kind;
+}
+
 function candidateToRow(c: Record<string, unknown>, kind: ImportKind): ImportRow | null {
   const mpn = String(c.mpn || "").normalize("NFKC").trim();
   if (!mpn) return null;
@@ -199,7 +203,7 @@ export async function resolveImportExtract(
 
   if ((input.sourceType === "excel" || input.sourceType === "csv") && isTrustedImportTable(table)) {
     return {
-      rows: asPreviewRows(input.kind, tableToRows(table || [], input.kind)),
+      rows: asPreviewRows(input.kind, tableToRows(table || [], extractionKind(input.kind))),
       usedAi: false,
       extractOrigin: "trusted_template",
       extractState: "completed",
@@ -210,7 +214,7 @@ export async function resolveImportExtract(
 
   if (input.sourceType === "text" && isControlledImportText(input.text)) {
     return {
-      rows: asPreviewRows(input.kind, heuristicParse(input.text || "", input.kind)),
+      rows: asPreviewRows(input.kind, heuristicParse(input.text || "", extractionKind(input.kind))),
       usedAi: false,
       extractOrigin: "controlled_text",
       extractState: "completed",
@@ -297,7 +301,7 @@ export async function resolveImportExtract(
       }
     }
     if (input.sourceType === "text" && input.text && interp.state === "platform_unavailable") {
-      const rows = heuristicParse(input.text, input.kind);
+      const rows = heuristicParse(input.text, extractionKind(input.kind));
       if (rows.length) {
         return {
           rows: asPreviewRows(input.kind, rows),

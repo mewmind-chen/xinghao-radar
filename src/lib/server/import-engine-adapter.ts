@@ -73,11 +73,12 @@ function modelMessage(result: Awaited<ReturnType<typeof extractImport>>): string
 
 export async function resolveImportWithEngine(input: ImportExtractInput): Promise<ImportExtractResult> {
   const sourceType = sourceTypeFor(input.sourceType);
+  const kindHint = input.kind === "potential" ? "offer" : input.kind;
   const content = input.fileBase64
     ? Uint8Array.from(Buffer.from(input.fileBase64, "base64"))
     : input.text ?? "";
   const request: ExtractRequest = {
-    kindHint: input.kind,
+    kindHint,
     source: {
       type: sourceType,
       filename: input.filename,

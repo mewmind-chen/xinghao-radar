@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ArrowRight, Radio } from "lucide-react";
 import { getWorkbench } from "@/lib/server/workbench";
 import { confirmImport, parseImport } from "@/lib/server/import";
-import { formatEtaLabel, formatQty } from "@/lib/domain";
+import { formatQty } from "@/lib/domain";
 import type { ImportRow } from "@/lib/types";
 import { HitBadges } from "@/components/hit-badges";
 import { Mpn } from "@/components/mpn";
@@ -19,6 +19,7 @@ const IMPORT_KIND_LABEL: Record<ImportRow["kind"], string> = {
   inquiry: "询价",
   stock: "入库",
   transit: "在途",
+  potential: "潜力型号",
   mixed: "混合",
 };
 
@@ -88,10 +89,7 @@ function Workbench() {
         <Stat label="今日命中" value={data?.stats.todayHits} hint={data ? `双命中 ${data.stats.dualHits}` : ""} />
         <Stat label="今日询价" value={data?.stats.todayInquiries} />
         <Stat label="今日推货" value={data?.stats.todayOffers} />
-        <Stat
-          label="库存 / 途"
-          value={data ? `${data.stats.stockSku} / ${data.stats.transitSku}` : undefined}
-        />
+        <Stat label="今日入库" value={data?.stats.todayInbound} hint="入库事件数" />
       </div>
 
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
@@ -210,32 +208,7 @@ function Workbench() {
         </ul>
       </section>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
-          <h2 className="mb-3 text-sm font-medium">在途将到</h2>
-          {data?.pendingTransit.length === 0 && (
-            <p className="text-sm text-muted-foreground">没有在途。</p>
-          )}
-          <ul className="space-y-2">
-            {data?.pendingTransit.map((t) => (
-              <li key={t.id}>
-                <Link to="/parts/$partId" params={{ partId: t.partId }} search={{ from: "parts" }} className="block">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <Mpn value={t.mpn} />
-                    <span className="font-mono text-xs tabular">
-                      途 {formatQty(t.qty)}
-                      {t.etaDate
-                        ? ` · ${formatEtaLabel({ etaDate: t.etaDate, etaText: t.etaText, precision: t.etaText?.includes("周") ? "week" : t.etaText?.includes("月") ? "month" : "date" })}`
-                        : t.etaText
-                          ? ` · ${t.etaText}`
-                          : ""}
-                    </span>
-                  </div>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
+      <div className="grid gap-4 md:grid-cols-1">
         <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
           <h2 className="mb-3 text-sm font-medium">有询无货</h2>
           {data?.demandNoStock.length === 0 && (

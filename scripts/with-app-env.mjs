@@ -93,7 +93,15 @@ function main(argv) {
     process.exit(2);
   }
   const env = mergeAppEnv(readAppEnv(projectRoot()), process.env);
-  const child = spawn(command, args, { stdio: "inherit", env });
+  // Node's spawn does not consult PATHEXT for bare commands on Windows.
+  // npm exposes local binaries as `.cmd`, so resolve Vite explicitly while
+  // keeping the same command contract on POSIX hosts.
+  const executable = process.platform === "win32" && command === "vite" ? "vite.cmd" : command;
+  const child = spawn(executable, args, {
+    stdio: "inherit",
+    env,
+    shell: process.platform === "win32" && executable.endsWith(".cmd"),
+  });
   // The dev server is long-running and is stopped by signalling this wrapper.
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => child.kill(signal));
