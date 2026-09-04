@@ -3,6 +3,8 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { getCurrentPrincipal, potentialScopeFor, requirePotential, requireRole } from "@/lib/auth/authorization.server";
 import { formatStockLine, iso } from "@/lib/domain";
 import type { CostTax, Currency, MatchFlags } from "@/lib/types";
+import type { ImportSource, ImportRow } from "@/lib/types";
+import { resolveImportWithEngine } from "./import-engine-adapter";
 import {
   asCostTax,
   asCurrency,
@@ -43,7 +45,7 @@ export const upsertChannel = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    return ensureChannel(sql, data.name);
+    return ensureChannel(sql, data.name, { requireActive: false });
   });
 
 export const upsertCustomer = createServerFn({ method: "POST" })
@@ -162,7 +164,13 @@ export const listOffers = createServerFn({ method: "GET" })
       );
     }
     const channels = (await sql`select * from channels order by name`).map(mapChannel);
-    return { items, channels, settings };
+    return {
+      items,
+      channels,
+      activeChannels: channels.filter((channel) => channel.isActive),
+      disabledChannels: channels.filter((channel) => !channel.isActive),
+      settings,
+    };
   });
 
 export type InquiryListItem = {
@@ -260,7 +268,7 @@ export const createOffer = createServerFn({ method: "POST" })
     requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     const part = await ensurePart(sql, data.mpn, { source: "渠道" });
-    const ch = await ensureChannel(sql, data.channel);
+    const ch = await ensureChannel(sql, data.channel, { requireActive: true });
     const id = nid();
     await sql`
       insert into channel_offers (
@@ -412,4 +420,115 @@ export const toggleWatch = createServerFn({ method: "POST" })
       await sql`delete from potential_models where user_id = ${principal.userId} and part_id = ${data.partId}`;
     }
     return { ok: true as const };
+  });
+
+export type PotentialCandidate = {
+  id: string;
+  mpn: string;
+  partId: string | null;
+  isNewPart: boolean;
+  alreadyFollowed: boolean;
+  selected: boolean;
+  warning: string | null;
+};
+
+export const parsePotentialImport = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: {
+    sourceType: ImportSource;
+    text?: string;
+    filename?: string;
+    fileBase64?: string;
+    mime?: string;
+  }) => input)
+  .handler(async ({ data, context }) => {
+    const principal = requirePotential(await getCurrentPrincipal(context.bearerToken), "potential.write");
+    const sql = await sqlClient();
+    await ensureSeed(sql);
+    const resolved = await resolveImportWithEngine({
+      kind: "offer",
+      sourceType: data.sourceType,
+      text: data.text,
+      filename: data.filename,
+      fileBase64: data.fileBase64,
+      mime: data.mime,
+    });
+    const rows = resolved.rows.filter((row) => row.mpn.trim());
+    const keys = [...new Set(rows.map((row) => row.mpn.normalize("NFKC").trim().toUpperCase()))];
+    const parts = keys.length
+      ? await sql.query<{ id: string; mpn_key: string }>(
+          `select id, mpn_key from parts where mpn_key in (${keys.map((_, i) => `$${i + 1}`).join(",")})`,
+          keys,
+        )
+      : [];
+    const partByKey = new Map(parts.map((part) => [String(part.mpn_key), String(part.id)]));
+    const partIds = [...partByKey.values()];
+    const followed = partIds.length
+      ? await sql.query<{ part_id: string }>(
+          `select part_id from potential_models where user_id = $1 and part_id in (${partIds.map((_, i) => `$${i + 2}`).join(",")})`,
+          [principal.userId, ...partIds],
+        )
+      : [];
+    const followedSet = new Set(followed.map((row) => String(row.part_id)));
+    const candidates: PotentialCandidate[] = rows.map((row: ImportRow) => {
+      const key = row.mpn.normalize("NFKC").trim().toUpperCase();
+      const partId = partByKey.get(key) ?? null;
+      const alreadyFollowed = Boolean(partId && followedSet.has(partId));
+      const warning = row.warning || (alreadyFollowed ? "当前用户已关注，默认不重复加入" : null);
+      return {
+        id: row.id,
+        mpn: row.mpn,
+        partId,
+        isNewPart: !partId,
+        alreadyFollowed,
+        selected: row.selected && !alreadyFollowed && !row.warning,
+        warning,
+      };
+    });
+    return {
+      candidates,
+      extractOrigin: resolved.extractOrigin,
+      extractState: resolved.extractState,
+      extractMessage: resolved.extractMessage,
+      usedAi: resolved.usedAi,
+    };
+  });
+
+export const batchAddPotential = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: { rows: { mpn: string; selected: boolean; note?: string }[] }) => input)
+  .handler(async ({ data, context }) => {
+    const principal = requirePotential(await getCurrentPrincipal(context.bearerToken), "potential.write");
+    if (!Array.isArray(data.rows) || data.rows.length > 5000) throw new Error("潜力型号行数无效");
+    const sql = await sqlClient();
+    const result = await sql.transaction!(async (tx) => {
+      let added = 0;
+      let created = 0;
+      let skipped = 0;
+      let needsReview = 0;
+      for (const raw of data.rows) {
+        const mpn = raw.mpn.normalize("NFKC").trim();
+        if (!raw.selected) {
+          if (raw.mpn) skipped += 1;
+          continue;
+        }
+        if (!mpn) {
+          needsReview += 1;
+          continue;
+        }
+        const before = await tx`select id from parts where mpn_key = ${mpn.toUpperCase()} limit 1`;
+        const part = await ensurePart(tx, mpn, { source: "潜力型号导入" });
+        if (!before[0]) created += 1;
+        const inserted = await tx`
+          insert into potential_models (user_id, part_id, note)
+          values (${principal.userId}, ${part.id}, ${raw.note?.trim() || null})
+          on conflict (user_id, part_id) do nothing
+          returning part_id
+        `;
+        if (inserted.length) added += 1;
+        else skipped += 1;
+      }
+      return { added, created, skipped, needsReview };
+    });
+    return result;
   });

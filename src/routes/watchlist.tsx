@@ -1,22 +1,31 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Star } from "lucide-react";
+import { FileUp, Star } from "lucide-react";
 import { listWatchlist, toggleWatch } from "@/lib/server/market";
 import { HitBadges } from "@/components/hit-badges";
 import { Mpn } from "@/components/mpn";
 import { Button } from "@/components/ui/button";
+import { useAppAccess } from "@/lib/auth/use-app-access";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/watchlist")({ component: WatchPage });
 
 function WatchPage() {
   const qc = useQueryClient();
+  const access = useAppAccess();
   const list = useQuery({ queryKey: ["watchlist"], queryFn: () => listWatchlist() });
   return (
     <div className="mx-auto max-w-5xl space-y-4">
-      <div>
+      <div className="flex items-start justify-between gap-3">
+        <div>
         <h1 className="text-xl font-medium">潜力型号</h1>
         <p className="text-sm text-muted-foreground">关注池。新询价或新货源会在工作台命中。</p>
+        </div>
+        {access.can("potential.write") && (
+          <Button asChild>
+            <Link to="/import" search={{ kind: "potential" }}><FileUp className="size-4" />批量加入</Link>
+          </Button>
+        )}
       </div>
       <ul className="divide-y divide-border overflow-hidden rounded-xl bg-card shadow-[var(--shadow-border)]">
         {list.data?.map((it) => (

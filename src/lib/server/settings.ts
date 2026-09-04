@@ -80,6 +80,7 @@ export const listImportBatches = createServerFn({ method: "GET" })
       sourceType: String(r.source_type),
       filename: r.filename ? String(r.filename) : null,
       createdAt: iso(r.created_at),
+      status: String(r.status ?? "success") as "writing" | "success" | "failed",
       undoneAt: r.undone_at ? String(r.undone_at) : null,
       createdBy: r.created_by ? String(r.created_by) : null,
       canRevoke: !r.undone_at && (principal.role === "老板" || principal.role === "跟进人"),
@@ -126,6 +127,7 @@ export const undoImportBatch = createServerFn({ method: "POST" })
       await tx`update stock_movements set deleted_at = now() where import_batch_id = ${data.id}`;
       await tx`update channel_offers set deleted_at = now() where import_batch_id = ${data.id}`;
       await tx`update customer_inquiries set deleted_at = now() where import_batch_id = ${data.id}`;
+      await tx`delete from potential_models where import_batch_id = ${data.id}`;
       await tx`update import_batches set undone_at = now() where id = ${data.id}`;
       await logOp(tx, "undo_batch", "import_batch", data.id);
       return { ok: true as const };

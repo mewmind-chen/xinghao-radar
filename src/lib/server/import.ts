@@ -39,8 +39,9 @@ import {
   withTransaction,
 } from "./helpers";
 import { ensureSeed } from "./seed";
+import { resolveDateCode } from "@/lib/inventory/date-code";
 
-const IMPORT_KINDS = ["offer", "inquiry", "stock", "transit", "mixed"] as const;
+const IMPORT_KINDS = ["offer", "inquiry", "stock", "transit", "potential", "mixed"] as const;
 const IMPORT_SOURCES = ["excel", "csv", "pdf", "word", "image", "text"] as const;
 const MAX_IMPORT_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_IMPORT_TEXT_CHARS = 200_000;
@@ -70,6 +71,7 @@ type ConfirmImportInput = {
   defaultCurrency?: Currency;
   defaultTax?: CostTax;
   rows: ImportRow[];
+  submissionId?: string;
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -176,11 +178,33 @@ function validateConfirmImportInput(input: unknown): ConfirmImportInput {
     defaultCurrency: optionalEnum(value.defaultCurrency, ["USD", "CNY"], "默认币种"),
     defaultTax: optionalEnum(value.defaultTax, ["none", "exclusive", "inclusive"], "默认税别"),
     rows: validateImportRows(value.rows),
+    submissionId: optionalString(value.submissionId, "幂等键", 200),
   };
 }
 
+function appendWarning(row: ImportRow, warning: string) {
+  row.warning = [...new Set([row.warning, warning].filter(Boolean))].join("；") || null;
+  row.selected = false;
+}
+
+function normalizeImportDateCodes(rows: ImportRow[]): ImportRow[] {
+  const output: ImportRow[] = [];
+  for (const row of rows) {
+    const resolved = resolveDateCode(row.dateCode, row.qty, row.standardPack);
+    if (resolved.splits.length > 1) {
+      for (const split of resolved.splits) {
+        output.push({ ...row, id: nid(), qty: split.qty, qtyRaw: String(split.qty), dateCode: split.dateCode, selected: row.selected, warning: "已按包数 × 标准装量拆分 DC，请确认" });
+      }
+      continue;
+    }
+    if (row.dateCode && !resolved.dateCode) appendWarning(row, resolved.warning || "DC 无法确认");
+    output.push({ ...row, dateCode: resolved.dateCode });
+  }
+  return output;
+}
+
 function effectiveImportKind(row: ImportRow, selectedKind: ImportKind): ImportKind {
-  if (selectedKind === "stock") return "stock";
+  if (selectedKind === "stock" || selectedKind === "potential") return selectedKind;
   return row.kind === "mixed" ? selectedKind : row.kind;
 }
 
@@ -219,6 +243,7 @@ async function markDuplicates(
   selectedKind: ImportKind,
   defaultWarehouseId?: string,
   defaultSupplier?: string,
+  potentialUserId?: string,
 ) {
   flagIntraFileDuplicates(rows, selectedKind, { warehouseId: defaultWarehouseId, supplier: defaultSupplier });
   for (const row of rows) {
@@ -297,6 +322,18 @@ async function markDuplicates(
         row.selected = false;
       }
     }
+    if (kind === "potential" && potentialUserId) {
+      const hits = await sql`
+        select part_id from potential_models
+        where user_id = ${potentialUserId} and part_id = ${partId}
+        limit 1
+      `;
+      if (hits.length > 0) {
+        row.duplicate = true;
+        row.duplicateReason = "当前用户已关注，默认不重复加入";
+        row.selected = false;
+      }
+    }
   }
 }
 
@@ -308,10 +345,13 @@ export const parseImport = createServerFn({ method: "POST" })
     requireImportKind(principal, data.kind);
     const sql = await sqlClient();
     await ensureSeed(sql);
+    // The extraction providers understand event kinds; potential-model import
+    // only changes the local write target, so use a neutral extraction hint.
+    const extractKind: ImportKind = data.kind === "potential" ? "offer" : data.kind;
 
     const resolved = process.env.IMPORT_ENGINE_V2_ENABLED === "true"
       ? await resolveImportWithEngine({
-          kind: data.kind,
+          kind: extractKind,
           sourceType: data.sourceType,
           text: data.text ? correctTradeText(data.text) : undefined,
           fileBase64: data.fileBase64,
@@ -322,7 +362,7 @@ export const parseImport = createServerFn({ method: "POST" })
           const { extractViaPlatform } = await import("./agent-platform");
           return resolveImportExtract(
             {
-              kind: data.kind,
+              kind: extractKind,
               sourceType: data.sourceType,
               text: data.text ? correctTradeText(data.text) : undefined,
               fileBase64: data.fileBase64,
@@ -351,7 +391,7 @@ export const parseImport = createServerFn({ method: "POST" })
                 const outcome = await runImportAgent(
                   {
                     sourceType: "image",
-                    kind: data.kind,
+                    kind: extractKind,
                     fileBase64: data.fileBase64,
                     mime: data.mime,
                     filename: data.filename,
@@ -365,15 +405,17 @@ export const parseImport = createServerFn({ method: "POST" })
           );
         })();
 
-    const rows = resolved.rows.map((row) =>
-      data.kind === "stock" ? { ...row, kind: "stock" as const } : row,
-    );
+    const rows = normalizeImportDateCodes(resolved.rows).map((row) => {
+      if (data.kind === "stock") return { ...row, kind: "stock" as const };
+      if (data.kind === "potential") return { ...row, kind: "potential" as const };
+      return row;
+    });
     const usedAi = resolved.usedAi;
     const providers = process.env.IMPORT_ENGINE_V2_ENABLED === "true" ? [] : defaultProviders();
 
-    await markDuplicates(sql, rows, data.kind, data.defaultWarehouseId, data.defaultSupplier);
+    await markDuplicates(sql, rows, data.kind, data.defaultWarehouseId, data.defaultSupplier, principal.userId);
     const warehouses = await listWarehouses(sql);
-    const channels = await sql`select id, name from channels order by name`;
+    const channels = await sql`select id, name from channels where is_active = true order by name`;
     const customers = await sql`select id, name from customers order by name`;
     return {
       rows,
@@ -394,8 +436,18 @@ export const confirmImport = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const principal = await getCurrentPrincipal(context.bearerToken);
     const sql = await sqlClient();
+    const submissionId = data.submissionId || nid();
+    const existing = await sql`select status, result_json, error_message from import_batches where submission_id = ${submissionId} limit 1`;
+    if (existing[0]) {
+      if (existing[0].status === "success" && existing[0].result_json) return JSON.parse(String(existing[0].result_json));
+      if (existing[0].status === "writing") throw new Error("这份导入正在写入，请勿重复提交");
+      throw new Error(String(existing[0].error_message || "这份导入上次写入失败，请重新生成预览"));
+    }
     const selected = data.rows.filter((r) => r.selected && r.mpn);
     if (selected.length === 0) throw new Error("没有勾选可写入的行");
+    for (const row of selected) {
+      if (!normalizeMpn(row.mpn)) throw new Error("型号不能为空");
+    }
     for (const row of selected) {
       const effectiveKind = effectiveImportKind(row, data.kind);
       if (effectiveKind === "mixed") throw new Error(`${row.mpn} 业务类型未确定`);
@@ -433,6 +485,10 @@ export const confirmImport = createServerFn({ method: "POST" })
         }
       }
       if (kind === "stock") {
+        const dc = resolveDateCode(row.dateCode, row.qty, row.standardPack);
+        if (row.dateCode && (!dc.dateCode || dc.splits.length > 1 || dc.warning)) {
+          throw new Error(`${row.mpn} DC 无法确认：${dc.warning || "请先拆分并核对"}`);
+        }
         const wh =
           warehouses.find((w) => w.code === row.warehouse) ??
           warehouses.find((w) => w.id === data.defaultWarehouseId);
@@ -458,14 +514,17 @@ export const confirmImport = createServerFn({ method: "POST" })
       }
     }
 
-    return withTransaction(sql, async (tx) => {
-      const batchId = nid();
-      await tx`
-      insert into import_batches (id, kind, source_type, filename, raw_excerpt, created_by)
-      values (${batchId}, ${data.kind}, ${data.sourceType}, ${data.filename ?? null}, ${data.excerpt ?? null}, ${principal.userId})
-      `;
+    const batchId = nid();
+    await sql`
+      insert into import_batches (id, kind, source_type, filename, raw_excerpt, created_by, submission_id, status)
+      values (${batchId}, ${data.kind}, ${data.sourceType}, ${data.filename ?? null}, ${data.excerpt ?? null}, ${principal.userId}, ${submissionId}, 'writing')
+    `;
+    try {
+      // Keep confirmImport's transactional write boundary explicit: return withTransaction(sql, ...).
+      return await withTransaction(sql, async (tx) => {
 
       const partIds: string[] = [];
+      let potentialAdded = 0;
       for (const row of selected) {
         const part = await ensurePart(tx, row.mpn, {
         brand: row.brand,
@@ -504,6 +563,14 @@ export const confirmImport = createServerFn({ method: "POST" })
           insert into customer_inquiries (id, customer_id, part_id, qty, import_batch_id)
           values (${nid()}, ${cu.id}, ${partId}, ${row.qty}, ${batchId})
         `;
+      } else if (kind === "potential") {
+        const inserted = await tx`
+          insert into potential_models (user_id, part_id, note, import_batch_id)
+          values (${principal.userId}, ${partId}, ${row.note}, ${batchId})
+          on conflict (user_id, part_id) do nothing
+          returning part_id
+        `;
+        if (inserted.length) potentialAdded += 1;
       } else if (kind === "stock") {
         const code = row.warehouse;
         const wh =
@@ -561,7 +628,7 @@ export const confirmImport = createServerFn({ method: "POST" })
       }
 
       const flagsAfter = await matchFlagsForParts(tx, uniqueIds, undefined, principal.userId, potentialScopeFor(principal));
-    const trigger: ImportKind = data.kind === "mixed" ? "offer" : data.kind;
+    const trigger: ImportKind = data.kind === "mixed" ? "offer" : data.kind === "potential" ? "offer" : data.kind;
     const summary = {
       identified: selected.length,
       hit: uniqueIds.filter((id) => {
@@ -572,6 +639,7 @@ export const confirmImport = createServerFn({ method: "POST" })
       inquiry: uniqueIds.filter((id) => (flagsAfter.get(id)?.inquiryCount ?? 0) > 0).length,
       dual: uniqueIds.filter((id) => flagsAfter.get(id)?.isDual).length,
       watch: uniqueIds.filter((id) => flagsAfter.get(id)?.watch).length,
+      potential: potentialAdded,
     };
     const hitParts = uniqueIds.map((id) => {
       const f = flagsAfter.get(id)!;
@@ -581,6 +649,12 @@ export const confirmImport = createServerFn({ method: "POST" })
         stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
       };
     });
-      return { batchId, summary, hitParts };
-    });
+      const result = { batchId, summary, hitParts };
+      await tx`update import_batches set status = 'success', result_json = ${JSON.stringify(result)} where id = ${batchId}`;
+      return result;
+      });
+    } catch (error) {
+      await sql`update import_batches set status = 'failed', error_message = ${error instanceof Error ? error.message : String(error)} where id = ${batchId}`;
+      throw error;
+    }
   });

@@ -191,6 +191,7 @@ export async function getCurrentPrincipal(bearerToken?: string): Promise<AppPrin
 export function requireImportKind(principal: AppPrincipal, kind: string): AppPrincipal {
   if (kind === "stock" || kind === "transit") return requireRole(principal, "inventory.import");
   if (kind === "offer" || kind === "inquiry") return requireRole(principal, "market.write");
+  if (kind === "potential") return requireRole(principal, "potential.write");
   if (kind === "mixed") {
     if (principal.permissions.includes("inventory.import") || principal.permissions.includes("market.write")) {
       return principal;

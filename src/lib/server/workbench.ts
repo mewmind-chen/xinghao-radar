@@ -68,6 +68,15 @@ export const getWorkbench = createServerFn({ method: "GET" }).middleware([authMi
 
   const todayOffers = await sql`select count(*)::int as n from channel_offers where deleted_at is null and offered_at >= ${since}`;
   const todayInq = await sql`select count(*)::int as n from customer_inquiries where deleted_at is null and inquired_at >= ${since}`;
+  const todayInbound = await sql`
+    select count(distinct m.id)::int as n
+    from stock_movements m
+    left join import_batches b on b.id = m.import_batch_id
+    left join stock_lots l on l.id = m.lot_id
+    where m.deleted_at is null and m.type = 'in' and m.happened_at >= ${since}
+      and (b.id is null or b.undone_at is null)
+      and (l.id is null or l.deleted_at is null)
+  `;
 
   const pendingTransit = await sql`
     select l.*, p.mpn, p.brand_code
@@ -109,6 +118,7 @@ export const getWorkbench = createServerFn({ method: "GET" }).middleware([authMi
     stats: {
       todayOffers: Number(todayOffers[0]?.n ?? 0),
       todayInquiries: Number(todayInq[0]?.n ?? 0),
+      todayInbound: Number(todayInbound[0]?.n ?? 0),
       todayHits: hits.length,
       dualHits: hits.filter((h) => h.dual).length,
       stockSku: Number(onHandParts[0]?.n ?? 0),
