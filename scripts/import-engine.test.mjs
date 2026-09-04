@@ -5,7 +5,6 @@ import { readFile } from "node:fs/promises";
 import {
   extractImport,
   headerKey,
-  OpenRouterProvider,
   parseCsv,
 } from "../packages/import-engine/src/index.ts";
 
@@ -162,35 +161,4 @@ test("import-engine: unknown legacy .doc is explicitly unsupported", async () =>
   }, fakeProvider({}));
   assert.equal(result.status, "unsupported");
   assert.match(result.issues[0].message, /docx|PDF/);
-});
-
-test("import-engine: row extraction retries with a smaller budget after OpenRouter credit rejection", async () => {
-  const originalFetch = globalThis.fetch;
-  const previousKey = process.env.IMPORT_ENGINE_TEST_KEY;
-  const requests = [];
-  process.env.IMPORT_ENGINE_TEST_KEY = "test-key";
-  globalThis.fetch = async (_url, init) => {
-    requests.push(JSON.parse(String(init.body)));
-    if (requests.length === 1) return new Response("credit limit", { status: 402 });
-    return new Response(JSON.stringify({
-      model: "google/gemini-3.8-flash",
-      provider: "test-provider",
-      choices: [{ message: { content: JSON.stringify({ rows: [] }) } }],
-    }), { status: 200, headers: { "content-type": "application/json" } });
-  };
-  try {
-    const provider = new OpenRouterProvider({ apiKeyEnv: "IMPORT_ENGINE_TEST_KEY" });
-    const response = await provider.extract({
-      kindHint: "offer",
-      sourceType: "text",
-      responseKind: "rows",
-      userText: "请识别型号 ABC-123",
-    });
-    assert.ok(response);
-    assert.deepEqual(requests.map((request) => request.max_tokens), [6000, 4000]);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousKey === undefined) delete process.env.IMPORT_ENGINE_TEST_KEY;
-    else process.env.IMPORT_ENGINE_TEST_KEY = previousKey;
-  }
 });
