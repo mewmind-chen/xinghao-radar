@@ -127,10 +127,19 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   if (pathname === "/login") return <>{children}</>;
   if (authEnabled && isPending) {
-    return <main className="grid min-h-dvh place-items-center text-sm text-muted-foreground">正在检查登录状态…</main>;
+    return (
+      <main className="grid min-h-dvh place-items-center text-sm text-muted-foreground p-4 text-center">
+        <div className="flex flex-col items-center gap-3">
+          <p>正在检查登录状态…</p>
+          <a href="/login" className="text-xs text-muted-foreground underline hover:text-foreground">
+            若长时间未响应，点此重新登录
+          </a>
+        </div>
+      </main>
+    );
   }
   if (authEnabled && !user) return <RedirectToSignIn />;
-  if (authEnabled && isMobileViewport && (accessQuery.isPending || needsMobileIdentityRecovery)) {
+  if (authEnabled && isMobileViewport && needsMobileIdentityRecovery) {
     return (
       <div className="min-h-dvh bg-background text-foreground">
         <main className="grid min-h-dvh place-items-center px-6 text-center text-sm text-muted-foreground">

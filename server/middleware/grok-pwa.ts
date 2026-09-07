@@ -15,6 +15,7 @@
  *   runtime hook's return value, and `render:html` does not exist in Nitro v3.
  */
 import installPageTemplate from "../../scripts/install-page.html?raw";
+import { renderStandaloneLoginPage } from "../../scripts/mobile-login-page.mjs";
 import { grokOgIdentity } from "virtual:grok-og-identity";
 import {
   acceptsHtml,
@@ -85,6 +86,29 @@ export default async function grokPwaMiddleware(
 
   const path = event.url.pathname;
   const urlWithQuery = path + event.url.search;
+  const isHtml = acceptsHtml(event.req.headers.get("accept"));
+
+  if (path === "/login" && isHtml) {
+    return new Response(renderStandaloneLoginPage(), {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": DOCUMENT_CACHE_CONTROL,
+      },
+    });
+  }
+
+  const cookieHeader = event.req.headers.get("cookie") ?? "";
+  const hasSessionCookie = cookieHeader.includes("__Host-grok-auth.session_token=");
+
+  // 未登录时访问任何页面（含首页 /），直接返回轻量独立登录页
+  if (isHtml && isDocumentPath(path) && !hasSessionCookie) {
+    return new Response(renderStandaloneLoginPage(), {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": DOCUMENT_CACHE_CONTROL,
+      },
+    });
+  }
 
   if (path === "/__grok/manifest.webmanifest" || path === "/__grok/manifest.json") {
     return new Response(renderWebManifest(requestHost(event)), {

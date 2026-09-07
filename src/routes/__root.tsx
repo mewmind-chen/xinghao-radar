@@ -3,6 +3,7 @@ import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { AppProviders } from "@/components/app-providers";
 import { AppShell } from "@/components/app-shell";
+import { startupWatchdogScript } from "@/lib/startup-watchdog";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "型号雷达";
@@ -33,6 +34,7 @@ export const Route = createRootRoute({
     <html lang="zh-CN" className="antialiased" suppressHydrationWarning>
       <head>
         <HeadContent />
+        <script dangerouslySetInnerHTML={{ __html: startupWatchdogScript }} />
       </head>
       <body>
         <PreviewHostBridge />

@@ -16,6 +16,7 @@ import {
   stripInstallParams,
 } from "./grok-pwa-shared.mjs";
 import { renderInstallPage } from "./grok-pwa-plugin.mjs";
+import { renderStandaloneLoginPage } from "./mobile-login-page.mjs";
 
 const TEMPLATE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -38,6 +39,16 @@ test("injects before </head>", () => {
   assert.match(out, /apple-touch-icon/);
   assert.match(out, /grok-app-builder\/extensions\.js/);
   assert.ok(out.indexOf("manifest") < out.indexOf("</head>"));
+});
+
+test("standalone login remains interactive without the application bundle", () => {
+  const html = renderStandaloneLoginPage();
+  assert.match(html, /id="login-email"/);
+  assert.match(html, /id="login-password"/);
+  assert.match(html, /\/api\/auth\/sign-in\/email/);
+  assert.match(html, /\/api\/auth\/get-session/);
+  assert.match(html, /new XMLHttpRequest\(\)/);
+  assert.doesNotMatch(html, /\/assets\/|type="module"|replaceAll/);
 });
 
 test("injects the extensions script without a project id", () => {
@@ -423,6 +434,15 @@ test("nitro disables caching only for HTML document responses", () => {
   assert.match(middleware, /function preventDocumentCaching\(response: Response\)/);
   assert.match(middleware, /headers\.set\("cache-control", DOCUMENT_CACHE_CONTROL\)/);
   assert.match(middleware, /includes\("text\/html"\)/);
+});
+
+test("vite preview disables caching only while streaming HTML documents", () => {
+  const plugin = readFileSync(join(TEMPLATE_ROOT, "scripts/grok-pwa-plugin.mjs"), "utf8");
+  assert.match(plugin, /DOCUMENT_CACHE_CONTROL = "no-cache, no-store, must-revalidate"/);
+  assert.match(plugin, /res\.setHeader\("cache-control", DOCUMENT_CACHE_CONTROL\)/);
+  assert.match(plugin, /mode === "inject"/);
+  assert.match(plugin, /HASHED_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"/);
+  assert.match(plugin, /HASHED_ASSET_PATH\.test\(pathOnly\)/);
 });
 
 test("vite plugin bakes og identity as a virtual module", () => {
