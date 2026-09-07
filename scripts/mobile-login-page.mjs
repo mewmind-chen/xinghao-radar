@@ -21,7 +21,7 @@ export function renderStandaloneLoginPage() {
   <main>
     <p class="eyebrow">型号雷达 · 安全登录</p>
     <h1 class="title">登录</h1>
-    <p class="hint">请使用老板创建并分配给你的正式账号。</p>
+    <p class="hint">请使用分配给你的正式账号（如 yang@xinghao.local），默认密码 12345678。</p>
     <form id="login-form" novalidate>
       <label for="login-email">邮箱</label>
       <input id="login-email" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="none" required>
