@@ -8,7 +8,11 @@
 
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { getCurrentPrincipal, potentialScopeFor, requireImportKind } from "@/lib/auth/authorization.server";
+import {
+  getCurrentPrincipal,
+  potentialScopeFor,
+  requireImportKind,
+} from "@/lib/auth/authorization.server";
 import {
   DUPLICATE_INQUIRY_HOURS,
   DUPLICATE_OFFER_HOURS,
@@ -20,10 +24,7 @@ import {
 } from "@/lib/domain";
 import type { ImportKind, ImportRow, ImportSource } from "@/lib/types";
 import type { CostTax, Currency } from "@/lib/types";
-import {
-  defaultProviders,
-  runImportAgent,
-} from "@harness/index";
+import { defaultProviders, runImportAgent } from "@harness/index";
 import { parseCsv } from "@harness/plugins/csv-parser";
 import { parseExcel } from "@harness/plugins/excel-parser";
 import { resolveImportExtract } from "./import-contract";
@@ -75,7 +76,8 @@ type ConfirmImportInput = {
 };
 
 function record(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("导入请求格式无效");
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("导入请求格式无效");
   return value as Record<string, unknown>;
 }
 
@@ -85,9 +87,14 @@ function optionalString(value: unknown, field: string, maxLength: number): strin
   return value;
 }
 
-function optionalEnum<T extends string>(value: unknown, values: readonly T[], field: string): T | undefined {
+function optionalEnum<T extends string>(
+  value: unknown,
+  values: readonly T[],
+  field: string,
+): T | undefined {
   if (value == null || value === "") return undefined;
-  if (typeof value !== "string" || !values.includes(value as T)) throw new Error(`${field}格式无效`);
+  if (typeof value !== "string" || !values.includes(value as T))
+    throw new Error(`${field}格式无效`);
   return value as T;
 }
 
@@ -96,7 +103,7 @@ function validateFileBase64(value: unknown): string | undefined {
   if (!encoded) return undefined;
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new Error("文件编码无效");
   const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
-  const bytes = Math.max(0, Math.floor(encoded.length * 3 / 4) - padding);
+  const bytes = Math.max(0, Math.floor((encoded.length * 3) / 4) - padding);
   if (bytes > MAX_IMPORT_FILE_BYTES) throw new Error("文件超过 20MB 限制");
   return encoded;
 }
@@ -124,23 +131,58 @@ function validateParseImportInput(input: unknown): ParseImportInput {
 function validateImportRows(rows: unknown): ImportRow[] {
   if (!Array.isArray(rows) || rows.length > 5000) throw new Error("导入行数无效");
   const stringFields = [
-    "id", "mpn", "brand", "qtyRaw", "dateCode", "leadTimeText", "etaText", "warehouse", "channel", "customer",
-    "package", "standardPack", "note", "duplicateReason", "warning",
+    "id",
+    "mpn",
+    "brand",
+    "qtyRaw",
+    "dateCode",
+    "leadTimeText",
+    "etaText",
+    "warehouse",
+    "channel",
+    "customer",
+    "package",
+    "standardPack",
+    "note",
+    "duplicateReason",
+    "warning",
+    "brandConflict",
   ];
   return rows.map((raw, index) => {
     const row = record(raw);
-    if (typeof row.id !== "string" || row.id.length > 200 || typeof row.mpn !== "string" || row.mpn.length > 200) {
+    if (
+      typeof row.id !== "string" ||
+      row.id.length > 200 ||
+      typeof row.mpn !== "string" ||
+      row.mpn.length > 200
+    ) {
       throw new Error(`第 ${index + 1} 行型号格式无效`);
     }
-    if (typeof row.kind !== "string" || !IMPORT_KINDS.includes(row.kind as ImportKind)) throw new Error(`第 ${index + 1} 行业务类型无效`);
+    if (typeof row.kind !== "string" || !IMPORT_KINDS.includes(row.kind as ImportKind))
+      throw new Error(`第 ${index + 1} 行业务类型无效`);
     for (const field of stringFields) {
       const fieldValue = row[field];
-      if (fieldValue != null && typeof fieldValue !== "string") throw new Error(`第 ${index + 1} 行字段格式无效`);
-      if (typeof fieldValue === "string" && fieldValue.length > 2000) throw new Error(`第 ${index + 1} 行文本过长`);
+      if (fieldValue != null && typeof fieldValue !== "string")
+        throw new Error(`第 ${index + 1} 行字段格式无效`);
+      if (typeof fieldValue === "string" && fieldValue.length > 2000)
+        throw new Error(`第 ${index + 1} 行文本过长`);
     }
-    for (const field of ["qty", "priceAmount", "priceCurrency", "priceTax", "costAmount", "costCurrency", "costTax"] as const) {
+    for (const field of [
+      "qty",
+      "priceAmount",
+      "priceCurrency",
+      "priceTax",
+      "costAmount",
+      "costCurrency",
+      "costTax",
+    ] as const) {
       const fieldValue = row[field];
-      if (fieldValue != null && fieldValue !== "" && (field.endsWith("Amount") || field === "qty") && (typeof fieldValue !== "number" || !Number.isFinite(fieldValue))) {
+      if (
+        fieldValue != null &&
+        fieldValue !== "" &&
+        (field.endsWith("Amount") || field === "qty") &&
+        (typeof fieldValue !== "number" || !Number.isFinite(fieldValue))
+      ) {
         throw new Error(`第 ${index + 1} 行数值格式无效`);
       }
     }
@@ -152,7 +194,8 @@ function validateImportRows(rows: unknown): ImportRow[] {
       ["packState", ["full", "loose", "mixed"]],
     ] as const) {
       const fieldValue = row[field];
-      if (fieldValue != null && !values.includes(fieldValue as never)) throw new Error(`第 ${index + 1} 行枚举字段无效`);
+      if (fieldValue != null && !values.includes(fieldValue as never))
+        throw new Error(`第 ${index + 1} 行枚举字段无效`);
     }
     for (const field of ["selected", "duplicate", "isTp"] as const) {
       if (typeof row[field] !== "boolean") throw new Error(`第 ${index + 1} 行状态格式无效`);
@@ -187,13 +230,45 @@ function appendWarning(row: ImportRow, warning: string) {
   row.selected = false;
 }
 
+function isCompositeMpn(mpn: string): boolean {
+  return /\s+(?:\/|\||或)\s+/.test(mpn.trim()) || /[／｜]/.test(mpn.trim());
+}
+
+async function annotateImportReviewRows(
+  sql: Awaited<ReturnType<typeof sqlClient>>,
+  rows: ImportRow[],
+) {
+  for (const row of rows) {
+    if (isCompositeMpn(row.mpn)) {
+      appendWarning(row, "型号包含多个候选，请拆分为一行一个型号");
+    }
+    if (!row.brand?.trim() || !normalizeMpn(row.mpn)) continue;
+    const existing =
+      await sql`select brand_code from parts where mpn_key = ${normalizeMpn(row.mpn)} limit 1`;
+    const existingBrand = String(existing[0]?.brand_code ?? "").trim();
+    const importedBrand = row.brand.trim();
+    if (existingBrand && existingBrand.toUpperCase() !== importedBrand.toUpperCase()) {
+      row.brandConflict = `主档品牌 ${existingBrand} 与导入品牌 ${importedBrand} 冲突`;
+      appendWarning(row, row.brandConflict);
+    }
+  }
+}
+
 function normalizeImportDateCodes(rows: ImportRow[]): ImportRow[] {
   const output: ImportRow[] = [];
   for (const row of rows) {
     const resolved = resolveDateCode(row.dateCode, row.qty, row.standardPack);
     if (resolved.splits.length > 1) {
       for (const split of resolved.splits) {
-        output.push({ ...row, id: nid(), qty: split.qty, qtyRaw: String(split.qty), dateCode: split.dateCode, selected: row.selected, warning: "已按包数 × 标准装量拆分 DC，请确认" });
+        output.push({
+          ...row,
+          id: nid(),
+          qty: split.qty,
+          qtyRaw: String(split.qty),
+          dateCode: split.dateCode,
+          selected: row.selected,
+          warning: "已按包数 × 标准装量拆分 DC，请确认",
+        });
       }
       continue;
     }
@@ -245,7 +320,10 @@ async function markDuplicates(
   defaultSupplier?: string,
   potentialUserId?: string,
 ) {
-  flagIntraFileDuplicates(rows, selectedKind, { warehouseId: defaultWarehouseId, supplier: defaultSupplier });
+  flagIntraFileDuplicates(rows, selectedKind, {
+    warehouseId: defaultWarehouseId,
+    supplier: defaultSupplier,
+  });
   for (const row of rows) {
     if (row.duplicate) continue;
     const key = normalizeMpn(row.mpn);
@@ -278,7 +356,8 @@ async function markDuplicates(
       `;
       if (hits.length > 0) {
         row.duplicate = true;
-        row.duplicateReason = "疑似重复：相同型号、仓库、数量、DC 和成本已有库存批次（若确为新批次可勾选）";
+        row.duplicateReason =
+          "疑似重复：相同型号、仓库、数量、DC 和成本已有库存批次（若确为新批次可勾选）";
         row.selected = false;
       }
     }
@@ -349,71 +428,89 @@ export const parseImport = createServerFn({ method: "POST" })
     // only changes the local write target, so use a neutral extraction hint.
     const extractKind: ImportKind = data.kind === "potential" ? "offer" : data.kind;
 
-    const resolved = process.env.IMPORT_ENGINE_V2_ENABLED === "true"
-      ? await resolveImportWithEngine({
-          kind: extractKind,
-          sourceType: data.sourceType,
-          text: data.text ? correctTradeText(data.text) : undefined,
-          fileBase64: data.fileBase64,
-          mime: data.mime,
-          filename: data.filename,
-        })
-      : await (async () => {
-          const { extractViaPlatform } = await import("./agent-platform");
-          return resolveImportExtract(
-            {
-              kind: extractKind,
-              sourceType: data.sourceType,
-              text: data.text ? correctTradeText(data.text) : undefined,
-              fileBase64: data.fileBase64,
-              mime: data.mime,
-              filename: data.filename,
-            },
-            {
-              readTable: async () => {
-                try {
-                  if (data.sourceType === "excel" && data.fileBase64) return await parseExcel(data.fileBase64);
-                  if (data.sourceType === "csv") {
-                    const raw =
-                      (data.text ? correctTradeText(data.text) : undefined) ??
-                      (data.fileBase64 ? Buffer.from(data.fileBase64, "base64").toString("utf8") : "");
-                    return raw ? parseCsv(raw) : null;
+    const resolved =
+      process.env.IMPORT_ENGINE_V2_ENABLED === "true"
+        ? await resolveImportWithEngine({
+            kind: extractKind,
+            sourceType: data.sourceType,
+            text: data.text ? correctTradeText(data.text) : undefined,
+            fileBase64: data.fileBase64,
+            mime: data.mime,
+            filename: data.filename,
+          })
+        : await (async () => {
+            const { extractViaPlatform } = await import("./agent-platform");
+            return resolveImportExtract(
+              {
+                kind: extractKind,
+                sourceType: data.sourceType,
+                text: data.text ? correctTradeText(data.text) : undefined,
+                fileBase64: data.fileBase64,
+                mime: data.mime,
+                filename: data.filename,
+              },
+              {
+                readTable: async () => {
+                  try {
+                    if (data.sourceType === "excel" && data.fileBase64)
+                      return await parseExcel(data.fileBase64);
+                    if (data.sourceType === "csv") {
+                      const raw =
+                        (data.text ? correctTradeText(data.text) : undefined) ??
+                        (data.fileBase64
+                          ? Buffer.from(data.fileBase64, "base64").toString("utf8")
+                          : "");
+                      return raw ? parseCsv(raw) : null;
+                    }
+                  } catch {
+                    return null;
                   }
-                } catch {
                   return null;
-                }
-                return null;
+                },
+                extractViaPlatform,
+                runLocalImageFallback: async () => {
+                  if (data.sourceType !== "image") return null;
+                  const providers = defaultProviders();
+                  const outcome = await runImportAgent(
+                    {
+                      sourceType: "image",
+                      kind: extractKind,
+                      fileBase64: data.fileBase64,
+                      mime: data.mime,
+                      filename: data.filename,
+                    },
+                    providers,
+                  );
+                  if (!outcome?.rows.length) return null;
+                  return { rows: outcome.rows, usedAi: outcome.usedAi };
+                },
               },
-              extractViaPlatform,
-              runLocalImageFallback: async () => {
-                if (data.sourceType !== "image") return null;
-                const providers = defaultProviders();
-                const outcome = await runImportAgent(
-                  {
-                    sourceType: "image",
-                    kind: extractKind,
-                    fileBase64: data.fileBase64,
-                    mime: data.mime,
-                    filename: data.filename,
-                  },
-                  providers,
-                );
-                if (!outcome?.rows.length) return null;
-                return { rows: outcome.rows, usedAi: outcome.usedAi };
-              },
-            },
-          );
-        })();
+            );
+          })();
 
     const rows = normalizeImportDateCodes(resolved.rows).map((row) => {
       if (data.kind === "stock") return { ...row, kind: "stock" as const };
       if (data.kind === "potential") return { ...row, kind: "potential" as const };
       return row;
     });
+    // Some local/fallback extractors keep only the first token of a line such as
+    // "TDA21472 / TDA21472AUMA1". Preserve the human-review gate from the raw
+    // input so the shortened candidate cannot be written silently.
+    if (data.text && isCompositeMpn(data.text) && rows.length === 1) {
+      appendWarning(rows[0], "原始输入包含多个型号候选，请拆分为一行一个型号");
+    }
     const usedAi = resolved.usedAi;
     const providers = process.env.IMPORT_ENGINE_V2_ENABLED === "true" ? [] : defaultProviders();
 
-    await markDuplicates(sql, rows, data.kind, data.defaultWarehouseId, data.defaultSupplier, principal.userId);
+    await markDuplicates(
+      sql,
+      rows,
+      data.kind,
+      data.defaultWarehouseId,
+      data.defaultSupplier,
+      principal.userId,
+    );
+    await annotateImportReviewRows(sql, rows);
     const warehouses = await listWarehouses(sql);
     const channels = await sql`select id, name from channels where is_active = true order by name`;
     const customers = await sql`select id, name from customers order by name`;
@@ -437,9 +534,11 @@ export const confirmImport = createServerFn({ method: "POST" })
     const principal = await getCurrentPrincipal(context.bearerToken);
     const sql = await sqlClient();
     const submissionId = data.submissionId || nid();
-    const existing = await sql`select status, result_json, error_message from import_batches where submission_id = ${submissionId} limit 1`;
+    const existing =
+      await sql`select status, result_json, error_message from import_batches where submission_id = ${submissionId} limit 1`;
     if (existing[0]) {
-      if (existing[0].status === "success" && existing[0].result_json) return JSON.parse(String(existing[0].result_json));
+      if (existing[0].status === "success" && existing[0].result_json)
+        return JSON.parse(String(existing[0].result_json));
       if (existing[0].status === "writing") throw new Error("这份导入正在写入，请勿重复提交");
       throw new Error(String(existing[0].error_message || "这份导入上次写入失败，请重新生成预览"));
     }
@@ -447,6 +546,11 @@ export const confirmImport = createServerFn({ method: "POST" })
     if (selected.length === 0) throw new Error("没有勾选可写入的行");
     for (const row of selected) {
       if (!normalizeMpn(row.mpn)) throw new Error("型号不能为空");
+      if (isCompositeMpn(row.mpn))
+        throw new Error(`${row.mpn} 包含多个型号候选，请拆分为一行一个型号`);
+      if (row.warning?.includes("多个型号候选"))
+        throw new Error(`${row.mpn} 原始输入包含多个型号候选，请拆分为一行一个型号`);
+      if (row.brandConflict) throw new Error(`${row.mpn} 存在品牌冲突，请人工修改并重新勾选`);
     }
     for (const row of selected) {
       const effectiveKind = effectiveImportKind(row, data.kind);
@@ -476,12 +580,16 @@ export const confirmImport = createServerFn({ method: "POST" })
       };
       if (kind === "offer") {
         if (row.qty != null && !Number.isInteger(row.qty)) {
-          throw new Error(`${row.mpn} 推货数量必须是整数：${row.qty}（像价格被识别成了数量，请检查该行）`);
+          throw new Error(
+            `${row.mpn} 推货数量必须是整数：${row.qty}（像价格被识别成了数量，请检查该行）`,
+          );
         }
       }
       if (kind === "inquiry") {
         if (row.qty != null && !Number.isInteger(row.qty)) {
-          throw new Error(`${row.mpn} 询价数量必须是整数：${row.qty}（像价格被识别成了数量，请检查该行）`);
+          throw new Error(
+            `${row.mpn} 询价数量必须是整数：${row.qty}（像价格被识别成了数量，请检查该行）`,
+          );
         }
       }
       if (kind === "stock") {
@@ -504,7 +612,8 @@ export const confirmImport = createServerFn({ method: "POST" })
           throw new Error(`${row.mpn} 成本必须为空或不小于 0`);
         }
         if (amount != null && !currency) throw new Error(`${row.mpn} 填写成本时必须选择币种`);
-        if (amount != null && currency === "USD" && tax !== "none") throw new Error(`${row.mpn} 美元成本税别只能是无`);
+        if (amount != null && currency === "USD" && tax !== "none")
+          throw new Error(`${row.mpn} 美元成本税别只能是无`);
         if (amount != null && currency === "CNY" && tax !== "exclusive" && tax !== "inclusive") {
           throw new Error(`${row.mpn} 人民币成本必须选择含税或未税`);
         }
@@ -522,30 +631,35 @@ export const confirmImport = createServerFn({ method: "POST" })
     try {
       // Keep confirmImport's transactional write boundary explicit: return withTransaction(sql, ...).
       return await withTransaction(sql, async (tx) => {
+        const partIds: string[] = [];
+        let potentialAdded = 0;
+        for (const row of selected) {
+          const part = await ensurePart(tx, row.mpn, {
+            brand: row.brand,
+            package: row.package,
+            source: "导入",
+          });
+          partIds.push(part.id);
+        }
+        const uniqueIds = [...new Set(partIds)];
+        const flagsBefore = await matchFlagsForParts(
+          tx,
+          uniqueIds,
+          undefined,
+          principal.userId,
+          potentialScopeFor(principal),
+        );
 
-      const partIds: string[] = [];
-      let potentialAdded = 0;
-      for (const row of selected) {
-        const part = await ensurePart(tx, row.mpn, {
-        brand: row.brand,
-        package: row.package,
-        source: "导入",
-        });
-        partIds.push(part.id);
-      }
-      const uniqueIds = [...new Set(partIds)];
-      const flagsBefore = await matchFlagsForParts(tx, uniqueIds, undefined, principal.userId, potentialScopeFor(principal));
+        for (let i = 0; i < selected.length; i++) {
+          const row = selected[i];
+          const partId = partIds[i];
+          const kind = effectiveImportKind(row, data.kind);
 
-      for (let i = 0; i < selected.length; i++) {
-        const row = selected[i];
-        const partId = partIds[i];
-        const kind = effectiveImportKind(row, data.kind);
-
-      if (kind === "offer") {
-        const chName = row.channel || data.defaultChannel;
-        if (!chName) throw new Error(`${row.mpn} 缺少渠道`);
-        const ch = await ensureChannel(tx, chName);
-        await tx`
+          if (kind === "offer") {
+            const chName = row.channel || data.defaultChannel;
+            if (!chName) throw new Error(`${row.mpn} 缺少渠道`);
+            const ch = await ensureChannel(tx, chName);
+            await tx`
           insert into channel_offers (
             id, channel_id, part_id, qty, date_code, price_amount, price_currency, price_tax,
             is_tp, lead_time_text, import_batch_id
@@ -555,37 +669,38 @@ export const confirmImport = createServerFn({ method: "POST" })
             ${row.isTp}, ${row.leadTimeText}, ${batchId}
           )
         `;
-      } else if (kind === "inquiry") {
-        const cuName = row.customer || data.defaultCustomer;
-        if (!cuName) throw new Error(`${row.mpn} 缺少客户`);
-        const cu = await ensureCustomer(tx, cuName);
-        await tx`
+          } else if (kind === "inquiry") {
+            const cuName = row.customer || data.defaultCustomer;
+            if (!cuName) throw new Error(`${row.mpn} 缺少客户`);
+            const cu = await ensureCustomer(tx, cuName);
+            await tx`
           insert into customer_inquiries (id, customer_id, part_id, qty, import_batch_id)
           values (${nid()}, ${cu.id}, ${partId}, ${row.qty}, ${batchId})
         `;
-      } else if (kind === "potential") {
-        const inserted = await tx`
+          } else if (kind === "potential") {
+            const inserted = await tx`
           insert into potential_models (user_id, part_id, note, import_batch_id)
           values (${principal.userId}, ${partId}, ${row.note}, ${batchId})
           on conflict (user_id, part_id) do nothing
           returning part_id
         `;
-        if (inserted.length) potentialAdded += 1;
-      } else if (kind === "stock") {
-        const code = row.warehouse;
-        const wh =
-          warehouses.find((w) => w.code === code) ??
-          warehouses.find((w) => w.id === data.defaultWarehouseId);
-        if (!wh) throw new Error(`${row.mpn} 缺少仓库`);
-        const lotId = nid();
-        const qty = row.qty ?? 0;
-        if (qty <= 0) throw new Error(`${row.mpn} 入库数量无效`);
-        const supplierName = row.channel || data.defaultSupplier;
-        const supplier = supplierName ? await ensureChannel(tx, supplierName) : null;
-        const amount = row.costAmount;
-        const currency = amount == null ? null : (row.costCurrency ?? data.defaultCurrency ?? null);
-        const tax = amount == null ? null : (row.costTax ?? data.defaultTax ?? null);
-        await tx`
+            if (inserted.length) potentialAdded += 1;
+          } else if (kind === "stock") {
+            const code = row.warehouse;
+            const wh =
+              warehouses.find((w) => w.code === code) ??
+              warehouses.find((w) => w.id === data.defaultWarehouseId);
+            if (!wh) throw new Error(`${row.mpn} 缺少仓库`);
+            const lotId = nid();
+            const qty = row.qty ?? 0;
+            if (qty <= 0) throw new Error(`${row.mpn} 入库数量无效`);
+            const supplierName = row.channel || data.defaultSupplier;
+            const supplier = supplierName ? await ensureChannel(tx, supplierName) : null;
+            const amount = row.costAmount;
+            const currency =
+              amount == null ? null : (row.costCurrency ?? data.defaultCurrency ?? null);
+            const tax = amount == null ? null : (row.costTax ?? data.defaultTax ?? null);
+            await tx`
           insert into stock_lots (
             id, part_id, warehouse_id, status, qty_in, qty_remaining, date_code, package,
             standard_pack, pack_state, cost_amount, cost_currency, cost_tax, supplier_id, import_batch_id, origin_lot_id
@@ -595,21 +710,21 @@ export const confirmImport = createServerFn({ method: "POST" })
             ${amount}, ${currency}, ${tax}, ${supplier?.id ?? null}, ${batchId}, ${lotId}
           )
         `;
-        await tx`
+            await tx`
           insert into stock_movements (id, part_id, lot_id, type, qty, to_warehouse_id, import_batch_id)
           values (${nid()}, ${partId}, ${lotId}, 'in', ${qty}, ${wh.id}, ${batchId})
         `;
-      } else if (kind === "transit") {
-        const qty = row.qty ?? 0;
-        if (qty <= 0) throw new Error(`${row.mpn} 在途数量无效`);
-        const parsed = parseLeadTime(row.etaText || row.leadTimeText || "");
-        const lotId = nid();
-        const supplierName = row.channel || data.defaultSupplier;
-        const supplier = supplierName ? await ensureChannel(tx, supplierName) : null;
-        const amount = row.costAmount;
-        const currency = row.costCurrency;
-        const tax = row.costTax;
-        await tx`
+          } else if (kind === "transit") {
+            const qty = row.qty ?? 0;
+            if (qty <= 0) throw new Error(`${row.mpn} 在途数量无效`);
+            const parsed = parseLeadTime(row.etaText || row.leadTimeText || "");
+            const lotId = nid();
+            const supplierName = row.channel || data.defaultSupplier;
+            const supplier = supplierName ? await ensureChannel(tx, supplierName) : null;
+            const amount = row.costAmount;
+            const currency = row.costCurrency;
+            const tax = row.costTax;
+            await tx`
           insert into stock_lots (
             id, part_id, status, qty_in, qty_remaining, date_code,
             cost_amount, cost_currency, cost_tax, supplier_id, ordered_at, eta_date, eta_text, eta_precision, import_batch_id, origin_lot_id
@@ -619,39 +734,46 @@ export const confirmImport = createServerFn({ method: "POST" })
             ${parsed.precision}, ${batchId}, ${lotId}
           )
         `;
-        await tx`
+            await tx`
           insert into stock_movements (id, part_id, lot_id, type, qty, note, import_batch_id)
           values (${nid()}, ${partId}, ${lotId}, 'transit_open', ${qty}, ${row.etaText}, ${batchId})
         `;
-      }
-        await tx`update parts set updated_at = now() where id = ${partId}`;
-      }
+          }
+          await tx`update parts set updated_at = now() where id = ${partId}`;
+        }
 
-      const flagsAfter = await matchFlagsForParts(tx, uniqueIds, undefined, principal.userId, potentialScopeFor(principal));
-    const trigger: ImportKind = data.kind === "mixed" ? "offer" : data.kind === "potential" ? "offer" : data.kind;
-    const summary = {
-      identified: selected.length,
-      hit: uniqueIds.filter((id) => {
-        const f = flagsBefore.get(id);
-        return f ? isCrossHit(f, trigger) : false;
-      }).length,
-      stock: uniqueIds.filter((id) => flagsAfter.get(id)?.stock).length,
-      inquiry: uniqueIds.filter((id) => (flagsAfter.get(id)?.inquiryCount ?? 0) > 0).length,
-      dual: uniqueIds.filter((id) => flagsAfter.get(id)?.isDual).length,
-      watch: uniqueIds.filter((id) => flagsAfter.get(id)?.watch).length,
-      potential: potentialAdded,
-    };
-    const hitParts = uniqueIds.map((id) => {
-      const f = flagsAfter.get(id)!;
-      return {
-        partId: id,
-        flags: f,
-        stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
-      };
-    });
-      const result = { batchId, summary, hitParts };
-      await tx`update import_batches set status = 'success', result_json = ${JSON.stringify(result)} where id = ${batchId}`;
-      return result;
+        const flagsAfter = await matchFlagsForParts(
+          tx,
+          uniqueIds,
+          undefined,
+          principal.userId,
+          potentialScopeFor(principal),
+        );
+        const trigger: ImportKind =
+          data.kind === "mixed" ? "offer" : data.kind === "potential" ? "offer" : data.kind;
+        const summary = {
+          identified: selected.length,
+          hit: uniqueIds.filter((id) => {
+            const f = flagsBefore.get(id);
+            return f ? isCrossHit(f, trigger) : false;
+          }).length,
+          stock: uniqueIds.filter((id) => flagsAfter.get(id)?.stock).length,
+          inquiry: uniqueIds.filter((id) => (flagsAfter.get(id)?.inquiryCount ?? 0) > 0).length,
+          dual: uniqueIds.filter((id) => flagsAfter.get(id)?.isDual).length,
+          watch: uniqueIds.filter((id) => flagsAfter.get(id)?.watch).length,
+          potential: potentialAdded,
+        };
+        const hitParts = uniqueIds.map((id) => {
+          const f = flagsAfter.get(id)!;
+          return {
+            partId: id,
+            flags: f,
+            stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
+          };
+        });
+        const result = { batchId, summary, hitParts };
+        await tx`update import_batches set status = 'success', result_json = ${JSON.stringify(result)} where id = ${batchId}`;
+        return result;
       });
     } catch (error) {
       await sql`update import_batches set status = 'failed', error_message = ${error instanceof Error ? error.message : String(error)} where id = ${batchId}`;

@@ -5,17 +5,19 @@ import { iso } from "@/lib/domain";
 import { getSettings, listWarehouses, logOp, nid, sqlClient, withTransaction } from "./helpers";
 import { ensureSeed } from "./seed";
 
-export const getAppSettings = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
-  requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
-  const sql = await sqlClient();
-  await ensureSeed(sql);
-  const settings = await getSettings(sql);
-  const warehouses = await listWarehouses(sql);
-  return {
-    settings,
-    warehouses,
-  };
-});
+export const getAppSettings = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
+    const sql = await sqlClient();
+    await ensureSeed(sql);
+    const settings = await getSettings(sql);
+    const warehouses = await listWarehouses(sql);
+    return {
+      settings,
+      warehouses,
+    };
+  });
 
 export const updateWindows = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -48,7 +50,9 @@ export const upsertWarehouse = createServerFn({ method: "POST" })
       return { id: data.id };
     }
     const id = nid();
-    const max = await sql<{ n: number }>`select coalesce(max(sort_order),0)::int as n from warehouses`;
+    const max = await sql<{
+      n: number;
+    }>`select coalesce(max(sort_order),0)::int as n from warehouses`;
     await sql`
       insert into warehouses (id, code, name, sort_order) values (${id}, ${code}, ${name}, ${(max[0]?.n ?? 0) + 1})
     `;
@@ -71,20 +75,52 @@ export const listImportBatches = createServerFn({ method: "GET" })
     const principal = await getCurrentPrincipal(context.bearerToken);
     requireRole(principal, "model.read");
     const sql = await sqlClient();
-    const rows = principal.role === "老板"
-      ? await sql`select * from import_batches order by created_at desc limit 30`
-      : await sql`select * from import_batches where created_by = ${principal.userId} order by created_at desc limit 30`;
-    return rows.map((r) => ({
-      id: String(r.id),
-      kind: String(r.kind),
-      sourceType: String(r.source_type),
-      filename: r.filename ? String(r.filename) : null,
-      createdAt: iso(r.created_at),
-      status: String(r.status ?? "success") as "writing" | "success" | "failed",
-      undoneAt: r.undone_at ? String(r.undone_at) : null,
-      createdBy: r.created_by ? String(r.created_by) : null,
-      canRevoke: !r.undone_at && (principal.role === "老板" || principal.role === "跟进人"),
-    }));
+    const rows =
+      principal.role === "老板"
+        ? await sql`select * from import_batches order by created_at desc limit 30`
+        : await sql`select * from import_batches where created_by = ${principal.userId} order by created_at desc limit 30`;
+    const output = [];
+    for (const r of rows) {
+      let result: { summary?: { identified?: number; potential?: number } } | null = null;
+      try {
+        result = r.result_json ? JSON.parse(String(r.result_json)) : null;
+      } catch {
+        result = null;
+      }
+      const kind = String(r.kind);
+      let context: string | null = null;
+      if (kind === "offer") {
+        const hit =
+          await sql`select c.name from channel_offers o join channels c on c.id = o.channel_id where o.import_batch_id = ${r.id} and o.deleted_at is null limit 1`;
+        if (hit[0]?.name) context = `渠道：${String(hit[0].name)}`;
+      } else if (kind === "inquiry") {
+        const hit =
+          await sql`select c.name from customer_inquiries i join customers c on c.id = i.customer_id where i.import_batch_id = ${r.id} and i.deleted_at is null limit 1`;
+        if (hit[0]?.name) context = `客户：${String(hit[0].name)}`;
+      } else if (kind === "stock" || kind === "transit") {
+        const hit =
+          await sql`select w.code from stock_lots l left join warehouses w on w.id = l.warehouse_id where l.import_batch_id = ${r.id} and l.deleted_at is null limit 1`;
+        if (hit[0]?.code) context = `仓库：${String(hit[0].code)}`;
+      } else if (kind === "potential" && r.created_by) {
+        const hit =
+          await sql`select display_name from app_users where user_id = ${r.created_by} limit 1`;
+        context = `导入人：${String(hit[0]?.display_name ?? r.created_by)}`;
+      }
+      output.push({
+        id: String(r.id),
+        kind,
+        sourceType: String(r.source_type),
+        filename: r.filename ? String(r.filename) : null,
+        createdAt: iso(r.created_at),
+        status: String(r.status ?? "success") as "writing" | "success" | "failed",
+        undoneAt: r.undone_at ? String(r.undone_at) : null,
+        createdBy: r.created_by ? String(r.created_by) : null,
+        writtenRows: result?.summary?.identified ?? result?.summary?.potential ?? null,
+        context,
+        canRevoke: !r.undone_at && (principal.role === "老板" || principal.role === "跟进人"),
+      });
+    }
+    return output;
   });
 
 export const undoImportBatch = createServerFn({ method: "POST" })

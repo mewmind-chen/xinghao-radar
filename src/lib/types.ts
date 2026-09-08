@@ -2,13 +2,7 @@ export type CostTax = "none" | "exclusive" | "inclusive";
 export type Currency = "USD" | "CNY";
 export type PackState = "full" | "loose" | "mixed";
 export type LotStatus = "on_hand" | "in_transit" | "closed";
-export type MovementType =
-  | "in"
-  | "out"
-  | "transfer"
-  | "adjust"
-  | "transit_open"
-  | "transit_in";
+export type MovementType = "in" | "out" | "transfer" | "adjust" | "transit_open" | "transit_in";
 export type EtaPrecision = "date" | "week" | "month" | "fuzzy" | "stock";
 export type ImportKind = "offer" | "inquiry" | "stock" | "transit" | "potential" | "mixed";
 export type ImportSource = "excel" | "csv" | "pdf" | "word" | "image" | "text";
@@ -172,6 +166,8 @@ export type ImportRow = {
   note: string | null;
   duplicate: boolean;
   duplicateReason: string | null;
+  /** Existing part-master brand differs from the imported brand. */
+  brandConflict?: string | null;
   selected: boolean;
   warning: string | null;
 };
