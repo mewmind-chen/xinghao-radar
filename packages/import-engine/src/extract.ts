@@ -35,9 +35,9 @@ function findTextMpn(line: string): { value: string; index: number } | null {
   return null;
 }
 
-function safeRows(result: ExtractionResult, rows: CandidateRow[]): ExtractionResult {
+function safeRows(result: ExtractionResult, rows: CandidateRow[], allowMissingKind = false): ExtractionResult {
   if (rows.length > MAX_OUTPUT_ROWS) result.issues.push(issue("too_many_rows", `候选结果超过 ${MAX_OUTPUT_ROWS} 行，已截断并需要复核`));
-  const checked = validateCandidateRows(rows.slice(0, MAX_OUTPUT_ROWS));
+  const checked = validateCandidateRows(rows.slice(0, MAX_OUTPUT_ROWS), { requireKind: !allowMissingKind });
   result.rows = checked.rows;
   result.issues.push(...checked.issues.map((x) => ({ code: x.code, message: x.message, rowId: x.rowId })));
   for (const row of result.rows) {
@@ -96,9 +96,11 @@ function textRows(text: string, kindHint: ImportKindHint): CandidateRow[] {
     const leadMatch = rest.match(/现货|\d+\s*周|\d{1,2}[/.]\d{1,2}|\d+\s*月底|几天后/i);
     const leadTimeText = leadMatch?.[0] ?? null;
     if (leadMatch?.[0]) rest = rest.replace(leadMatch[0], " ");
-    const kind = kindHint === "mixed"
-      ? /客户|询价|求购/.test(line) ? "inquiry" : /在途|到货|月底到|交期/.test(line) ? "transit" : /入库|入仓/.test(line) ? "stock" : null
-      : kindHint;
+    const kind = kindHint === "neutral"
+      ? null
+      : kindHint === "mixed"
+        ? /客户|询价|求购/.test(line) ? "inquiry" : /在途|到货|月底到|交期/.test(line) ? "transit" : /入库|入仓/.test(line) ? "stock" : null
+        : kindHint;
     const row = normalizeRows([{
       mpn, kind, qtyRaw: qtyMatch?.[1] ?? null, dateCode, standardPack, priceRaw: price || null,
       priceAmount: priceInfo.amount, priceCurrency: priceInfo.currency, priceTax: priceInfo.tax,
@@ -175,7 +177,7 @@ async function tableResult(
       const mapping = result.mappings.find((candidate) => candidate.sheet === sheet.name);
       return mapping ? applyMapping(sheet, mapping, request.kindHint) : [];
     });
-    return safeRows(result, result.rows);
+    return safeRows(result, result.rows, request.kindHint === "neutral");
   }
   if (!provider?.available()) {
     result.status = "provider_unavailable";
@@ -231,7 +233,7 @@ async function tableResult(
   if (mappingNeedsReview) {
     for (const row of rows) row.issues.push("表格列映射需要人工复核");
   }
-  return safeRows(result, rows);
+  return safeRows(result, rows, request.kindHint === "neutral");
 }
 
 async function modelRows(request: ExtractRequest, provider: ExtractionProvider | undefined, text: string | undefined, fileBase64: string | undefined, visualOnly: boolean, result: ExtractionResult): Promise<ExtractionResult> {
@@ -260,7 +262,7 @@ async function modelRows(request: ExtractRequest, provider: ExtractionProvider |
   result.runs.push({ provider: provider.name, model: response.model, upstreamProvider: response.upstreamProvider, status: "completed", latencyMs: Date.now() - started, promptTokens: response.promptTokens, completionTokens: response.completionTokens, costUsd: response.costUsd });
   const envelope = parseJsonEnvelope(response.raw);
   const raws = Array.isArray(envelope?.rows) ? envelope.rows.filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object")) : [];
-  return safeRows(result, normalizeRows(raws, { kindHint: request.kindHint, sourceText: text, visualOnly }));
+  return safeRows(result, normalizeRows(raws, { kindHint: request.kindHint, sourceText: text, visualOnly }), request.kindHint === "neutral");
 }
 
 export async function extractImport(request: ExtractRequest, provider: ExtractionProvider = defaultImportProvider()): Promise<ExtractionResult> {
@@ -280,7 +282,7 @@ export async function extractImport(request: ExtractRequest, provider: Extractio
     const deterministicOnly = deterministic.length > 0
       && deterministic.every((row) => row.verification === "exact")
       && (deterministic.every(hasBusinessSignal) || !hasUnattachedTextContext(text, deterministic));
-    if (deterministicOnly) return safeRows(result, deterministic);
+    if (deterministicOnly) return safeRows(result, deterministic, request.kindHint === "neutral");
     return modelRows(request, provider, text, undefined, false, result);
   }
   if (request.source.type === "csv" || request.source.type === "excel") {

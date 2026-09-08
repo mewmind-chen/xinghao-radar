@@ -1,14 +1,14 @@
 /**
  * Import Service —— 预览数据组装 / 重复检测 / 确认写库。
  *
- * 抽取决策在 import-contract：受信内部模板 / 受控文本走确定性 parser；
- * 无界表格与聊天文本走 Platform。needsAgent + 空 candidates 不是失败，
- * 禁止因此用 headerKey / heuristic 冒充成功。confirmImport 仍是唯一写库入口。
+ * 先把来源抽成与业务目标无关的候选行，再由 prepareImportReview 绑定用户
+ * 选择的业务类型并计算类型查重。confirmImport 仍是唯一写库入口。
  */
 
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import {
+  ForbiddenError,
   getCurrentPrincipal,
   potentialScopeFor,
   requireImportKind,
@@ -44,12 +44,14 @@ import { ensureSeed } from "./seed";
 import { resolveDateCode } from "@/lib/inventory/date-code";
 
 const IMPORT_KINDS = ["offer", "inquiry", "stock", "transit", "potential", "mixed"] as const;
+const IMPORT_PARSE_KINDS = [...IMPORT_KINDS, "neutral"] as const;
 const IMPORT_SOURCES = ["excel", "csv", "pdf", "word", "image", "text"] as const;
 const MAX_IMPORT_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_IMPORT_TEXT_CHARS = 200_000;
 
 export type ParseImportInput = {
-  kind: ImportKind;
+  /** `neutral` is extraction-only; a write target is selected after preview. */
+  kind: ImportKind | "neutral";
   sourceType: ImportSource;
   text?: string;
   filename?: string;
@@ -59,6 +61,17 @@ export type ParseImportInput = {
   defaultSupplier?: string;
   defaultCurrency?: Currency;
   defaultTax?: CostTax;
+};
+
+export type PrepareImportReviewInput = {
+  kind: ImportKind;
+  defaultChannel?: string;
+  defaultCustomer?: string;
+  defaultWarehouseId?: string;
+  defaultSupplier?: string;
+  defaultCurrency?: Currency;
+  defaultTax?: CostTax;
+  rows: ImportRow[];
 };
 
 type ConfirmImportInput = {
@@ -111,7 +124,7 @@ function validateFileBase64(value: unknown): string | undefined {
 
 function validateParseImportInput(input: unknown): ParseImportInput {
   const value = record(input);
-  const kind = optionalEnum(value.kind, IMPORT_KINDS, "业务类型");
+  const kind = optionalEnum(value.kind, IMPORT_PARSE_KINDS, "业务类型");
   const sourceType = optionalEnum(value.sourceType, IMPORT_SOURCES, "来源类型");
   if (!kind || !sourceType) throw new Error("缺少业务类型或来源类型");
   const text = optionalString(value.text, "文本", MAX_IMPORT_TEXT_CHARS);
@@ -126,6 +139,22 @@ function validateParseImportInput(input: unknown): ParseImportInput {
     defaultSupplier: optionalString(value.defaultSupplier, "默认供应商", 200),
     defaultCurrency: optionalEnum(value.defaultCurrency, ["USD", "CNY"], "默认币种"),
     defaultTax: optionalEnum(value.defaultTax, ["none", "exclusive", "inclusive"], "默认税别"),
+  };
+}
+
+function validatePrepareImportReviewInput(input: unknown): PrepareImportReviewInput {
+  const value = record(input);
+  const kind = optionalEnum(value.kind, IMPORT_KINDS, "业务类型");
+  if (!kind) throw new Error("缺少业务类型");
+  return {
+    kind,
+    defaultChannel: optionalString(value.defaultChannel, "默认渠道", 200),
+    defaultCustomer: optionalString(value.defaultCustomer, "默认客户", 200),
+    defaultWarehouseId: optionalString(value.defaultWarehouseId, "默认仓库", 200),
+    defaultSupplier: optionalString(value.defaultSupplier, "默认供应商", 200),
+    defaultCurrency: optionalEnum(value.defaultCurrency, ["USD", "CNY"], "默认币种"),
+    defaultTax: optionalEnum(value.defaultTax, ["none", "exclusive", "inclusive"], "默认税别"),
+    rows: validateImportRows(value.rows),
   };
 }
 
@@ -282,8 +311,60 @@ function normalizeImportDateCodes(rows: ImportRow[]): ImportRow[] {
 }
 
 function effectiveImportKind(row: ImportRow, selectedKind: ImportKind): ImportKind {
-  if (selectedKind === "stock" || selectedKind === "potential") return selectedKind;
-  return row.kind === "mixed" ? selectedKind : row.kind;
+  // A user-selected import target is authoritative.  Only the explicit
+  // mixed mode may use the row-level kind returned by an extractor.
+  return selectedKind === "mixed" ? row.kind : selectedKind;
+}
+
+function requireImportRecognition(principal: Awaited<ReturnType<typeof getCurrentPrincipal>>) {
+  if (
+    principal.permissions.includes("inventory.import") ||
+    principal.permissions.includes("market.write") ||
+    principal.permissions.includes("potential.write")
+  ) {
+    return principal;
+  }
+  throw new ForbiddenError("无权使用导入识别");
+}
+
+function stripKindSelectionWarning(warning: string | null): string | null {
+  return (
+    warning
+      ?.split("；")
+      .filter((message) => !message.includes("业务类型无法确定") && !message.includes("业务类型已人工修改"))
+      .join("；") || null
+  );
+}
+
+function rowsForImportReview(
+  rows: ImportRow[],
+  selectedKind: ImportKind,
+): ImportRow[] {
+  return rows.map((row) => {
+    const warning = stripKindSelectionWarning(row.warning);
+    const wasNeutral = row.kind === "mixed";
+    const targetKind = selectedKind === "mixed" ? row.kind : selectedKind;
+    const eligible = targetKind !== "mixed" && Boolean(row.mpn.trim()) && !warning && !row.brandConflict;
+    return {
+      ...row,
+      kind: targetKind,
+      warning,
+      duplicate: false,
+      duplicateReason: null,
+      selected: selectedKind === "mixed" ? false : wasNeutral ? eligible : row.selected && eligible,
+    };
+  });
+}
+
+async function importLookups(sql: Awaited<ReturnType<typeof sqlClient>>) {
+  const warehouses = await listWarehouses(sql);
+  const channels = await sql`select id, name from channels where is_active = true order by name`;
+  const customers = await sql`select id, name from customers order by name`;
+  return {
+    warehouses,
+    channels: channels.map((r) => ({ id: String(r.id), name: String(r.name) })),
+    customers: customers.map((r) => ({ id: String(r.id), name: String(r.name) })),
+  };
 }
 
 const DUPLICATE_STOCK_DAYS = 90;
@@ -291,17 +372,18 @@ const DUPLICATE_STOCK_DAYS = 90;
 function flagIntraFileDuplicates(
   rows: ImportRow[],
   selectedKind: ImportKind,
-  defaults?: { warehouseId?: string; supplier?: string },
+  defaults?: { warehouseId?: string; supplier?: string; channel?: string; customer?: string },
 ) {
   const seen = new Map<string, number>();
   for (const row of rows) {
+    const rowKind = effectiveImportKind(row, selectedKind);
     const k = [
-      effectiveImportKind(row, selectedKind),
+      rowKind,
       normalizeMpn(row.mpn),
       row.qty ?? "",
       row.dateCode ?? "",
-      row.channel ?? defaults?.supplier ?? "",
-      row.customer ?? "",
+      rowKind === "stock" ? row.channel ?? defaults?.supplier ?? "" : row.channel ?? defaults?.channel ?? "",
+      rowKind === "inquiry" ? row.customer ?? defaults?.customer ?? "" : row.customer ?? "",
       row.warehouse ?? defaults?.warehouseId ?? "",
       row.isTp ? "tp" : (row.priceAmount ?? ""),
     ].join("|");
@@ -322,10 +404,16 @@ async function markDuplicates(
   defaultWarehouseId?: string,
   defaultSupplier?: string,
   potentialUserId?: string,
+  defaultChannel?: string,
+  defaultCustomer?: string,
+  defaultCurrency?: Currency,
+  defaultTax?: CostTax,
 ) {
   flagIntraFileDuplicates(rows, selectedKind, {
     warehouseId: defaultWarehouseId,
     supplier: defaultSupplier,
+    channel: defaultChannel,
+    customer: defaultCustomer,
   });
   for (const row of rows) {
     if (row.duplicate) continue;
@@ -338,8 +426,8 @@ async function markDuplicates(
       const warehouse = row.warehouse ?? defaultWarehouseId ?? "";
       const supplierName = row.channel ?? defaultSupplier ?? "";
       const cost = row.costAmount;
-      const currency = row.costCurrency;
-      const tax = row.costTax;
+      const currency = cost == null ? null : (row.costCurrency ?? defaultCurrency ?? null);
+      const tax = cost == null ? null : (row.costTax ?? defaultTax ?? null);
       const hits = await sql`
         select l.id
         from stock_lots l
@@ -365,7 +453,7 @@ async function markDuplicates(
       }
     }
     if (kind === "offer") {
-      const chName = row.channel ?? "";
+      const chName = row.channel ?? defaultChannel ?? "";
       const hits = await sql`
         select o.id from channel_offers o
         join channels ch on ch.id = o.channel_id
@@ -388,7 +476,7 @@ async function markDuplicates(
       }
     }
     if (kind === "inquiry") {
-      const cuName = row.customer ?? "";
+      const cuName = row.customer ?? defaultCustomer ?? "";
       const hits = await sql`
         select i.id from customer_inquiries i
         join customers c on c.id = i.customer_id
@@ -424,12 +512,16 @@ export const parseImport = createServerFn({ method: "POST" })
   .validator(validateParseImportInput)
   .handler(async ({ data, context }) => {
     const principal = await getCurrentPrincipal(context.bearerToken);
-    requireImportKind(principal, data.kind);
+    if (data.kind === "neutral") requireImportRecognition(principal);
+    else requireImportKind(principal, data.kind);
     const sql = await sqlClient();
     await ensureSeed(sql);
-    // The extraction providers understand event kinds; potential-model import
-    // only changes the local write target, so use a neutral extraction hint.
-    const extractKind: ImportKind = data.kind === "potential" ? "offer" : data.kind;
+    // Extraction is intentionally independent from the eventual write target.
+    // The old targeted modes remain supported for callers outside the new UI,
+    // while the UI uses `neutral` and selects the target after seeing rows.
+    const extractKind: ImportKind | "neutral" = data.kind === "potential" ? "offer" : data.kind;
+    const legacyExtractKind: ImportKind | "mixed" =
+      data.kind === "neutral" ? "mixed" : data.kind === "potential" ? "offer" : data.kind;
 
     const resolved =
       process.env.IMPORT_ENGINE_V2_ENABLED === "true"
@@ -445,7 +537,7 @@ export const parseImport = createServerFn({ method: "POST" })
             const { extractViaPlatform } = await import("./agent-platform");
             return resolveImportExtract(
               {
-                kind: extractKind,
+                kind: legacyExtractKind,
                 sourceType: data.sourceType,
                 text: data.text ? correctTradeText(data.text) : undefined,
                 fileBase64: data.fileBase64,
@@ -470,14 +562,18 @@ export const parseImport = createServerFn({ method: "POST" })
                   }
                   return null;
                 },
-                extractViaPlatform,
+                extractViaPlatform: (input) =>
+                  extractViaPlatform({
+                    ...input,
+                    kind: input.kind === "neutral" ? "mixed" : input.kind,
+                  }),
                 runLocalImageFallback: async () => {
                   if (data.sourceType !== "image") return null;
                   const providers = defaultProviders();
                   const outcome = await runImportAgent(
                     {
                       sourceType: "image",
-                      kind: extractKind,
+                      kind: legacyExtractKind,
                       fileBase64: data.fileBase64,
                       mime: data.mime,
                       filename: data.filename,
@@ -491,11 +587,14 @@ export const parseImport = createServerFn({ method: "POST" })
             );
           })();
 
-    const rows = normalizeImportDateCodes(resolved.rows).map((row) => {
-      if (data.kind === "stock") return { ...row, kind: "stock" as const };
-      if (data.kind === "potential") return { ...row, kind: "potential" as const };
-      return row;
-    });
+    const normalizedRows = normalizeImportDateCodes(resolved.rows);
+    const rows = normalizedRows.map((row) =>
+      data.kind === "neutral"
+        ? { ...row, kind: "mixed" as const, selected: false, duplicate: false, duplicateReason: null }
+        : data.kind === "mixed"
+          ? row
+          : { ...row, kind: data.kind },
+    );
     // Some local/fallback extractors keep only the first token of a line such as
     // "TDA21472 / TDA21472AUMA1". Preserve the human-review gate from the raw
     // input so the shortened candidate cannot be written silently.
@@ -505,18 +604,22 @@ export const parseImport = createServerFn({ method: "POST" })
     const usedAi = resolved.usedAi;
     const providers = process.env.IMPORT_ENGINE_V2_ENABLED === "true" ? [] : defaultProviders();
 
-    await markDuplicates(
-      sql,
-      rows,
-      data.kind,
-      data.defaultWarehouseId,
-      data.defaultSupplier,
-      principal.userId,
-    );
+    if (data.kind !== "neutral") {
+      await markDuplicates(
+        sql,
+        rows,
+        data.kind,
+        data.defaultWarehouseId,
+        data.defaultSupplier,
+        principal.userId,
+        undefined,
+        undefined,
+        data.defaultCurrency,
+        data.defaultTax,
+      );
+    }
     await annotateImportReviewRows(sql, rows);
-    const warehouses = await listWarehouses(sql);
-    const channels = await sql`select id, name from channels where is_active = true order by name`;
-    const customers = await sql`select id, name from customers order by name`;
+    const lookups = await importLookups(sql);
     return {
       rows,
       usedAi,
@@ -524,10 +627,39 @@ export const parseImport = createServerFn({ method: "POST" })
       extractOrigin: resolved.extractOrigin,
       extractState: resolved.extractState,
       extractMessage: resolved.extractMessage,
-      warehouses,
-      channels: channels.map((r) => ({ id: String(r.id), name: String(r.name) })),
-      customers: customers.map((r) => ({ id: String(r.id), name: String(r.name) })),
+      ...lookups,
     };
+  });
+
+/**
+ * Apply the user-selected business target to an already extracted candidate
+ * list and recalculate target-specific duplicate checks. This is deliberately
+ * separate from parseImport so changing the target never calls the model a
+ * second time and never lets model output choose the write destination.
+ */
+export const prepareImportReview = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(validatePrepareImportReviewInput)
+  .handler(async ({ data, context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    requireImportKind(principal, data.kind);
+    const sql = await sqlClient();
+    await ensureSeed(sql);
+    const rows = rowsForImportReview(data.rows, data.kind);
+    await markDuplicates(
+      sql,
+      rows,
+      data.kind,
+      data.defaultWarehouseId,
+      data.defaultSupplier,
+      principal.userId,
+      data.defaultChannel,
+      data.defaultCustomer,
+      data.defaultCurrency,
+      data.defaultTax,
+    );
+    await annotateImportReviewRows(sql, rows);
+    return { rows, ...await importLookups(sql) };
   });
 
 export const confirmImport = createServerFn({ method: "POST" })
@@ -636,6 +768,14 @@ export const confirmImport = createServerFn({ method: "POST" })
       return await withTransaction(sql, async (tx) => {
         const partIds: string[] = [];
         let potentialAdded = 0;
+        const writtenByKind: Record<Exclude<ImportKind, "mixed">, number> = {
+          offer: 0,
+          inquiry: 0,
+          stock: 0,
+          transit: 0,
+          potential: 0,
+        };
+        const inquiryCustomers = new Set<string>();
         for (const row of selected) {
           const part = await ensurePart(tx, row.mpn, {
             brand: row.brand,
@@ -672,14 +812,17 @@ export const confirmImport = createServerFn({ method: "POST" })
             ${row.isTp}, ${row.leadTimeText}, ${batchId}
           )
         `;
+            writtenByKind.offer += 1;
           } else if (kind === "inquiry") {
             const cuName = row.customer || data.defaultCustomer;
             if (!cuName) throw new Error(`${row.mpn} 缺少客户`);
             const cu = await ensureCustomer(tx, cuName);
+            inquiryCustomers.add(cu.name);
             await tx`
           insert into customer_inquiries (id, customer_id, part_id, qty, import_batch_id)
           values (${nid()}, ${cu.id}, ${partId}, ${row.qty}, ${batchId})
         `;
+            writtenByKind.inquiry += 1;
           } else if (kind === "potential") {
             const inserted = await tx`
           insert into potential_models (user_id, part_id, note, import_batch_id)
@@ -687,7 +830,10 @@ export const confirmImport = createServerFn({ method: "POST" })
           on conflict (user_id, part_id) do nothing
           returning part_id
         `;
-            if (inserted.length) potentialAdded += 1;
+            if (inserted.length) {
+              potentialAdded += 1;
+              writtenByKind.potential += inserted.length;
+            }
           } else if (kind === "stock") {
             const code = row.warehouse;
             const wh =
@@ -712,7 +858,8 @@ export const confirmImport = createServerFn({ method: "POST" })
             ${row.package}, ${row.standardPack}, ${row.packState},
             ${amount}, ${currency}, ${tax}, ${supplier?.id ?? null}, ${batchId}, ${lotId}
           )
-        `;
+            `;
+            writtenByKind.stock += 1;
             await tx`
           insert into stock_movements (id, part_id, lot_id, type, qty, to_warehouse_id, import_batch_id)
           values (${nid()}, ${partId}, ${lotId}, 'in', ${qty}, ${wh.id}, ${batchId})
@@ -741,8 +888,14 @@ export const confirmImport = createServerFn({ method: "POST" })
           insert into stock_movements (id, part_id, lot_id, type, qty, note, import_batch_id)
           values (${nid()}, ${partId}, ${lotId}, 'transit_open', ${qty}, ${row.etaText}, ${batchId})
         `;
+            writtenByKind.transit += 1;
           }
           await tx`update parts set updated_at = now() where id = ${partId}`;
+        }
+
+        const writtenCount = Object.values(writtenByKind).reduce((sum, count) => sum + count, 0);
+        if (writtenCount !== selected.length) {
+          throw new Error(`导入未完整写入：预期 ${selected.length} 行，实际 ${writtenCount} 行`);
         }
 
         const flagsAfter = await matchFlagsForParts(
@@ -774,7 +927,14 @@ export const confirmImport = createServerFn({ method: "POST" })
             stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
           };
         });
-        const result = { batchId, summary, hitParts };
+        const result = {
+          batchId,
+          summary,
+          hitParts,
+          writtenCount,
+          writtenByKind,
+          customerCount: inquiryCustomers.size,
+        };
         await tx`update import_batches set status = 'success', result_json = ${JSON.stringify(result)} where id = ${batchId}`;
         return result;
       });

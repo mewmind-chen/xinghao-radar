@@ -47,7 +47,7 @@ export type ImportExtractResult = {
 };
 
 export type ImportExtractInput = {
-  kind: ImportKind | "mixed";
+  kind: ImportKind | "mixed" | "neutral";
   sourceType: ImportSource;
   text?: string;
   filename?: string;
@@ -101,11 +101,23 @@ function emptyRow(kind: ImportKind, mpn: string, extra: Partial<ImportRow> = {})
   };
 }
 
-function fallbackKind(kind: ImportKind | "mixed"): ImportKind {
-  return kind === "mixed" ? "offer" : kind;
+function localVisionRow(
+  kind: ImportKind,
+  row: Partial<ImportRow> & { mpn: string },
+): ImportRow {
+  return emptyRow(kind, String(row.mpn), {
+    ...row,
+    selected: false,
+    warning: [row.warning, "来自本地视觉降级，型号需要人工核对"].filter(Boolean).join("；"),
+  });
 }
 
-function extractionKind(kind: ImportKind | "mixed") {
+function fallbackKind(kind: ImportKind | "mixed" | "neutral"): ImportKind {
+  return kind === "mixed" || kind === "neutral" ? "offer" : kind;
+}
+
+function extractionKind(kind: ImportKind | "mixed" | "neutral") {
+  if (kind === "neutral") return "mixed";
   return kind === "potential" ? "offer" : kind;
 }
 
@@ -216,9 +228,13 @@ export function interpretPlatformExtract(raw: PlatformExtractRaw): {
 
 export { isControlledImportText, isTrustedImportTable };
 
-function asPreviewRows(kind: ImportKind | "mixed", rows: ImportRow[]): ImportRow[] {
+function asPreviewRows(kind: ImportKind | "mixed" | "neutral", rows: ImportRow[]): ImportRow[] {
   const k = fallbackKind(kind);
-  return rows.map((row) => ({ ...row, kind: row.kind || k }));
+  return rows.map((row) =>
+    kind === "neutral"
+      ? { ...row, kind: "mixed" as const, selected: false, duplicate: false, duplicateReason: null }
+      : { ...row, kind: row.kind || k },
+  );
 }
 
 export async function resolveImportExtract(
@@ -264,7 +280,7 @@ export async function resolveImportExtract(
 
   if (interp.state === "completed" && mapped.length > 0) {
     return {
-      rows: mapped,
+      rows: asPreviewRows(input.kind, mapped),
       usedAi: interp.usedAi,
       extractOrigin: "platform",
       extractState: "completed",
@@ -287,12 +303,9 @@ export async function resolveImportExtract(
   if (interp.state === "vision_unavailable") {
     const local = deps.runLocalImageFallback ? await deps.runLocalImageFallback() : null;
     if (local?.rows?.length) {
+      const rows = local.rows.map((row) => localVisionRow(kind, row));
       return {
-        rows: local.rows.map((row) =>
-          "id" in row && row.mpn
-            ? emptyRow(kind, row.mpn, row)
-            : emptyRow(kind, String(row.mpn), row),
-        ),
+        rows: asPreviewRows(input.kind, rows),
         usedAi: true,
         extractOrigin: "local_fallback",
         extractState: "vision_unavailable",
@@ -325,8 +338,9 @@ export async function resolveImportExtract(
     if (input.sourceType === "image") {
       const local = deps.runLocalImageFallback ? await deps.runLocalImageFallback() : null;
       if (local?.rows?.length) {
+        const rows = local.rows.map((row) => localVisionRow(kind, row));
         return {
-          rows: local.rows.map((row) => emptyRow(kind, String(row.mpn), row)),
+          rows: asPreviewRows(input.kind, rows),
           usedAi: Boolean(local.usedAi),
           extractOrigin: "local_fallback",
           extractState: interp.state,
@@ -362,7 +376,7 @@ export async function resolveImportExtract(
   }
 
   return {
-    rows: mapped,
+    rows: asPreviewRows(input.kind, mapped),
     usedAi: interp.usedAi,
     extractOrigin: mapped.length ? "platform" : null,
     extractState: "completed",

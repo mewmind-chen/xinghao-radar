@@ -1,5 +1,6 @@
 export type ImportKind = "offer" | "inquiry" | "stock" | "transit";
-export type ImportKindHint = ImportKind | "mixed";
+/** Extraction-only mode; it carries no business write target. */
+export type ImportKindHint = ImportKind | "mixed" | "neutral";
 export type SourceType = "text" | "excel" | "csv" | "image" | "pdf" | "docx";
 
 export type Currency = "USD" | "CNY" | null;

@@ -12,7 +12,12 @@ import {
   Trash2,
   UploadCloud,
 } from "lucide-react";
-import { confirmImport, parseImport, type ParseImportInput } from "@/lib/server/import";
+import {
+  confirmImport,
+  parseImport,
+  prepareImportReview,
+  type ParseImportInput,
+} from "@/lib/server/import";
 import { listImportBatches, undoImportBatch } from "@/lib/server/settings";
 import { formatWhen } from "@/lib/domain";
 import { sampleImportText, parseQty, correctTradeText } from "@/lib/domain";
@@ -98,7 +103,9 @@ function ImportPage() {
   const canStockImport = access.can("inventory.import");
   const canPotentialImport = access.can("potential.write");
   const batches = useQuery({ queryKey: ["import-batches"], queryFn: () => listImportBatches() });
-  const [kind, setKind] = useState<ImportKind>("offer");
+  // This is a write target, not an extraction hint. A normal import remains
+  // untyped until the neutral candidate preview has been shown.
+  const [kind, setKind] = useState<ImportKind | null>(null);
   const [text, setText] = useState("");
   const [rows, setRows] = useState<ImportRow[] | null>(null);
   const [submissionId, setSubmissionId] = useState(() => crypto.randomUUID());
@@ -144,6 +151,10 @@ function ImportPage() {
   const albumRef = useRef<HTMLInputElement>(null);
   const voiceRef = useRef<SpeechRec | null>(null);
   const lastPasteRef = useRef<{ fingerprint: string; at: number } | null>(null);
+  const presetKindRef = useRef<ImportKind | null>(null);
+  const parseGenerationRef = useRef(0);
+  const reviewGenerationRef = useRef(0);
+  const [reviewedKind, setReviewedKind] = useState<ImportKind | null>(null);
 
   useEffect(() => {
     const preset = new URLSearchParams(window.location.search).get("kind");
@@ -155,6 +166,7 @@ function ImportPage() {
       preset === "potential" ||
       preset === "mixed"
     ) {
+      presetKindRef.current = preset;
       setKind(preset);
     }
     const draft = sessionStorage.getItem("import-draft");
@@ -171,36 +183,80 @@ function ImportPage() {
       (kind === "offer" || kind === "inquiry" || kind === "mixed")
     ) {
       setKind("stock");
+      if (presetKindRef.current) presetKindRef.current = "stock";
     } else if (!canStockImport && (kind === "stock" || kind === "transit")) {
       setKind("offer");
+      if (presetKindRef.current) presetKindRef.current = "offer";
     } else if (!canPotentialImport && kind === "potential") {
-      setKind(canMarketImport ? "offer" : "stock");
+      const nextKind = canMarketImport ? "offer" : "stock";
+      setKind(nextKind);
+      if (presetKindRef.current) presetKindRef.current = nextKind;
     }
   }, [canMarketImport, canStockImport, canPotentialImport, kind]);
 
+  type ParseMutationInput = { input: ParseImportInput; generation: number };
+  type ReviewMutationInput = {
+    kind: ImportKind;
+    rows: ImportRow[];
+    generation: number;
+  };
+
+  const reviewMut = useMutation({
+    mutationFn: ({ kind: targetKind, rows }: ReviewMutationInput) =>
+      prepareImportReview({
+        data: {
+          kind: targetKind,
+          rows,
+          defaultChannel: channel || undefined,
+          defaultCustomer: customer || undefined,
+          defaultWarehouseId: warehouseId || undefined,
+          defaultSupplier: supplier || undefined,
+          defaultCurrency: currency,
+          defaultTax: tax,
+        },
+      }),
+    onMutate: () => {
+      setReviewedKind(null);
+      setActivity({
+        state: "recognizing",
+        label: "正在按所选类型校验…",
+        detail: "不会重新调用 AI，只重新计算该类型的校验与查重结果",
+      });
+    },
+    onSuccess: (r, variables) => {
+      if (variables.generation !== reviewGenerationRef.current) return;
+      setRows(r.rows);
+      setReviewedKind(variables.kind);
+      setChannels(r.channels);
+      setCustomers(r.customers);
+      setWarehouses(r.warehouses);
+      setActivity({
+        state: "preview",
+        label: "类型校验完成，可人工校对",
+        detail: `${labelKind(variables.kind)}目标已锁定；确认写入前仍可修改候选字段`,
+      });
+      toast.message(`已按“${labelKind(variables.kind)}”重新校验预览`);
+    },
+    onError: (e: Error, variables) => {
+      if (variables.generation !== reviewGenerationRef.current) return;
+      setReviewedKind(null);
+      setActivity({ state: "failed", label: "类型校验失败", detail: e.message });
+      toast.error(e.message);
+    },
+  });
+
   const parseMut = useMutation({
-    mutationFn: (input: ParseImportInput) => parseImport({ data: input }),
-    onMutate: () =>
-      setActivity((current) => ({ ...current, state: "recognizing", label: "正在识别…" })),
-    onSuccess: (r) => {
+    mutationFn: ({ input }: ParseMutationInput) => parseImport({ data: input }),
+    onMutate: () => {
+      setReviewedKind(null);
+      setActivity((current) => ({ ...current, state: "recognizing", label: "正在中性识别…" }));
+    },
+    onSuccess: (r, variables) => {
+      if (variables.generation !== parseGenerationRef.current) return;
       setSubmissionId(crypto.randomUUID());
+      setReviewedKind(null);
       setImportStatus("preview");
-      const fallbackWarehouseCode =
-        r.warehouses.find((w) => w.id === (warehouseId || r.warehouses[0]?.id))?.code ?? null;
-      setRows(
-        r.rows.map((row) =>
-          kind === "stock"
-            ? {
-                ...row,
-                warehouse: row.warehouse ?? fallbackWarehouseCode,
-                channel: (row.channel ?? supplier) || null,
-                costCurrency:
-                  row.costAmount == null ? row.costCurrency : (row.costCurrency ?? currency),
-                costTax: row.costAmount == null ? row.costTax : (row.costTax ?? tax),
-              }
-            : row,
-        ),
-      );
+      setRows(r.rows);
       setUsedAi(r.usedAi);
       setExtractOrigin(r.extractOrigin ?? null);
       setExtractState(r.extractState ?? null);
@@ -212,12 +268,9 @@ function ImportPage() {
       setAttachment((current) => (current ? { ...current, status: "预览完成" } : current));
       setActivity({
         state: "preview",
-        label: r.rows.length ? "预览完成，可人工校对" : "识别完成，但没有识别到型号",
+        label: r.rows.length ? "中性预览完成，请选择导入类型" : "识别完成，但没有识别到型号",
         detail: r.extractMessage ?? undefined,
       });
-      if (!channel && r.channels[0]) setChannel(r.channels[0].name);
-      if (!customer && r.customers[0]) setCustomer(r.customers[0].name);
-      if (!warehouseId && r.warehouses[0]) setWarehouseId(r.warehouses[0].id);
       if (
         (r.extractState === "vision_unavailable" ||
           r.extractState === "provider_unavailable" ||
@@ -237,8 +290,17 @@ function ImportPage() {
       } else if (r.rows.length === 0) {
         toast.error(r.extractMessage || "没有识别到型号");
       }
+
+      const presetKind = presetKindRef.current;
+      if (presetKind && r.rows.length > 0) {
+        const generation = ++reviewGenerationRef.current;
+        setKind(presetKind);
+        reviewMut.mutate({ kind: presetKind, rows: r.rows, generation });
+        presetKindRef.current = null;
+      }
     },
-    onError: (e: Error) => {
+    onError: (e: Error, variables) => {
+      if (variables.generation !== parseGenerationRef.current) return;
       setActivity({ state: "failed", label: "识别失败", detail: e.message });
       toast.error(e.message);
     },
@@ -247,9 +309,12 @@ function ImportPage() {
   const confirmMut = useMutation({
     mutationFn: async () => {
       if (!rows) throw new Error("请先预览");
+      const selectedKind = kind;
+      if (!selectedKind) throw new Error("请先选择导入类型");
+      if (reviewedKind !== selectedKind) throw new Error("请先完成所选类型的预览校验");
       return confirmImport({
         data: {
-          kind,
+          kind: selectedKind,
           sourceType,
           filename,
           excerpt: text.slice(0, 500),
@@ -265,13 +330,31 @@ function ImportPage() {
       });
     },
     onSuccess: (r) => {
+      const selectedKind = kind;
+      if (!selectedKind) return;
       qc.invalidateQueries();
       setImportStatus("success");
       setSummary({ ...r.summary, batchId: r.batchId });
+      const kindLabels: Record<string, string> = {
+        offer: "渠道推货",
+        inquiry: "客户询价",
+        stock: "库存",
+        transit: "在途",
+        potential: "潜力型号",
+      };
+      const writtenCount = r.writtenCount ?? r.summary.identified;
+      const mixedBreakdown = Object.entries((r.writtenByKind ?? {}) as Record<string, number>)
+        .filter(([, count]) => count > 0)
+        .map(([writtenKind, count]) => `${kindLabels[writtenKind] ?? writtenKind}${count}条`)
+        .join("、");
       toast.success(
-        kind === "potential"
-          ? `已加入 ${r.summary.potential ?? r.summary.identified} 个潜力型号`
-          : `识别 ${r.summary.identified}；命中 ${r.summary.hit}；库 ${r.summary.stock} · 客 ${r.summary.inquiry} · 双命中 ${r.summary.dual}`,
+        selectedKind === "potential"
+          ? `已写入${writtenCount}个潜力型号`
+          : selectedKind === "inquiry"
+            ? `已写入${writtenCount}条客户询价，涉及${r.customerCount ?? 0}个客户`
+            : selectedKind === "mixed"
+              ? `已写入${writtenCount}条：${mixedBreakdown}`
+              : `已写入${writtenCount}条${kindLabels[selectedKind] ?? selectedKind}`,
       );
     },
     onError: (e: Error) => {
@@ -279,6 +362,25 @@ function ImportPage() {
       toast.error(e.message);
     },
   });
+
+  function startNeutralParse(input: Omit<ParseImportInput, "kind">) {
+    const generation = ++parseGenerationRef.current;
+    ++reviewGenerationRef.current;
+    setReviewedKind(null);
+    if (!presetKindRef.current) setKind(null);
+    parseMut.mutate({ input: { ...input, kind: "neutral" }, generation });
+  }
+
+  function invalidatePreview() {
+    ++parseGenerationRef.current;
+    ++reviewGenerationRef.current;
+    setRows(null);
+    setKind(null);
+    setReviewedKind(null);
+    setSummary(null);
+    setImportStatus("draft");
+    presetKindRef.current = null;
+  }
 
   async function onFile(file: File, src: ImportSource) {
     const detectedSource = src || fileSource(file);
@@ -330,8 +432,7 @@ function ImportPage() {
         label: "正在识别…",
         detail: `${file.name} · 识别完成前不会写入业务数据`,
       });
-      parseMut.mutate({
-        kind,
+      startNeutralParse({
         sourceType: detectedSource,
         defaultWarehouseId: warehouseId || undefined,
         defaultSupplier: supplier || undefined,
@@ -354,6 +455,12 @@ function ImportPage() {
     if (attachment?.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
     setAttachment(null);
     setFilename(undefined);
+    setRows(null);
+    setKind(null);
+    setReviewedKind(null);
+    presetKindRef.current = null;
+    ++parseGenerationRef.current;
+    ++reviewGenerationRef.current;
     setActivity({ state: "idle", label: "等待输入" });
   }
 
@@ -452,6 +559,7 @@ function ImportPage() {
     rec.lang = "zh-CN";
     rec.onresult = (ev: { results: { 0: { 0: { transcript: string } } } }) => {
       const t = correctTradeText(ev.results[0][0].transcript);
+      if (rows) invalidatePreview();
       setText((prev) => (prev ? prev + "\n" + t : t));
       setVoiceState("recognized");
       setActivity({
@@ -506,11 +614,15 @@ function ImportPage() {
   }
 
   function rowBlockingReason(row: ImportRow): string | null {
+    if (!kind) return "请先选择导入类型";
     if (!row.mpn.trim()) return "型号为空";
     if (compositeMpnReason(row.mpn)) return compositeMpnReason(row.mpn);
     if (row.warning?.includes("多个型号候选")) return row.warning;
     if (row.brandConflict) return row.brandConflict;
-    if (row.kind === "mixed") return "业务类型未确定";
+    const targetKind = kind === "mixed" ? row.kind : kind;
+    if (targetKind === "mixed") return "业务类型未确定";
+    if (targetKind === "offer" && !row.channel && !channel) return "缺少渠道";
+    if (targetKind === "inquiry" && !row.customer && !customer) return "缺少客户";
     return stockRowError(row);
   }
 
@@ -551,7 +663,34 @@ function ImportPage() {
   function clearSelection() {
     setRows((current) => current?.map((row) => ({ ...row, selected: false })) ?? null);
   }
-  const inputBusy = parseMut.isPending || voiceState === "recording";
+
+  function chooseTargetKind(value: string) {
+    if (!rows || !value) return;
+    const nextKind = value as ImportKind;
+    setKind(nextKind);
+    setReviewedKind(null);
+    const generation = ++reviewGenerationRef.current;
+    reviewMut.mutate({ kind: nextKind, rows, generation });
+  }
+
+  function markTargetReviewStale() {
+    if (!rows || !kind) return;
+    ++reviewGenerationRef.current;
+    setReviewedKind(null);
+    setActivity({
+      state: "preview",
+      label: "默认条件已修改，请重新校验",
+      detail: "当前候选行未重新识别；点击“重新校验”后才会更新类型查重结果",
+    });
+  }
+
+  function rerunTargetReview() {
+    if (!rows || !kind) return;
+    const generation = ++reviewGenerationRef.current;
+    reviewMut.mutate({ kind, rows, generation });
+  }
+
+  const inputBusy = parseMut.isPending || reviewMut.isPending || voiceState === "recording";
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-4">
@@ -559,7 +698,7 @@ function ImportPage() {
         <h1 className="text-xl font-medium">智能导入</h1>
         <p className="text-sm text-muted-foreground">
           支持文本、Excel/CSV、图片、PDF 和
-          DOCX。先预览再入库，模型不会擅自改写型号；人工修改后必须重新勾选。
+          DOCX。先中性识别并清洗字段，再选择导入类型、校验和查重；模型不会决定写入目标。
         </p>
       </div>
 
@@ -584,6 +723,9 @@ function ImportPage() {
               onClick={() => {
                 setSummary(null);
                 setRows(null);
+                setKind(null);
+                setReviewedKind(null);
+                presetKindRef.current = null;
                 setImportStatus("draft");
                 setSubmissionId(crypto.randomUUID());
               }}
@@ -660,8 +802,13 @@ function ImportPage() {
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <div className="grid gap-3 md:grid-cols-2">
           <div>
-            <Label>导入为</Label>
-            <NativeSelect value={kind} onChange={(e) => setKind(e.target.value as ImportKind)}>
+            <Label>导入类型（识别后选择）</Label>
+            <NativeSelect
+              value={kind ?? ""}
+              disabled={!rows || inputBusy || importStatus === "writing" || importStatus === "success"}
+              onChange={(e) => chooseTargetKind(e.target.value)}
+            >
+              <option value="">先完成中性识别</option>
               {canMarketImport && (
                 <>
                   <option value="offer">渠道推货</option>
@@ -675,8 +822,18 @@ function ImportPage() {
                 </>
               )}
               {canPotentialImport && <option value="potential">潜力型号</option>}
-              {canMarketImport && canStockImport && <option value="mixed">自动判断</option>}
+              {canMarketImport && canStockImport && <option value="mixed">逐行选择类型</option>}
             </NativeSelect>
+            {!rows && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                AI 只负责识别、清洗和规范字段；看到预览后再决定写入哪个业务模块。
+              </p>
+            )}
+            {rows && !kind && (
+              <p className="mt-1 text-xs text-primary">
+                中性预览已完成，请先选择目标类型；此时不会写入任何业务数据。
+              </p>
+            )}
             {kind === "potential" && (
               <p className="mt-1 text-xs text-muted-foreground">
                 只加入潜力型号关注池，不写入库存、渠道或客户数据。
@@ -686,7 +843,14 @@ function ImportPage() {
           {(kind === "offer" || kind === "mixed") && (
             <div>
               <Label>默认渠道（文本里没有时）</Label>
-              <Input list="imp-ch" value={channel} onChange={(e) => setChannel(e.target.value)} />
+              <Input
+                list="imp-ch"
+                value={channel}
+                onChange={(e) => {
+                  setChannel(e.target.value);
+                  markTargetReviewStale();
+                }}
+              />
               <datalist id="imp-ch">
                 {channels.map((c) => (
                   <option key={c.id} value={c.name} />
@@ -697,7 +861,14 @@ function ImportPage() {
           {(kind === "inquiry" || kind === "mixed") && (
             <div>
               <Label>默认客户</Label>
-              <Input list="imp-cu" value={customer} onChange={(e) => setCustomer(e.target.value)} />
+              <Input
+                list="imp-cu"
+                value={customer}
+                onChange={(e) => {
+                  setCustomer(e.target.value);
+                  markTargetReviewStale();
+                }}
+              />
               <datalist id="imp-cu">
                 {customers.map((c) => (
                   <option key={c.id} value={c.name} />
@@ -709,7 +880,13 @@ function ImportPage() {
             <div className="grid gap-3 md:grid-cols-2">
               <div>
                 <Label>默认仓库</Label>
-                <NativeSelect value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
+                <NativeSelect
+                  value={warehouseId}
+                  onChange={(e) => {
+                    setWarehouseId(e.target.value);
+                    markTargetReviewStale();
+                  }}
+                >
                   <option value="">请选择</option>
                   {warehouses.map((w) => (
                     <option key={w.id} value={w.id}>
@@ -723,7 +900,10 @@ function ImportPage() {
                 <Input
                   list="imp-supplier"
                   value={supplier}
-                  onChange={(e) => setSupplier(e.target.value)}
+                  onChange={(e) => {
+                    setSupplier(e.target.value);
+                    markTargetReviewStale();
+                  }}
                 />
                 <datalist id="imp-supplier">
                   {channels.map((c) => (
@@ -743,6 +923,7 @@ function ImportPage() {
                     const next = v as Currency;
                     setCurrency(next);
                     if (next === "USD") setTax("none");
+                    markTargetReviewStale();
                   }}
                 />
               </div>
@@ -756,7 +937,10 @@ function ImportPage() {
                     { value: "inclusive", label: "含" },
                   ]}
                   disabled={currency === "USD"}
-                  onChange={(v) => setTax(v as CostTax)}
+                  onChange={(v) => {
+                    setTax(v as CostTax);
+                    markTargetReviewStale();
+                  }}
                 />
               </div>
             </div>
@@ -798,6 +982,7 @@ function ImportPage() {
               if (checkPastedImage(image)) void onFile(image, "image");
             }}
             onChange={(e) => {
+              if (rows) invalidatePreview();
               setText(e.target.value);
               if (e.target.value.trim())
                 setActivity({
@@ -862,8 +1047,7 @@ function ImportPage() {
                 label: "正在识别…",
                 detail: "文本已收到，正在生成可编辑预览",
               });
-              parseMut.mutate({
-                kind,
+              startNeutralParse({
                 sourceType: "text",
                 text,
                 defaultWarehouseId: warehouseId || undefined,
@@ -881,6 +1065,7 @@ function ImportPage() {
             disabled={inputBusy}
             onClick={() => {
               const sample = sampleImportText();
+              if (rows) invalidatePreview();
               setText(sample);
               setActivity({ state: "received", label: "示例文字已填入，点击识别预览" });
             }}
@@ -1026,6 +1211,8 @@ function ImportPage() {
                   confirmMut.isPending ||
                   importStatus === "writing" ||
                   importStatus === "success" ||
+                  !kind ||
+                  reviewedKind !== kind ||
                   selectedCount === 0 ||
                   blockingCount > 0
                 }
@@ -1068,6 +1255,49 @@ function ImportPage() {
                 <option value="duplicate">疑似重复</option>
               </NativeSelect>
             </div>
+            {!kind && (
+              <div className="mt-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                <p className="text-xs font-medium text-primary">第 2 步：选择导入类型</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  AI 已完成中性识别。现在只确定写入目标，不会重新识别，也不会让 AI 决定业务类型。
+                </p>
+                <NativeSelect
+                  className="mt-2 max-w-xs"
+                  value={kind ?? ""}
+                  onChange={(event) => chooseTargetKind(event.target.value)}
+                >
+                  <option value="">请选择目标类型</option>
+                  {canMarketImport && (
+                    <>
+                      <option value="offer">渠道推货</option>
+                      <option value="inquiry">客户询价</option>
+                    </>
+                  )}
+                  {canStockImport && (
+                    <>
+                      <option value="stock">入库</option>
+                      <option value="transit">在途</option>
+                    </>
+                  )}
+                  {canPotentialImport && <option value="potential">潜力型号</option>}
+                  {canMarketImport && canStockImport && <option value="mixed">逐行选择类型</option>}
+                </NativeSelect>
+              </div>
+            )}
+            {kind && reviewedKind !== kind && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-warn/30 bg-warn/5 px-2 py-1.5 text-xs">
+                <span className="text-muted-foreground">
+                  {reviewMut.isPending
+                    ? `正在按“${labelKind(kind)}”重算类型校验与查重…`
+                    : "类型目标或默认条件已变更，需要重新校验后才能写入"}
+                </span>
+                {!reviewMut.isPending && (
+                  <Button size="sm" variant="outline" onClick={rerunTargetReview}>
+                    重新校验
+                  </Button>
+                )}
+              </div>
+            )}
             {importStatus === "writing" && (
               <p className="mt-2 text-xs text-muted-foreground">
                 写入中…按钮已锁定，服务端会按幂等键处理重复请求。
@@ -1113,6 +1343,7 @@ function ImportPage() {
             blockingCount={blockingCount}
             importStatus={importStatus}
             confirmPending={confirmMut.isPending}
+            ready={Boolean(kind && reviewedKind === kind)}
             onConfirm={() => {
               setImportStatus("writing");
               confirmMut.mutate();
@@ -1171,10 +1402,11 @@ function ImportReviewTable({
   blockingCount,
   importStatus,
   confirmPending,
+  ready,
   onConfirm,
 }: {
   visibleRows: { row: ImportRow; idx: number }[];
-  kind: ImportKind;
+  kind: ImportKind | null;
   warehouses: { id: string; code: string }[];
   rowBlockingReason: (row: ImportRow) => string | null;
   onPatch: (idx: number, partial: Partial<ImportRow>) => void;
@@ -1188,10 +1420,11 @@ function ImportReviewTable({
   blockingCount: number;
   importStatus: "draft" | "preview" | "writing" | "success" | "failed";
   confirmPending: boolean;
+  ready: boolean;
   onConfirm: () => void;
 }) {
   const disabled = importStatus === "writing" || importStatus === "success" || confirmPending;
-  const confirmDisabled = disabled || selectedCount === 0 || blockingCount > 0;
+  const confirmDisabled = disabled || !ready || selectedCount === 0 || blockingCount > 0;
 
   function rowKind(row: ImportRow): ImportKind {
     return kind === "stock" ? "stock" : row.kind;
@@ -1242,6 +1475,7 @@ function ImportReviewTable({
   }
 
   function businessKindCell(row: ImportRow, idx: number) {
+    if (!kind) return <span className="text-xs text-muted-foreground">待选择</span>;
     if (kind !== "mixed")
       return <span className="text-xs text-muted-foreground">{labelKind(rowKind(row))}</span>;
     return (
@@ -1548,6 +1782,17 @@ function ImportReviewTable({
                         onChange={(event) => patchText(idx, "channel", event.target.value)}
                       />
                     </label>
+                    {rowKind(row) === "inquiry" && (
+                      <label className="min-w-0">
+                        <span className="text-[10px] text-muted-foreground">客户</span>
+                        <Input
+                          className="mt-0.5 h-8 px-2 text-xs"
+                          value={row.customer ?? ""}
+                          onChange={(event) => patchText(idx, "customer", event.target.value)}
+                          aria-label={`${row.mpn} 客户`}
+                        />
+                      </label>
+                    )}
                     {isStock && (
                       <label className="min-w-0">
                         <span className="text-[10px] text-muted-foreground">仓库</span>

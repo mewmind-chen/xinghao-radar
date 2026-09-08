@@ -26,13 +26,13 @@ function candidateWarning(row: CandidateRow): string | null {
   return [...new Set(messages)].join("；") || null;
 }
 
-function candidateToRadarRow(row: CandidateRow): ImportRow {
-  const unresolvedKind = row.kind == null;
+function candidateToRadarRow(row: CandidateRow, neutral = false): ImportRow {
+  const unresolvedKind = neutral || row.kind == null;
   return {
     id: row.id,
     // ImportRow is still the compatibility shape. A mixed value is a visible
     // placeholder only; selected=false prevents it from reaching the writer.
-    kind: row.kind ?? "mixed",
+    kind: neutral ? "mixed" : row.kind ?? "mixed",
     mpn: row.mpn as string,
     brand: row.brand,
     qty: row.qty,
@@ -61,11 +61,15 @@ function candidateToRadarRow(row: CandidateRow): ImportRow {
   };
 }
 
-function modelMessage(result: Awaited<ReturnType<typeof extractImport>>): string | null {
+function modelMessage(result: Awaited<ReturnType<typeof extractImport>>, neutral = false): string | null {
   if (result.status === "provider_unavailable") return "当前未配置 OpenRouter，复杂输入无法交给模型识别。";
   if (result.status === "provider_error") return "模型识别失败，请稍后重试或改用文本/标准表格。";
   if (result.status === "needs_mapping") return "表格列名不明确，需要模型映射或人工确认。";
-  if (result.status === "needs_review") return "部分候选缺少业务类型或型号证据，已阻止自动写入。";
+  if (result.status === "needs_review") {
+    return neutral
+      ? "部分候选缺少可验证的型号证据，已阻止自动写入。"
+      : "部分候选缺少业务类型或型号证据，已阻止自动写入。";
+  }
   if (result.status === "unsupported") return result.issues[0]?.message ?? "文件类型不支持。";
   if (result.status === "invalid_input") return result.issues[0]?.message ?? "导入内容不合法。";
   return result.issues[0]?.message ?? null;
@@ -88,14 +92,14 @@ export async function resolveImportWithEngine(input: ImportExtractInput): Promis
   };
   const provider = defaultImportProvider();
   const result = await extractImport(request, provider);
-  const rows = result.rows.map((row) => candidateToRadarRow(row));
+  const rows = result.rows.map((row) => candidateToRadarRow(row, input.kind === "neutral"));
   return {
     rows,
     usedAi: result.runs.some((run) => run.status === "completed"),
     aiAvailable: provider.available(),
     extractOrigin: result.runs.length > 0 ? "engine_ai" : "engine_deterministic",
     extractState: result.status,
-    extractMessage: modelMessage(result),
+    extractMessage: modelMessage(result, input.kind === "neutral"),
     calledPlatform: false,
   };
 }

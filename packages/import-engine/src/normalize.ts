@@ -55,6 +55,7 @@ export function parseMoney(value: unknown): {
 }
 
 export function normalizeKind(value: unknown, hint: ImportKindHint): ImportKind | null {
+  if (hint === "neutral") return null;
   if (value === "offer" || value === "inquiry" || value === "stock" || value === "transit") return value;
   return hint === "mixed" ? null : hint;
 }
@@ -179,7 +180,7 @@ export function normalizeModelRow(
         : "unverified";
   const issues: string[] = [];
   const kind = normalizeKind(raw.kind, opts.kindHint);
-  if (!kind) issues.push("业务类型无法确定，请人工选择");
+  if (!kind && opts.kindHint !== "neutral") issues.push("业务类型无法确定，请人工选择");
   if (!evidence.mpn?.length && !opts.visualOnly) issues.push("型号缺少原文证据");
   if (verification === "unverified" && !opts.visualOnly) issues.push("型号无法在来源中精确定位");
 
@@ -205,15 +206,19 @@ export function exactSourceEvidence(sourceText: string, value: string): SourceEv
   return index < 0 ? [] : [{ type: "text", start: index, end: index + value.length, quote: sourceText.slice(index, index + value.length) }];
 }
 
-export function validateCandidateRows(rows: CandidateRow[]): { rows: CandidateRow[]; issues: { code: "missing_mpn" | "missing_kind" | "missing_evidence"; message: string; rowId: string }[] } {
+export function validateCandidateRows(
+  rows: CandidateRow[],
+  opts: { requireKind?: boolean } = {},
+): { rows: CandidateRow[]; issues: { code: "missing_mpn" | "missing_kind" | "missing_evidence"; message: string; rowId: string }[] } {
   const issues: { code: "missing_mpn" | "missing_kind" | "missing_evidence"; message: string; rowId: string }[] = [];
   const valid: CandidateRow[] = [];
+  const requireKind = opts.requireKind ?? true;
   for (const row of rows) {
     if (!row.mpn) {
       issues.push({ code: "missing_mpn", message: "型号为空", rowId: row.id });
       continue;
     }
-    if (!row.kind) issues.push({ code: "missing_kind", message: "业务类型无法确定", rowId: row.id });
+    if (requireKind && !row.kind) issues.push({ code: "missing_kind", message: "业务类型无法确定", rowId: row.id });
     if (row.verification === "unverified") issues.push({ code: "missing_evidence", message: "型号缺少可验证来源", rowId: row.id });
     valid.push(row);
   }
