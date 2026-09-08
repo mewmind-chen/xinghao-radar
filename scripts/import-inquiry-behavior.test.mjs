@@ -13,6 +13,7 @@ test("inquiry import keeps the selected kind and writes multiple exact customers
   process.env.DATA_DIR = dataDir;
   process.env.AUTH_INITIAL_BOSS_EMAIL = "inquiry.owner@local.test";
   process.env.VITE_AUTH_ENABLED = "true";
+  process.env.IMPORT_ENGINE_V2_ENABLED = "true";
 
   const vite = await createServer({
     root: process.cwd(),
@@ -93,6 +94,22 @@ test("inquiry import keeps the selected kind and writes multiple exact customers
     });
     await sql`insert into app_users (user_id, email, display_name, role, status) values (${owner.id}, ${owner.email}, ${owner.name}, '老板', 'active')`;
     sessionToken = (await authContext.internalAdapter.createSession(owner.id)).token;
+
+    const neutralPreview = await invoke(imports.parseImport_createServerFn_handler, {
+      kind: "neutral",
+      sourceType: "text",
+      text: "STM32F103C8T6 10K",
+    });
+    assert.equal(neutralPreview.rows.length, 1);
+    assert.equal(neutralPreview.rows[0].kind, "mixed");
+    assert.equal(neutralPreview.rows[0].selected, false);
+
+    const selectedPreview = await invoke(imports.prepareImportReview_createServerFn_handler, {
+      kind: "inquiry",
+      rows: [neutralPreview.rows[0]],
+    });
+    assert.equal(selectedPreview.rows[0].kind, "inquiry");
+    assert.equal(selectedPreview.rows[0].selected, true);
 
     const inquiryImport = await invoke(imports.confirmImport_createServerFn_handler, {
       kind: "inquiry",

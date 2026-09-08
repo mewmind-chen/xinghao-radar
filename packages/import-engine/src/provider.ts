@@ -80,6 +80,16 @@ const MAPPING_SCHEMA = {
   },
 } as const;
 
+function kindInstruction(kindHint: ProviderRequest["kindHint"]): string {
+  if (kindHint === "neutral") {
+    return "识别模式：中性识别。只清洗和规范来源字段，不判断导入业务类型；kind必须返回null，不能根据数量、价格、客户或交期推断写入目标。";
+  }
+  if (kindHint === "mixed") {
+    return "识别模式：允许逐行给出候选业务类型，但这只是待人工确认的建议，不代表最终写入目标。";
+  }
+  return `业务类型提示：${kindHint}。只按来源提取字段，最终写入类型由用户确认。`;
+}
+
 function dataUrl(mime: string | undefined, fileBase64: string): string {
   return `data:${mime || "application/octet-stream"};base64,${fileBase64}`;
 }
@@ -140,7 +150,7 @@ export class OpenRouterProvider implements ExtractionProvider {
     if (!key) return null;
     const schema = request.responseKind === "rows" ? ROW_SCHEMA : MAPPING_SCHEMA;
     const attachment = filePart(request);
-    const content: unknown[] = [{ type: "text", text: request.userText }];
+    const content: unknown[] = [{ type: "text", text: `${kindInstruction(request.kindHint)}\n${request.userText}` }];
     if (attachment) content.push(attachment);
     const payload = {
       model: process.env[this.modelEnv] || this.model,

@@ -81,6 +81,33 @@ test("import-engine: ordinary model-like text still uses deterministic extractio
   assert.equal(result.rows[0].priceAmount, 1.15);
 });
 
+test("import-engine: neutral extraction keeps business kind unset", async () => {
+  let requestedHint;
+  const provider = fakeProvider({ rows: {
+    rows: [{ kind: "offer", mpn: "STM32F103C8T6", qtyRaw: "10K", evidence: [{ field: "mpn", type: "text", quote: "STM32F103C8T6" }] }],
+  } });
+  const original = provider.extract;
+  provider.extract = async (request) => {
+    requestedHint = request.kindHint;
+    return original(request);
+  };
+  const result = await extractImport({
+    source: { type: "text", content: "STM32F103C8T6 10K" },
+    kindHint: "neutral",
+  }, provider);
+  assert.equal(requestedHint, undefined, "确定性文本不应无意义调用模型");
+  assert.equal(result.rows[0].kind, null);
+  assert.equal(result.issues.some((item) => item.code === "missing_kind"), false);
+
+  const modelResult = await extractImport({
+    source: { type: "text", content: "客户：待确认\nItem code: STM32F103C8T6\nAvailable 10K, supplier quote" },
+    kindHint: "neutral",
+  }, provider);
+  assert.equal(requestedHint, "neutral");
+  assert.equal(modelResult.rows[0].kind, null);
+  assert.equal(modelResult.issues.some((item) => item.code === "missing_kind"), false);
+});
+
 test("import-engine: unknown table asks for mapping when provider is unavailable", async () => {
   const unavailable = fakeProvider({});
   unavailable.available = () => false;

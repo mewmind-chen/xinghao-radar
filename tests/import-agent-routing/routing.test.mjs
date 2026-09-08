@@ -258,6 +258,24 @@ test("Platform completed candidates become preview rows with origin=platform", a
   assert.equal(out.rows[0].mpn, "TPS54560DDAR");
 });
 
+test("neutral legacy extraction keeps platform candidates out of a business target", async () => {
+  const out = await resolveImportExtract(
+    { kind: "neutral", sourceType: "text", text: "待确认 STM32F103C8T6 10K" },
+    {
+      extractViaPlatform: async () => ({
+        status: 200,
+        body: {
+          ok: true,
+          usedAi: true,
+          candidates: [{ mpn: "STM32F103C8T6", kind: "offer", qty: 10000 }],
+        },
+      }),
+    },
+  );
+  assert.equal(out.rows[0].kind, "mixed");
+  assert.equal(out.rows[0].selected, false);
+});
+
 test("agent_unavailable fallbackFrom is not treated as regex-success", () => {
   const interp = interpretPlatformExtract({
     status: 200,

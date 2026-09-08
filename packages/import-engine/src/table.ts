@@ -109,7 +109,7 @@ export function applyMapping(sheet: TableSheet, mapping: TableMapping, kindHint:
         costCurrency: cost.currency,
         costTax: cost.tax,
         note: row.filter(Boolean).join(" | "),
-        kind: kindHint === "mixed" ? undefined : kindHint,
+        kind: kindHint === "mixed" || kindHint === "neutral" ? undefined : kindHint,
       },
       {
         kindHint,
