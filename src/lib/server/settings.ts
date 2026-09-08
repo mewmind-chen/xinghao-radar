@@ -81,7 +81,10 @@ export const listImportBatches = createServerFn({ method: "GET" })
         : await sql`select * from import_batches where created_by = ${principal.userId} order by created_at desc limit 30`;
     const output = [];
     for (const r of rows) {
-      let result: { summary?: { identified?: number; potential?: number } } | null = null;
+      let result: {
+        summary?: { identified?: number; potential?: number };
+        writtenCount?: number;
+      } | null = null;
       try {
         result = r.result_json ? JSON.parse(String(r.result_json)) : null;
       } catch {
@@ -95,8 +98,11 @@ export const listImportBatches = createServerFn({ method: "GET" })
         if (hit[0]?.name) context = `渠道：${String(hit[0].name)}`;
       } else if (kind === "inquiry") {
         const hit =
-          await sql`select c.name from customer_inquiries i join customers c on c.id = i.customer_id where i.import_batch_id = ${r.id} and i.deleted_at is null limit 1`;
-        if (hit[0]?.name) context = `客户：${String(hit[0].name)}`;
+          await sql`select min(c.name) as first_name, count(distinct c.name)::int as customer_count from customer_inquiries i join customers c on c.id = i.customer_id where i.import_batch_id = ${r.id} and i.deleted_at is null`;
+        if (hit[0]?.first_name) {
+          const count = Number(hit[0].customer_count ?? 1);
+          context = `客户：${String(hit[0].first_name)}${count > 1 ? `等${count}个` : ""}`;
+        }
       } else if (kind === "stock" || kind === "transit") {
         const hit =
           await sql`select w.code from stock_lots l left join warehouses w on w.id = l.warehouse_id where l.import_batch_id = ${r.id} and l.deleted_at is null limit 1`;
@@ -115,7 +121,8 @@ export const listImportBatches = createServerFn({ method: "GET" })
         status: String(r.status ?? "success") as "writing" | "success" | "failed",
         undoneAt: r.undone_at ? String(r.undone_at) : null,
         createdBy: r.created_by ? String(r.created_by) : null,
-        writtenRows: result?.summary?.identified ?? result?.summary?.potential ?? null,
+        writtenRows:
+          result?.writtenCount ?? result?.summary?.potential ?? result?.summary?.identified ?? null,
         context,
         canRevoke: !r.undone_at && (principal.role === "老板" || principal.role === "跟进人"),
       });

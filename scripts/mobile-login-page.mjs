@@ -6,6 +6,7 @@ export function renderStandaloneLoginPage() {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#f3f2ee">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title>登录 · 型号雷达</title>
   <style>
     *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#f3f2ee;color:#20201e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif}

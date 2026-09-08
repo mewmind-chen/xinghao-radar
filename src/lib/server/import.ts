@@ -282,8 +282,9 @@ function normalizeImportDateCodes(rows: ImportRow[]): ImportRow[] {
 }
 
 function effectiveImportKind(row: ImportRow, selectedKind: ImportKind): ImportKind {
-  if (selectedKind === "stock" || selectedKind === "potential") return selectedKind;
-  return row.kind === "mixed" ? selectedKind : row.kind;
+  // A user-selected import target is authoritative.  Only the explicit
+  // mixed mode may use the row-level kind returned by an extractor.
+  return selectedKind === "mixed" ? row.kind : selectedKind;
 }
 
 const DUPLICATE_STOCK_DAYS = 90;
@@ -491,11 +492,9 @@ export const parseImport = createServerFn({ method: "POST" })
             );
           })();
 
-    const rows = normalizeImportDateCodes(resolved.rows).map((row) => {
-      if (data.kind === "stock") return { ...row, kind: "stock" as const };
-      if (data.kind === "potential") return { ...row, kind: "potential" as const };
-      return row;
-    });
+    const rows = normalizeImportDateCodes(resolved.rows).map((row) =>
+      data.kind === "mixed" ? row : { ...row, kind: data.kind },
+    );
     // Some local/fallback extractors keep only the first token of a line such as
     // "TDA21472 / TDA21472AUMA1". Preserve the human-review gate from the raw
     // input so the shortened candidate cannot be written silently.
@@ -636,6 +635,14 @@ export const confirmImport = createServerFn({ method: "POST" })
       return await withTransaction(sql, async (tx) => {
         const partIds: string[] = [];
         let potentialAdded = 0;
+        const writtenByKind: Record<Exclude<ImportKind, "mixed">, number> = {
+          offer: 0,
+          inquiry: 0,
+          stock: 0,
+          transit: 0,
+          potential: 0,
+        };
+        const inquiryCustomers = new Set<string>();
         for (const row of selected) {
           const part = await ensurePart(tx, row.mpn, {
             brand: row.brand,
@@ -672,14 +679,17 @@ export const confirmImport = createServerFn({ method: "POST" })
             ${row.isTp}, ${row.leadTimeText}, ${batchId}
           )
         `;
+            writtenByKind.offer += 1;
           } else if (kind === "inquiry") {
             const cuName = row.customer || data.defaultCustomer;
             if (!cuName) throw new Error(`${row.mpn} 缺少客户`);
             const cu = await ensureCustomer(tx, cuName);
+            inquiryCustomers.add(cu.name);
             await tx`
           insert into customer_inquiries (id, customer_id, part_id, qty, import_batch_id)
           values (${nid()}, ${cu.id}, ${partId}, ${row.qty}, ${batchId})
         `;
+            writtenByKind.inquiry += 1;
           } else if (kind === "potential") {
             const inserted = await tx`
           insert into potential_models (user_id, part_id, note, import_batch_id)
@@ -687,7 +697,10 @@ export const confirmImport = createServerFn({ method: "POST" })
           on conflict (user_id, part_id) do nothing
           returning part_id
         `;
-            if (inserted.length) potentialAdded += 1;
+            if (inserted.length) {
+              potentialAdded += 1;
+              writtenByKind.potential += inserted.length;
+            }
           } else if (kind === "stock") {
             const code = row.warehouse;
             const wh =
@@ -712,7 +725,8 @@ export const confirmImport = createServerFn({ method: "POST" })
             ${row.package}, ${row.standardPack}, ${row.packState},
             ${amount}, ${currency}, ${tax}, ${supplier?.id ?? null}, ${batchId}, ${lotId}
           )
-        `;
+            `;
+            writtenByKind.stock += 1;
             await tx`
           insert into stock_movements (id, part_id, lot_id, type, qty, to_warehouse_id, import_batch_id)
           values (${nid()}, ${partId}, ${lotId}, 'in', ${qty}, ${wh.id}, ${batchId})
@@ -741,8 +755,14 @@ export const confirmImport = createServerFn({ method: "POST" })
           insert into stock_movements (id, part_id, lot_id, type, qty, note, import_batch_id)
           values (${nid()}, ${partId}, ${lotId}, 'transit_open', ${qty}, ${row.etaText}, ${batchId})
         `;
+            writtenByKind.transit += 1;
           }
           await tx`update parts set updated_at = now() where id = ${partId}`;
+        }
+
+        const writtenCount = Object.values(writtenByKind).reduce((sum, count) => sum + count, 0);
+        if (writtenCount !== selected.length) {
+          throw new Error(`导入未完整写入：预期 ${selected.length} 行，实际 ${writtenCount} 行`);
         }
 
         const flagsAfter = await matchFlagsForParts(
@@ -774,7 +794,14 @@ export const confirmImport = createServerFn({ method: "POST" })
             stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
           };
         });
-        const result = { batchId, summary, hitParts };
+        const result = {
+          batchId,
+          summary,
+          hitParts,
+          writtenCount,
+          writtenByKind,
+          customerCount: inquiryCustomers.size,
+        };
         await tx`update import_batches set status = 'success', result_json = ${JSON.stringify(result)} where id = ${batchId}`;
         return result;
       });

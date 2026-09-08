@@ -268,10 +268,26 @@ function ImportPage() {
       qc.invalidateQueries();
       setImportStatus("success");
       setSummary({ ...r.summary, batchId: r.batchId });
+      const kindLabels: Record<string, string> = {
+        offer: "渠道推货",
+        inquiry: "客户询价",
+        stock: "库存",
+        transit: "在途",
+        potential: "潜力型号",
+      };
+      const writtenCount = r.writtenCount ?? r.summary.identified;
+      const mixedBreakdown = Object.entries((r.writtenByKind ?? {}) as Record<string, number>)
+        .filter(([, count]) => count > 0)
+        .map(([writtenKind, count]) => `${kindLabels[writtenKind] ?? writtenKind}${count}条`)
+        .join("、");
       toast.success(
         kind === "potential"
-          ? `已加入 ${r.summary.potential ?? r.summary.identified} 个潜力型号`
-          : `识别 ${r.summary.identified}；命中 ${r.summary.hit}；库 ${r.summary.stock} · 客 ${r.summary.inquiry} · 双命中 ${r.summary.dual}`,
+          ? `已写入${writtenCount}个潜力型号`
+          : kind === "inquiry"
+            ? `已写入${writtenCount}条客户询价，涉及${r.customerCount ?? 0}个客户`
+            : kind === "mixed"
+              ? `已写入${writtenCount}条：${mixedBreakdown}`
+              : `已写入${writtenCount}条${kindLabels[kind] ?? kind}`,
       );
     },
     onError: (e: Error) => {
@@ -661,7 +677,24 @@ function ImportPage() {
         <div className="grid gap-3 md:grid-cols-2">
           <div>
             <Label>导入为</Label>
-            <NativeSelect value={kind} onChange={(e) => setKind(e.target.value as ImportKind)}>
+            <NativeSelect
+              value={kind}
+              onChange={(e) => {
+                const nextKind = e.target.value as ImportKind;
+                setKind(nextKind);
+                if (rows) {
+                  setRows(null);
+                  setSummary(null);
+                  setImportStatus("draft");
+                  setSubmissionId(crypto.randomUUID());
+                  setActivity({
+                    state: "received",
+                    label: "导入类型已修改，请重新识别预览",
+                    detail: "旧预览已作废，避免按错误业务类型写入。",
+                  });
+                }
+              }}
+            >
               {canMarketImport && (
                 <>
                   <option value="offer">渠道推货</option>
@@ -1548,6 +1581,17 @@ function ImportReviewTable({
                         onChange={(event) => patchText(idx, "channel", event.target.value)}
                       />
                     </label>
+                    {rowKind(row) === "inquiry" && (
+                      <label className="min-w-0">
+                        <span className="text-[10px] text-muted-foreground">客户</span>
+                        <Input
+                          className="mt-0.5 h-8 px-2 text-xs"
+                          value={row.customer ?? ""}
+                          onChange={(event) => patchText(idx, "customer", event.target.value)}
+                          aria-label={`${row.mpn} 客户`}
+                        />
+                      </label>
+                    )}
                     {isStock && (
                       <label className="min-w-0">
                         <span className="text-[10px] text-muted-foreground">仓库</span>
