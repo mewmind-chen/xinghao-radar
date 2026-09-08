@@ -323,7 +323,7 @@ function ImportPage() {
           ? new TextDecoder().decode(buf)
           : undefined;
       if (fileText != null) setText(fileText);
-      else if (detectedSource !== "image") setText("");
+      else setText("");
       setAttachment((current) => (current ? { ...current, status: "正在识别" } : current));
       setActivity({
         state: "recognizing",

@@ -16,6 +16,7 @@ import {
 import {
   DUPLICATE_INQUIRY_HOURS,
   DUPLICATE_OFFER_HOURS,
+  brandShort,
   correctTradeText,
   formatStockLine,
   isCrossHit,
@@ -245,10 +246,12 @@ async function annotateImportReviewRows(
     if (!row.brand?.trim() || !normalizeMpn(row.mpn)) continue;
     const existing =
       await sql`select brand_code from parts where mpn_key = ${normalizeMpn(row.mpn)} limit 1`;
-    const existingBrand = String(existing[0]?.brand_code ?? "").trim();
-    const importedBrand = row.brand.trim();
-    if (existingBrand && existingBrand.toUpperCase() !== importedBrand.toUpperCase()) {
-      row.brandConflict = `主档品牌 ${existingBrand} 与导入品牌 ${importedBrand} 冲突`;
+    const existingBrandRaw = String(existing[0]?.brand_code ?? "").trim();
+    const importedBrandRaw = row.brand.trim();
+    const existingBrand = brandShort(existingBrandRaw)?.trim().toUpperCase() ?? "";
+    const importedBrand = brandShort(importedBrandRaw)?.trim().toUpperCase() ?? "";
+    if (existingBrand && importedBrand && existingBrand !== importedBrand) {
+      row.brandConflict = `主档品牌 ${existingBrandRaw} 与导入品牌 ${importedBrandRaw} 冲突`;
       appendWarning(row, row.brandConflict);
     }
   }
