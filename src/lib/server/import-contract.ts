@@ -58,7 +58,10 @@ export type ImportExtractInput = {
 export type ImportExtractDeps = {
   readTable?: () => Promise<string[][] | null | undefined>;
   extractViaPlatform?: (input: ImportExtractInput) => Promise<PlatformExtractRaw>;
-  runLocalImageFallback?: () => Promise<{ rows: Array<Partial<ImportRow> & { mpn: string }>; usedAi: boolean } | null>;
+  runLocalImageFallback?: () => Promise<{
+    rows: Array<Partial<ImportRow> & { mpn: string }>;
+    usedAi: boolean;
+  } | null>;
 };
 
 function nid(): string {
@@ -92,6 +95,7 @@ function emptyRow(kind: ImportKind, mpn: string, extra: Partial<ImportRow> = {})
     note: extra.note ?? null,
     duplicate: extra.duplicate ?? false,
     duplicateReason: extra.duplicateReason ?? null,
+    brandConflict: extra.brandConflict ?? null,
     selected: extra.selected ?? true,
     warning: extra.warning ?? null,
   };
@@ -106,11 +110,16 @@ function extractionKind(kind: ImportKind | "mixed") {
 }
 
 function candidateToRow(c: Record<string, unknown>, kind: ImportKind): ImportRow | null {
-  const mpn = String(c.mpn || "").normalize("NFKC").trim();
+  const mpn = String(c.mpn || "")
+    .normalize("NFKC")
+    .trim();
   if (!mpn) return null;
   const rowKind = c.kind && c.kind !== "mixed" ? String(c.kind) : kind;
   const warnings = Array.isArray(c.warnings)
-    ? (c.warnings as { message?: string }[]).map((w) => w.message).filter(Boolean).join("；")
+    ? (c.warnings as { message?: string }[])
+        .map((w) => w.message)
+        .filter(Boolean)
+        .join("；")
     : null;
   return emptyRow(rowKind as ImportKind, mpn, {
     brand: (c.brand as string | null) ?? null,
@@ -134,6 +143,7 @@ function candidateToRow(c: Record<string, unknown>, kind: ImportKind): ImportRow
     costTax: (c.costTax as ImportRow["costTax"]) ?? null,
     note: (c.note as string | null) ?? null,
     warning: warnings || null,
+    brandConflict: (c.brandConflict as string | null) ?? null,
   });
 }
 
@@ -144,22 +154,35 @@ export function interpretPlatformExtract(raw: PlatformExtractRaw): {
   reason: string | null;
 } {
   const fail = raw.failureReason;
-  if (fail === "timeout" || fail === "network_error" || fail === "unauthorized" || fail === "server_error") {
+  if (
+    fail === "timeout" ||
+    fail === "network_error" ||
+    fail === "unauthorized" ||
+    fail === "server_error"
+  ) {
     return { state: "platform_unavailable", rows: [], usedAi: false, reason: fail };
   }
   if (!raw.status || raw.status <= 0) {
-    return { state: "platform_unavailable", rows: [], usedAi: false, reason: fail || "network_error" };
+    return {
+      state: "platform_unavailable",
+      rows: [],
+      usedAi: false,
+      reason: fail || "network_error",
+    };
   }
   if (raw.status === 401 || raw.status === 403 || raw.status >= 500) {
     return { state: "platform_unavailable", rows: [], usedAi: false, reason: fail || "http_error" };
   }
 
-  const body = raw.body && typeof raw.body === "object" ? (raw.body as Record<string, unknown>) : null;
+  const body =
+    raw.body && typeof raw.body === "object" ? (raw.body as Record<string, unknown>) : null;
   const error = String(body?.error || "");
   const reason = String(body?.reason || error || "");
   const needsAgent = Boolean(body?.needsAgent);
   const usedAi = Boolean(body?.usedAi);
-  const candidates = Array.isArray(body?.candidates) ? (body.candidates as Record<string, unknown>[]) : [];
+  const candidates = Array.isArray(body?.candidates)
+    ? (body.candidates as Record<string, unknown>[])
+    : [];
   const rows = candidates.map((c) => candidateToRow(c, "offer")).filter(Boolean) as ImportRow[];
 
   if (error === "vision_unavailable" || reason === "vision_unavailable") {
@@ -178,7 +201,11 @@ export function interpretPlatformExtract(raw: PlatformExtractRaw): {
     return { state: "completed", rows, usedAi, reason: reason || null };
   }
   const fallbackFrom = String(body?.fallbackFrom || "");
-  if (error === "agent_unavailable" || reason === "agent_unavailable" || fallbackFrom === "agent_unavailable") {
+  if (
+    error === "agent_unavailable" ||
+    reason === "agent_unavailable" ||
+    fallbackFrom === "agent_unavailable"
+  ) {
     return { state: "agent_unavailable", rows: [], usedAi, reason: "agent_unavailable" };
   }
   if (needsAgent) {
@@ -227,9 +254,13 @@ export async function resolveImportExtract(
     ? await deps.extractViaPlatform(input)
     : { status: 0, body: null, failureReason: "network_error" };
   const interp = interpretPlatformExtract(raw);
-  const mapped = (interp.rows.length
-    ? interp.rows.map((row) => candidateToRow(row as unknown as Record<string, unknown>, kind) || row)
-    : interp.rows) as ImportRow[];
+  const mapped = (
+    interp.rows.length
+      ? interp.rows.map(
+          (row) => candidateToRow(row as unknown as Record<string, unknown>, kind) || row,
+        )
+      : interp.rows
+  ) as ImportRow[];
 
   if (interp.state === "completed" && mapped.length > 0) {
     return {
@@ -257,7 +288,11 @@ export async function resolveImportExtract(
     const local = deps.runLocalImageFallback ? await deps.runLocalImageFallback() : null;
     if (local?.rows?.length) {
       return {
-        rows: local.rows.map((row) => ("id" in row && row.mpn ? emptyRow(kind, row.mpn, row) : emptyRow(kind, String(row.mpn), row))),
+        rows: local.rows.map((row) =>
+          "id" in row && row.mpn
+            ? emptyRow(kind, row.mpn, row)
+            : emptyRow(kind, String(row.mpn), row),
+        ),
         usedAi: true,
         extractOrigin: "local_fallback",
         extractState: "vision_unavailable",
