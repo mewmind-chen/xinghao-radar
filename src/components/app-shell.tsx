@@ -53,6 +53,22 @@ function isMobileViewportNow(): boolean {
   );
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error("request_timeout")), timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
@@ -63,22 +79,37 @@ export function AppShell({ children }: { children: ReactNode }) {
     queryFn: () => getCurrentAccess(),
     enabled: authEnabled && Boolean(user) && pathname !== "/login",
     staleTime: 2_000,
+    retry: 1,
+    retryDelay: 750,
   });
   const [q, setQ] = useState("");
   const [isMobileViewport, setIsMobileViewport] = useState(isMobileViewportNow);
+  const [accessSlow, setAccessSlow] = useState(false);
+  const [mobileRecoveryError, setMobileRecoveryError] = useState(false);
 
   const exitCheck = useMutation({
     mutationFn: () => exitIdentityCheck(),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["current-access"] }); void navigate({ to: "/users" }); },
   });
   const { mutate: restoreMobileIdentity } = useMutation({
-    mutationFn: () => exitIdentityCheck(),
+    mutationFn: () => withTimeout(exitIdentityCheck(), 8_000),
     onSuccess: async () => {
+      setMobileRecoveryError(false);
       await qc.invalidateQueries({ queryKey: ["current-access"] });
     },
+    onError: () => setMobileRecoveryError(true),
   });
   const mobileRecoveryAttempted = useRef(false);
   const needsMobileIdentityRecovery = isMobileViewport && accessQuery.data?.isImpersonating === true;
+
+  useEffect(() => {
+    if (!accessQuery.isPending) {
+      setAccessSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setAccessSlow(true), 6_000);
+    return () => window.clearTimeout(timer);
+  }, [accessQuery.isPending]);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
@@ -97,6 +128,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!needsMobileIdentityRecovery) {
       mobileRecoveryAttempted.current = false;
+      setMobileRecoveryError(false);
       return;
     }
     if (mobileRecoveryAttempted.current) return;
@@ -143,7 +175,33 @@ export function AppShell({ children }: { children: ReactNode }) {
     return (
       <div className="min-h-dvh bg-background text-foreground">
         <main className="grid min-h-dvh place-items-center px-6 text-center text-sm text-muted-foreground">
-          正在恢复账户权限…
+          <div className="flex max-w-sm flex-col items-center gap-3">
+            {mobileRecoveryError ? (
+              <>
+                <p className="font-medium text-foreground">账户权限暂时无法恢复</p>
+                <p>请重试；如果仍然失败，请重新登录。</p>
+                <div className="flex items-center gap-4">
+                  <button
+                    type="button"
+                    className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground"
+                    onClick={() => {
+                      mobileRecoveryAttempted.current = true;
+                      setMobileRecoveryError(false);
+                      restoreMobileIdentity();
+                    }}
+                  >
+                    重试
+                  </button>
+                  <a href="/login" className="underline">重新登录</a>
+                </div>
+              </>
+            ) : (
+              <>
+                <p>正在恢复账户权限…</p>
+                <p className="text-xs">网络较慢时最多等待 8 秒。</p>
+              </>
+            )}
+          </div>
         </main>
       </div>
     );
@@ -228,6 +286,21 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Link>
           )}
         </header>
+        {authEnabled && user && (accessQuery.isError || accessSlow) && (
+          <div role="alert" className="mx-3 mt-3 flex items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 md:mx-5">
+            <span>账户权限暂时无法加载，请重试。</span>
+            <button
+              type="button"
+              className="shrink-0 rounded-md border border-amber-400 px-2 py-1 font-medium hover:bg-amber-100"
+              onClick={() => {
+                setAccessSlow(false);
+                void accessQuery.refetch({ cancelRefetch: true });
+              }}
+            >
+              重试
+            </button>
+          </div>
+        )}
         {authEnabled && accessQuery.data && !accessQuery.data.role && (
           <div className="mx-3 mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 md:mx-5">
             当前账号尚未配置业务角色，请联系老板；此账号不会读取或写入业务数据。

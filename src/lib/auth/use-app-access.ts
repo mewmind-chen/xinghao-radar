@@ -11,6 +11,8 @@ export function useAppAccess() {
     queryFn: () => getCurrentAccess(),
     enabled: authEnabled && Boolean(user),
     staleTime: 2_000,
+    retry: 1,
+    retryDelay: 750,
   });
   const permissions = query.data?.permissions ?? [];
   return {

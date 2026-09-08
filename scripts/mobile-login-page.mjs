@@ -21,7 +21,7 @@ export function renderStandaloneLoginPage() {
   <main>
     <p class="eyebrow">型号雷达 · 安全登录</p>
     <h1 class="title">登录</h1>
-    <p class="hint">请使用分配给你的正式账号（如 yang@xinghao.local），默认密码 12345678。</p>
+    <p class="hint">请输入已分配的账号和密码。</p>
     <form id="login-form" novalidate>
       <label for="login-email">邮箱</label>
       <input id="login-email" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="none" required>
@@ -51,18 +51,73 @@ export function renderStandaloneLoginPage() {
     function goHome() {
       window.location.replace("/?_radar_refresh=" + String(Date.now()));
     }
-    function request(method, path, body, done) {
+    function request(method, path, body, done, timeout) {
       var xhr = new XMLHttpRequest();
+      var completed = false;
+      function finish(status, text) {
+        if (completed) return;
+        completed = true;
+        done(status, text);
+      }
       xhr.open(method, path, true);
       xhr.withCredentials = true;
-      xhr.timeout = 15000;
+      xhr.timeout = timeout || 15000;
       if (body !== null) xhr.setRequestHeader("content-type", "application/json");
       xhr.onreadystatechange = function () {
-        if (xhr.readyState === 4) done(xhr.status, xhr.responseText);
+        if (xhr.readyState === 4) finish(xhr.status, xhr.responseText);
       };
-      xhr.onerror = function () { done(0, ""); };
-      xhr.ontimeout = function () { done(0, ""); };
-      xhr.send(body);
+      xhr.onerror = function () { finish(0, ""); };
+      xhr.ontimeout = function () { finish(0, ""); };
+      try {
+        xhr.send(body);
+      } catch (_e) {
+        finish(0, "");
+      }
+    }
+    function hasSessionUser(text) {
+      try {
+        var payload = JSON.parse(text || "");
+        var user = payload && payload.user;
+        return Boolean(user && (user.id || user.email));
+      } catch (_e) {
+        return false;
+      }
+    }
+    function responseCode(text) {
+      try {
+        var payload = JSON.parse(text || "");
+        return String((payload && (payload.code || payload.message)) || "");
+      } catch (_e) {
+        return "";
+      }
+    }
+    function showLoginError(status, text) {
+      if (status === 0) return showError("网络连接超时，请检查手机网络后重试。");
+      if (status === 429) return showError("尝试次数过多，请稍后再试。");
+      if (status === 400) {
+        if (responseCode(text) === "INVALID_EMAIL") return showError("请输入有效的邮箱地址。");
+        return showError("邮箱或密码错误，请重新输入。");
+      }
+      if (status === 401) return showError("邮箱或密码错误，请重新输入。");
+      if (status === 403) return showError("登录校验失败，请刷新页面后重试。");
+      showError("登录服务暂时不可用，请稍后重试。");
+    }
+    function confirmSession(startedAt, attempt) {
+      request("GET", "/api/auth/get-session", null, function (status, text) {
+        if (status === 200 && hasSessionUser(text)) {
+          submit.textContent = "登录成功，正在进入…";
+          goHome();
+          return;
+        }
+        if (Date.now() - startedAt < 12000) {
+          window.setTimeout(function () {
+            confirmSession(startedAt, attempt + 1);
+          }, Math.min(400 + attempt * 150, 1000));
+          return;
+        }
+        resetButton();
+        showError("登录已提交，但未能确认会话。请检查浏览器是否允许此站点 Cookie，然后重试。");
+      }, 3000);
     }
     form.addEventListener("submit", function (event) {
       event.preventDefault();
@@ -75,35 +130,12 @@ export function renderStandaloneLoginPage() {
         password: password.value
       }), function (status, text) {
         if (status >= 200 && status < 300) {
-          submit.textContent = "登录成功，正在进入…";
-          request("GET", "/api/auth/get-session", null, function () {
-            goHome();
-          });
+          submit.textContent = "正在确认会话…";
+          confirmSession(Date.now(), 0);
           return;
         }
         resetButton();
-        if (status === 0) return showError("网络连接超时，请检查手机网络后重试。");
-        if (status === 401 || status === 400) {
-          var msg = "邮箱或密码错误，请核对后重试。";
-          try {
-            var j = JSON.parse(text || "");
-            if (j && j.message) {
-              if (j.message === "Invalid email or password" || j.message === "Invalid password") {
-                msg = "邮箱或密码错误，请重新输入。";
-              } else if (j.message === "User not found") {
-                msg = "该账号不存在，请核对邮箱地址。";
-              } else {
-                msg = j.message;
-              }
-            }
-          } catch (_e) {}
-          return showError(msg);
-        }
-        if (status === 403) return showError("登录校验失败 (403)，请刷新页面后重试。");
-        var detail = "";
-        try { var j2 = JSON.parse(text || ""); if (j2 && j2.message) detail = "（" + j2.message + "）"; } catch (_e2) {}
-        if (!detail && text) detail = "（" + text.slice(0, 120) + "）";
-        showError("登录服务暂时不可用（" + status + "），请重试。" + detail);
+        showLoginError(status, text);
       });
     });
   })();
