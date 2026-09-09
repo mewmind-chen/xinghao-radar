@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { mapHqbResponse } from "../src/lib/server/knowledge-map.ts";
 
 const real = JSON.parse(
-  readFileSync(join(process.env.HQB_SAMPLE || "/tmp/lookup4.json"), "utf8"),
+  readFileSync(process.env.HQB_SAMPLE || join(process.cwd(), "scripts/fixtures/lookup4.json"), "utf8"),
 );
 
 test("真实响应映射: 封装图 URL 为立创真实抓取域(非空白非猜测)", () => {

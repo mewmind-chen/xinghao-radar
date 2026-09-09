@@ -15,6 +15,7 @@ import { Route as ChannelsRouteImport } from './routes/channels'
 import { Route as ImportRouteImport } from './routes/import'
 import { Route as InquiriesRouteImport } from './routes/inquiries'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as LogsRouteImport } from './routes/logs'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as StockRouteImport } from './routes/stock'
 import { Route as UsersRouteImport } from './routes/users'
@@ -52,6 +53,11 @@ const InquiriesRoute = InquiriesRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LogsRoute = LogsRouteImport.update({
+  id: '/logs',
+  path: '/logs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -102,6 +108,7 @@ export interface FileRoutesByFullPath {
   '/import': typeof ImportRoute
   '/inquiries': typeof InquiriesRoute
   '/login': typeof LoginRoute
+  '/logs': typeof LogsRoute
   '/settings': typeof SettingsRoute
   '/stock': typeof StockRoute
   '/users': typeof UsersRoute
@@ -118,6 +125,7 @@ export interface FileRoutesByTo {
   '/import': typeof ImportRoute
   '/inquiries': typeof InquiriesRoute
   '/login': typeof LoginRoute
+  '/logs': typeof LogsRoute
   '/settings': typeof SettingsRoute
   '/stock': typeof StockRoute
   '/users': typeof UsersRoute
@@ -135,6 +143,7 @@ export interface FileRoutesById {
   '/import': typeof ImportRoute
   '/inquiries': typeof InquiriesRoute
   '/login': typeof LoginRoute
+  '/logs': typeof LogsRoute
   '/settings': typeof SettingsRoute
   '/stock': typeof StockRoute
   '/users': typeof UsersRoute
@@ -153,6 +162,7 @@ export interface FileRouteTypes {
     | '/import'
     | '/inquiries'
     | '/login'
+    | '/logs'
     | '/settings'
     | '/stock'
     | '/users'
@@ -169,6 +179,7 @@ export interface FileRouteTypes {
     | '/import'
     | '/inquiries'
     | '/login'
+    | '/logs'
     | '/settings'
     | '/stock'
     | '/users'
@@ -185,6 +196,7 @@ export interface FileRouteTypes {
     | '/import'
     | '/inquiries'
     | '/login'
+    | '/logs'
     | '/settings'
     | '/stock'
     | '/users'
@@ -202,6 +214,7 @@ export interface RootRouteChildren {
   ImportRoute: typeof ImportRoute
   InquiriesRoute: typeof InquiriesRoute
   LoginRoute: typeof LoginRoute
+  LogsRoute: typeof LogsRoute
   SettingsRoute: typeof SettingsRoute
   StockRoute: typeof StockRoute
   UsersRoute: typeof UsersRoute
@@ -254,6 +267,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/logs': {
+      id: '/logs'
+      path: '/logs'
+      fullPath: '/logs'
+      preLoaderRoute: typeof LogsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -322,6 +342,7 @@ const rootRouteChildren: RootRouteChildren = {
   ImportRoute: ImportRoute,
   InquiriesRoute: InquiriesRoute,
   LoginRoute: LoginRoute,
+  LogsRoute: LogsRoute,
   SettingsRoute: SettingsRoute,
   StockRoute: StockRoute,
   UsersRoute: UsersRoute,

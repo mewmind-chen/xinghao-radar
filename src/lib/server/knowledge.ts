@@ -76,7 +76,7 @@ async function persistAnalysis(mpn: string, result: PartKnowledgeAnalysis, save:
   try {
     await save(mpn, result);
   } catch {
-    /* persist is best-effort */
+    throw new Error("分析完成，但保存失败，请重试");
   }
 }
 
@@ -149,7 +149,9 @@ export async function analyzePartMpnWithDependencies(
   } catch (err) {
     return {
       ok: false,
-      error: err instanceof Error && /timeout|abort/i.test(err.message)
+      error: err instanceof Error && /保存失败/.test(err.message)
+        ? err.message
+        : err instanceof Error && /timeout|abort/i.test(err.message)
         ? "分析超时（外部抓取较慢，稍后重试）"
         : "型号分析暂不可用",
     };
@@ -163,12 +165,14 @@ export const analyzePartMpn = createServerFn({ method: "POST" })
     requireRole(await getCurrentPrincipal(context.bearerToken), "analysis.write");
     try {
       return await analyzePartMpnWithDependencies(data.mpn, await createDefaultDependencies());
-    } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error && /timeout|abort/i.test(err.message)
-          ? "分析超时（外部抓取较慢，稍后重试）"
-          : "型号分析暂不可用",
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error && /保存失败/.test(err.message)
+        ? err.message
+        : err instanceof Error && /timeout|abort/i.test(err.message)
+        ? "分析超时（外部抓取较慢，稍后重试）"
+        : "型号分析暂不可用",
       };
     }
   });
@@ -187,17 +191,13 @@ export const getPartAnalysis = createServerFn({ method: "GET" })
     requireRole(await getCurrentPrincipal(context.bearerToken), "analysis.read");
     const mpn = data.mpn?.trim();
     if (!mpn) return null;
-    try {
-      const row = await getAnalysis(mpn);
-      if (!row) return null;
-      return {
-        analyzedAt: row.analyzed_at,
-        sourceUrl: row.source_url ?? undefined,
-        analysis: JSON.parse(row.analysis) as PartKnowledgeAnalysis,
-      };
-    } catch {
-      return null;
-    }
+    const row = await getAnalysis(mpn);
+    if (!row) return null;
+    return {
+      analyzedAt: row.analyzed_at,
+      sourceUrl: row.source_url ?? undefined,
+      analysis: JSON.parse(row.analysis) as PartKnowledgeAnalysis,
+    };
   });
 
 export type PartReviewInput = {
@@ -221,7 +221,7 @@ export const submitPartReview = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: PartReviewInput) => input)
   .handler(async ({ data, context }): Promise<PartReviewOutcome> => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "analysis.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "analysis.write");
     const mpn = data.mpn?.trim();
     if (!mpn) return { ok: false, error: "型号为空" };
     if (!["accept", "reject", "corrected"].includes(data.decision)) {
@@ -234,6 +234,7 @@ export const submitPartReview = createServerFn({ method: "POST" })
       await saveAnalysisReview({
         mpn,
         decision: data.decision,
+        reviewer: principal.displayName,
         note: data.note,
         correctedJson: data.correctedJson,
       });
@@ -258,17 +259,13 @@ export const getPartReview = createServerFn({ method: "GET" })
     requireRole(await getCurrentPrincipal(context.bearerToken), "analysis.read");
     const mpn = data.mpn?.trim();
     if (!mpn) return { decision: null };
-    try {
-      const row = await getAnalysisReview(mpn);
-      if (!row) return { decision: null };
-      return {
-        decision: row.decision,
-        reviewedAt: row.reviewed_at,
-        reviewer: row.reviewer || undefined,
-        note: row.note || undefined,
-        correctedJson: row.corrected_json ?? undefined,
-      };
-    } catch {
-      return { decision: null };
-    }
+    const row = await getAnalysisReview(mpn);
+    if (!row) return { decision: null };
+    return {
+      decision: row.decision,
+      reviewedAt: row.reviewed_at,
+      reviewer: row.reviewer || undefined,
+      note: row.note || undefined,
+      correctedJson: row.corrected_json ?? undefined,
+    };
   });

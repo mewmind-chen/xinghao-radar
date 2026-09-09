@@ -29,8 +29,8 @@ export const startupWatchdogScript = `(function () {
     var panel = document.createElement("div");
     panel.id = "radar-startup-failure";
     panel.setAttribute("role", "alert");
-    panel.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:24px;background:#f3f2ee;color:#1f2937;font-family:system-ui,-apple-system,BlinkMacSystemFont,\\\"Segoe UI\\\",sans-serif;text-align:center";
-    panel.innerHTML = "<div><p style=\\\"margin:0 0 10px;font-size:18px;font-weight:600\\\">页面加载失败</p><p style=\\\"margin:0 0 16px;color:#66635d;font-size:14px;line-height:1.6\\\">请检查网络后重新加载。如果仍然失败，请联系管理员。</p><button type=\\\"button\\\" style=\\\"border:0;border-radius:8px;padding:10px 16px;background:#1f2937;color:#fff;font-size:16px\\\">重新加载</button></div>";
+    panel.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:24px;background:#f3f2ee;color:#1f2937;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-align:center';
+    panel.innerHTML = '<div><p style="margin:0 0 10px;font-size:18px;font-weight:600">页面加载失败</p><p style="margin:0 0 16px;color:#66635d;font-size:14px;line-height:1.6">请检查网络后重新加载。如果仍然失败，请联系管理员。</p><button type="button" style="border:0;border-radius:8px;padding:10px 16px;background:#1f2937;color:#fff;font-size:16px">重新加载</button></div>';
     panel.querySelector("button").addEventListener("click", function () {
       window.location.reload();
     });

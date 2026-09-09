@@ -10,8 +10,12 @@ import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { serve } from "srvx/node";
 import { serveStatic } from "srvx/static";
+import { readDatabaseConfig } from "../src/lib/db-config.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+// Never let a deployed process silently fall back to private local PGlite.
+process.env.RADAR_RUNTIME ??= "production";
+const databaseConfig = readDatabaseConfig(process.env);
 const outputDir = resolve(process.env.RADAR_OUTPUT_DIR || resolve(root, ".vercel/output"));
 const staticDir = resolve(outputDir, "static");
 const entryPath = resolve(outputDir, "functions/__server.func/index.mjs");
@@ -82,3 +86,7 @@ await server.ready();
 console.log(`[radar] production server listening on http://${hostname}:${port}`);
 console.log(`[radar] output=${outputDir}`);
 console.log(`[radar] release=${release}`);
+console.log(`[radar] database_mode=${databaseConfig.mode}`);
+if (databaseConfig.mode === "pglite") {
+  console.log(`[radar] data_dir=${resolve(process.env.DATA_DIR || "")}`);
+}

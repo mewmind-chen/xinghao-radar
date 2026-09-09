@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "record": {
+    "identity": {
+      "mpn": "TPS7A2033PDBVR",
+      "brand": "TI(德州仪器)",
+      "category": "线性稳压器",
+      "package": "VQFN",
+      "lcscUrl": "https://item.szlcsc.com/123456.html",
+      "imageUrl": "https://alimg.szlcsc.com/upload/public/product/source/tps7a2033.jpg",
+      "lcscStock": 1200,
+      "priceBreaks": [{ "qty": 1, "price": 0.42 }, { "qty": 100, "price": 0.31 }]
+    },
+    "offers": [
+      { "sourceKey": "lcsc", "stock": 1200, "price": 0.42 },
+      { "sourceKey": "hqew", "stock": 500, "price": 0.4 },
+      { "sourceKey": "hqew", "stock": 200, "price": 0.45 }
+    ]
+  },
+  "dossier": {
+    "headline": "低噪声线性稳压器",
+    "positioning": "线性稳压器，适用于低功耗电源",
+    "specs": [
+      { "label": "输出电压", "value": "3.3V" },
+      { "label": "输入电压", "value": "6.5V" },
+      { "label": "输出电流", "value": "300mA" },
+      { "label": "静态电流", "value": "2uA" },
+      { "label": "封装", "value": "VQFN" }
+    ],
+    "apps": ["便携设备", "传感器"],
+    "replacements": []
+  }
+}

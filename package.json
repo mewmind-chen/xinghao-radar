@@ -20,7 +20,9 @@
     "serve:production": "node scripts/with-app-env.mjs node scripts/serve-production.mjs",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
-    "test": "node --test 'scripts/**/*.test.mjs' 'tests/**/*.test.mjs'",
+    "test": "node scripts/run-tests.mjs",
+    "verify:migration": "node --test scripts/persistent-db-rehearsal.test.mjs",
+    "verify:production-pglite": "node scripts/production-pglite-rehearsal.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."
   },

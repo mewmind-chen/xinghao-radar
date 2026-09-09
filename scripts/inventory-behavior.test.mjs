@@ -6,10 +6,16 @@ import { test } from "node:test";
 import { createServer } from "vite";
 import { runWithStartContext } from "@tanstack/start-storage-context";
 
+const requestResponseModule = new URL(
+  "../node_modules/@tanstack/start-server-core/dist/esm/request-response.js",
+  import.meta.url,
+);
+
 test("inventory operations run against real PGlite with transactional and lineage guarantees", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "xinghao-radar-inventory-"));
   process.env.DATABASE_URL = "";
   process.env.DATA_DIR = dataDir;
+  process.env.VITE_AUTH_ENABLED = "true";
 
   const vite = await createServer({
     root: process.cwd(),
@@ -17,12 +23,28 @@ test("inventory operations run against real PGlite with transactional and lineag
     appType: "custom",
   });
 
-  const context = {
-    request: new Request("http://localhost/"),
-    contextAfterGlobalMiddlewares: {},
-  };
+  let bearerToken;
+  let requestHandler;
   const invoke = async (fn, data) => {
-    const envelope = await runWithStartContext(context, () => fn({ data }));
+    const request = new Request("http://localhost:8086/", {
+      headers: { authorization: `Bearer ${bearerToken}` },
+    });
+    let envelope;
+    const handler = requestHandler((requestIn) => runWithStartContext(
+      {
+        getRouter: () => ({}),
+        request: requestIn,
+        startOptions: {},
+        contextAfterGlobalMiddlewares: { bearerToken },
+        executedRequestMiddlewares: new Set(),
+        handlerType: "serverFn",
+      },
+      async () => {
+        envelope = await fn({ data });
+        return new Response(JSON.stringify(envelope));
+      },
+    ));
+    await handler(request);
     if (envelope?.error) throw envelope.error;
     return envelope?.result ?? envelope;
   };
@@ -71,6 +93,17 @@ test("inventory operations run against real PGlite with transactional and lineag
     const domain = await vite.ssrLoadModule("/src/lib/domain.ts?inventory-behavior");
     const db = await vite.ssrLoadModule("/src/lib/db.ts?inventory-behavior");
     const sql = await db.getSql();
+    ({ requestHandler } = await import(requestResponseModule.href));
+    const auth = await vite.ssrLoadModule("/src/lib/auth/server.ts?inventory-behavior");
+    const authContext = await auth.auth.$context;
+    const testUser = await authContext.internalAdapter.createUser({
+      email: "inventory-owner@local.test",
+      name: "库存测试老板",
+      image: null,
+      emailVerified: false,
+    });
+    await sql`insert into app_users (user_id, email, display_name, role, status) values (${testUser.id}, ${testUser.email}, ${testUser.name}, '老板', 'active')`;
+    bearerToken = (await authContext.internalAdapter.createSession(testUser.id)).token;
 
     const meta = await invoke(stock.stockMeta_createServerFn_handler);
     assert.deepEqual(meta.warehouses.map((w) => w.code), ["HK", "交通", "坂田"]);
@@ -152,7 +185,7 @@ test("inventory operations run against real PGlite with transactional and lineag
       mpn: "BEHAVIOR-LINEAGE",
       warehouseId: "wh_hk",
       qty: 8,
-      dateCode: "2418",
+      dateCode: "2418+",
       costAmount: 8.5,
       costCurrency: "CNY",
       costTax: "exclusive",
@@ -221,7 +254,7 @@ test("inventory operations run against real PGlite with transactional and lineag
       mpn: "BEHAVIOR-DUPLICATE",
       warehouseId: "wh_hk",
       qty: 4,
-      dateCode: "2418",
+      dateCode: "2418+",
       costAmount: 2,
       costCurrency: "CNY",
       costTax: "exclusive",
@@ -230,7 +263,7 @@ test("inventory operations run against real PGlite with transactional and lineag
     const duplicatePreview = await invoke(imports.parseImport_createServerFn_handler, {
       kind: "stock",
       sourceType: "csv",
-      text: "型号,数量,批次,仓库,成本,供应商\nBEHAVIOR-DUPLICATE,4,2418,HK,¥2未税,重复供应商",
+      text: "型号,数量,批次,仓库,成本,供应商\nBEHAVIOR-DUPLICATE,4,2418+,HK,¥2未税,重复供应商",
       defaultWarehouseId: "wh_hk",
       defaultCurrency: "CNY",
       defaultTax: "exclusive",
@@ -240,7 +273,7 @@ test("inventory operations run against real PGlite with transactional and lineag
     const stalePreview = await invoke(imports.parseImport_createServerFn_handler, {
       kind: "stock",
       sourceType: "csv",
-      text: "型号,数量,批次,仓库,成本,供应商\nBEHAVIOR-DUPLICATE,4,2418,HK,¥2未税,重复供应商",
+      text: "型号,数量,批次,仓库,成本,供应商\nBEHAVIOR-DUPLICATE,4,2418+,HK,¥2未税,重复供应商",
       defaultWarehouseId: "wh_hk",
       defaultCurrency: "CNY",
       defaultTax: "exclusive",
@@ -419,8 +452,8 @@ test("inventory operations run against real PGlite with transactional and lineag
       warehouseId: "wh_hk",
       qty: 75,
     });
-    await sql.query("insert into channels (id, name) values ($1, $2)", ["behavior_parts_channel", "行为关联渠道"]);
-    await sql.query("insert into customers (id, name) values ($1, $2)", ["behavior_parts_customer", "行为关联客户"]);
+    await sql.query("insert into channels (id, name, name_key) values ($1, $2, $3)", ["behavior_parts_channel", "行为关联渠道", "行为关联渠道"]);
+    await sql.query("insert into customers (id, name, name_key) values ($1, $2, $3)", ["behavior_parts_customer", "行为关联客户", "行为关联客户"]);
     for (let i = 0; i < 3; i += 1) {
       await sql.query(
         "insert into channel_offers (id, channel_id, part_id, qty) values ($1, $2, $3, $4)",

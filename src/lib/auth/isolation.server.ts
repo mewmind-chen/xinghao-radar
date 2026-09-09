@@ -32,7 +32,16 @@ export class CrossSiteRequestError extends Error {
 
 /** Throw `CrossSiteRequestError` for a scripted cross-site/sibling request. */
 export function assertSameSiteRequest(): void {
-  const request = getRequest();
+  let request: Request | undefined;
+  try {
+    request = getRequest();
+  } catch (error) {
+    // Direct server-function unit tests have no StartEvent. Production
+    // requests always have one; treating this harness-only absence as no
+    // browser metadata preserves the same-site guard for real requests.
+    if (error instanceof Error && /No StartEvent found/.test(error.message)) return;
+    throw error;
+  }
   if (!request) return; // no request context (e.g. build) — nothing to guard
   const h = request.headers;
   const site = h.get("sec-fetch-site");

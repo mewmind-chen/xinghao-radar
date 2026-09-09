@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { sameNullableNumber } from "../../src/lib/import-duplicate.ts";
 
 const importSource = await readFile(new URL("../../src/lib/server/import.ts", import.meta.url), "utf8");
 const importContractSource = await readFile(
@@ -9,8 +10,9 @@ const importContractSource = await readFile(
 );
 
 test("decimal price duplicate checks stay numeric during deterministic validation", () => {
-  assert.match(importSource, /price_amount,\s*-1::numeric/);
-  assert.match(importSource, /priceAmount \?\? null\}\s*::numeric/);
+  assert.equal(sameNullableNumber("1.32", 1.32), true);
+  assert.equal(sameNullableNumber("1", 1.32), false);
+  assert.equal(sameNullableNumber(null, null), true);
 });
 
 test("Radar import has no fixture-specific aliases for unknown supplier headers", () => {

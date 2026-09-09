@@ -2,29 +2,32 @@
 /**
  * Deploy-time database migrator (node-postgres, `pg`).
  *
- * Runs during `npm run build` — on every Vercel deploy — applying pending files
- * in ../migrations to DATABASE_URL. Each file is applied in one transaction and
+ * Runs during `npm run build` for the Postgres mode, applying pending files in
+ * ../migrations to DATABASE_URL. Each file is applied in one transaction and
  * recorded in a `_migrations` table, so it runs once and is safe to re-run.
  *
  * The app's local email/password auth is enabled, so the Better Auth schema
  * under migrations/auth/ is included explicitly alongside the app migrations.
  *
- * No DATABASE_URL (local / preview builds) -> skip; the PGLite fallback applies
- * the same files at startup instead (see src/lib/db.ts).
+ * PGlite mode exits without opening Postgres; the application applies the same
+ * files at startup against its configured persistent directory instead.
  */
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import pg from "pg";
 import { pendingMigrations } from "./migration-plan.mjs";
+import { readDatabaseConfig } from "../src/lib/db-config.mjs";
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
+const databaseConfig = readDatabaseConfig(process.env);
+if (databaseConfig.mode === "pglite") {
   console.log(
-    "[migrate] DATABASE_URL not set — skipping (the PGLite fallback migrates itself).",
+    "[migrate] database mode=pglite — migrations run at application startup against the configured persistent directory.",
   );
   process.exit(0);
 }
+const databaseUrl = databaseConfig.databaseUrl;
+if (!databaseUrl) throw new Error("RADAR_DB_MODE=postgres 时缺少 DATABASE_URL");
 
 const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
 

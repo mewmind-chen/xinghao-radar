@@ -3,6 +3,7 @@ import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ClipboardList,
+  FileText,
   LayoutDashboard,
   Radar,
   Search,
@@ -31,6 +32,7 @@ const NAV = [
   { to: "/import", label: "智能导入", icon: Upload, access: "import" },
   { to: "/settings", label: "设置", icon: Settings, access: "settings.manage" },
   { to: "/users", label: "用户与权限", icon: Settings, access: "users.manage" },
+  { to: "/logs", label: "操作记录", icon: FileText, access: "logs.read" },
 ] as const;
 
 /** 移动端底部 Tab：6 个主功能（导入在工作台内，设置在右上角） */

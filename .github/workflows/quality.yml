@@ -1,0 +1,66 @@
+name: Quality gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: typecheck
+            command: npm run typecheck
+          - name: test
+            command: npm test
+          - name: lint
+            command: npm run lint
+          - name: build
+            command: npm run build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: Run ${{ matrix.name }}
+        run: ${{ matrix.command }}
+
+  migration-rehearsal:
+    name: migration rehearsal
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: Run migration rehearsal
+        run: npm run verify:migration
+
+  production-pglite:
+    name: production PGlite rehearsal
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: Build production output
+        run: npm run build
+      - name: Run production PGlite rehearsal
+        run: npm run verify:production-pglite

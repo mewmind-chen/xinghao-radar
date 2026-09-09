@@ -22,6 +22,25 @@ import type {
   Warehouse,
 } from "@/lib/types";
 
+export type AuditPrincipalLike = {
+  actorUserId: string;
+  actorDisplayName: string;
+  userId: string;
+  displayName: string;
+  isImpersonating: boolean;
+};
+
+export type AuditMeta = {
+  detail?: string;
+  principal?: AuditPrincipalLike;
+  before?: unknown;
+  after?: unknown;
+  outcome?: "success" | "failure";
+  failureReason?: string;
+  requestId?: string;
+  importBatchId?: string;
+};
+
 export function nid(): string {
   return crypto.randomUUID();
 }
@@ -43,11 +62,42 @@ export async function logOp(
   action: string,
   entityType: string,
   entityId: string,
-  detail?: string,
+  detailOrMeta?: string | AuditMeta,
 ) {
+  const meta: AuditMeta =
+    typeof detailOrMeta === "string" ? { detail: detailOrMeta } : detailOrMeta ?? {};
+  const principal = meta.principal;
+  const json = (value: unknown): string | null => {
+    if (value == null) return null;
+    try {
+      const scrub = (input: unknown): unknown => {
+        if (Array.isArray(input)) return input.slice(0, 100).map(scrub);
+        if (!input || typeof input !== "object") return input;
+        const out: Record<string, unknown> = {};
+        for (const [key, child] of Object.entries(input)) {
+          if (/password|token|cookie|secret|authorization/i.test(key)) continue;
+          out[key] = scrub(child);
+        }
+        return out;
+      };
+      const encoded = JSON.stringify(scrub(value));
+      return encoded.length <= 12_000 ? encoded : `${encoded.slice(0, 11_997)}...`;
+    } catch {
+      return null;
+    }
+  };
   await sql`
-    insert into op_logs (id, action, entity_type, entity_id, detail)
-    values (${nid()}, ${action}, ${entityType}, ${entityId}, ${detail ?? null})
+    insert into op_logs (
+      id, action, entity_type, entity_id, detail,
+      actor_user_id, actor_name, effective_user_id, effective_name,
+      outcome, before_json, after_json, failure_reason, request_id, import_batch_id
+    ) values (
+      ${nid()}, ${action}, ${entityType}, ${entityId}, ${meta.detail ?? null},
+      ${principal?.actorUserId ?? null}, ${principal?.actorDisplayName ?? null},
+      ${principal?.userId ?? null}, ${principal?.displayName ?? null},
+      ${meta.outcome ?? "success"}, ${json(meta.before)}, ${json(meta.after)},
+      ${meta.failureReason ?? null}, ${meta.requestId ?? null}, ${meta.importBatchId ?? null}
+    )
   `;
 }
 
@@ -144,7 +194,8 @@ export async function ensureChannel(
 ): Promise<Channel> {
   const name = nameRaw.normalize("NFKC").trim();
   if (!name) throw new Error("渠道不能为空");
-  const existing = await sql`select * from channels where name = ${name} limit 1`;
+  const nameKey = name.toLowerCase();
+  const existing = await sql`select * from channels where name_key = ${nameKey} limit 1`;
   if (existing[0]) {
     const channel = mapChannel(existing[0]);
     if (options.requireActive && !channel.isActive) {
@@ -153,7 +204,20 @@ export async function ensureChannel(
     return channel;
   }
   const id = nid();
-  await sql`insert into channels (id, name) values (${id}, ${name})`;
+  const inserted = await sql`
+    insert into channels (id, name, name_key) values (${id}, ${name}, ${nameKey})
+    on conflict (name_key) do nothing
+    returning id
+  `;
+  if (!inserted[0]) {
+    const raced = await sql`select * from channels where name_key = ${nameKey} limit 1`;
+    if (!raced[0]) throw new Error("渠道创建失败，请重试");
+    const channel = mapChannel(raced[0]);
+    if (options.requireActive && !channel.isActive) {
+      throw new Error(`渠道“${channel.name}”已停用，请先在“管理渠道”中恢复`);
+    }
+    return channel;
+  }
   const created = await sql`select * from channels where id = ${id}`;
   return mapChannel(created[0]);
 }
@@ -161,10 +225,20 @@ export async function ensureChannel(
 export async function ensureCustomer(sql: Sql, nameRaw: string): Promise<Customer> {
   const name = nameRaw.normalize("NFKC").trim();
   if (!name) throw new Error("客户不能为空");
-  const existing = await sql`select * from customers where name = ${name} limit 1`;
+  const nameKey = name.toLowerCase();
+  const existing = await sql`select * from customers where name_key = ${nameKey} limit 1`;
   if (existing[0]) return mapCustomer(existing[0]);
   const id = nid();
-  await sql`insert into customers (id, name) values (${id}, ${name})`;
+  const inserted = await sql`
+    insert into customers (id, name, name_key) values (${id}, ${name}, ${nameKey})
+    on conflict (name_key) do nothing
+    returning id
+  `;
+  if (!inserted[0]) {
+    const raced = await sql`select * from customers where name_key = ${nameKey} limit 1`;
+    if (!raced[0]) throw new Error("客户创建失败，请重试");
+    return mapCustomer(raced[0]);
+  }
   const created = await sql`select * from customers where id = ${id}`;
   return mapCustomer(created[0]);
 }

@@ -6,11 +6,11 @@ import { test } from "node:test";
 import { createServer } from "vite";
 
 const startContextModule = new URL(
-  "../node_modules/.pnpm/node_modules/@tanstack/start-storage-context/dist/esm/index.js",
+  "../node_modules/@tanstack/start-storage-context/dist/esm/index.js",
   import.meta.url,
 );
 const requestResponseModule = new URL(
-  "../node_modules/.pnpm/node_modules/@tanstack/start-server-core/dist/esm/request-response.js",
+  "../node_modules/@tanstack/start-server-core/dist/esm/request-response.js",
   import.meta.url,
 );
 

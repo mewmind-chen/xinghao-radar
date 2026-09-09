@@ -18,7 +18,14 @@ test("四个固定角色的服务端策略互斥且覆盖预期操作", () => {
 
 async function schema() {
   const db = new PGlite();
-  for (const file of ["migrations/auth/0001_auth.sql", "migrations/0002_schema.sql", "migrations/0006_auth_roles_potential.sql"]) {
+  for (const file of [
+    "migrations/auth/0001_auth.sql",
+    "migrations/0002_schema.sql",
+    "migrations/0006_auth_roles_potential.sql",
+    "migrations/0007_import_submission_state.sql",
+    "migrations/0008_potential_import_batch.sql",
+    "migrations/0009_integrity_audit.sql",
+  ]) {
     await db.exec(await readFile(file, "utf8"));
   }
   return db;
@@ -67,7 +74,7 @@ test("库存型号总数只求有效在库批次，调拨保持总数、出库�
   assert.equal(await total(), 67);
 
   await db.exec(`
-    insert into channels (id, name) values ('ch-1', '渠道');
+    insert into channels (id, name, name_key) values ('ch-1', '渠道', '渠道');
     insert into channel_offers (id, channel_id, part_id) values ('o-1', 'ch-1', 'p-2'), ('o-2', 'ch-1', 'p-2');
   `);
   const joined = await db.query(`

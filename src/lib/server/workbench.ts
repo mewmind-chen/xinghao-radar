@@ -12,6 +12,7 @@ export const getWorkbench = createServerFn({ method: "GET" }).middleware([authMi
   await ensureSeed(sql);
   const settings = await getSettings(sql);
   const warehouses = await listWarehouses(sql);
+  const canReadStock = principal.permissions.includes("stock.read");
   const since = startOfTodayIso();
 
   const events = await sql<{ part_id: string; k: string }>`
@@ -54,12 +55,21 @@ export const getWorkbench = createServerFn({ method: "GET" }).middleware([authMi
       const inqHit = kinds.has("inquiry") && (f.stock || f.transit || f.offerCount > 0 || f.watch);
       const stockHit = kinds.has("stock") && (f.inquiryCount > 0 || f.offerCount > 0 || f.watch);
       if (!(offerHit || inqHit || stockHit)) return null;
+      const publicFlags = canReadStock ? f : {
+        ...f,
+        onHand: 0,
+        byWarehouse: [],
+        inTransit: 0,
+        transitEtaLabel: null,
+        stock: false,
+        transit: false,
+      };
       return {
         partId: id,
         mpn: String(p.mpn),
         brandCode: p.brand_code ? String(p.brand_code) : null,
-        flags: f,
-        stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
+        flags: publicFlags,
+        stockLine: canReadStock ? formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel) : "",
         dual: f.isDual,
       };
     })
@@ -118,14 +128,14 @@ export const getWorkbench = createServerFn({ method: "GET" }).middleware([authMi
     stats: {
       todayOffers: Number(todayOffers[0]?.n ?? 0),
       todayInquiries: Number(todayInq[0]?.n ?? 0),
-      todayInbound: Number(todayInbound[0]?.n ?? 0),
+      todayInbound: canReadStock ? Number(todayInbound[0]?.n ?? 0) : undefined,
       todayHits: hits.length,
       dualHits: hits.filter((h) => h.dual).length,
-      stockSku: Number(onHandParts[0]?.n ?? 0),
-      transitSku: Number(transitParts[0]?.n ?? 0),
+      stockSku: canReadStock ? Number(onHandParts[0]?.n ?? 0) : undefined,
+      transitSku: canReadStock ? Number(transitParts[0]?.n ?? 0) : undefined,
       watch: Number(watchN[0]?.n ?? 0),
     },
-    pendingTransit: pendingTransit.map((r) => ({
+    pendingTransit: canReadStock ? pendingTransit.map((r) => ({
       id: String(r.id),
       partId: String(r.part_id),
       mpn: String(r.mpn),
@@ -133,7 +143,7 @@ export const getWorkbench = createServerFn({ method: "GET" }).middleware([authMi
       qty: Number(r.qty_remaining),
       etaDate: r.eta_date ? String(r.eta_date) : null,
       etaText: r.eta_text ? String(r.eta_text) : null,
-    })),
+    })) : [],
     demandNoStock: demandNoStock.map((r) => ({
       partId: String(r.id),
       mpn: String(r.mpn),

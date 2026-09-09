@@ -23,16 +23,23 @@ export const updateWindows = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { inquiryWindowDays: number; offerWindowDays: number }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
+    for (const [label, value] of [["询价", data.inquiryWindowDays], ["推货", data.offerWindowDays]] as const) {
+      if (!Number.isInteger(value) || value < 1 || value > 3650) throw new Error(`${label}窗口必须是 1～3650 的整数`);
+    }
     const sql = await sqlClient();
-    await sql`
-      insert into app_settings (key, value) values ('inquiry_window_days', ${String(data.inquiryWindowDays)})
-      on conflict (key) do update set value = excluded.value
-    `;
-    await sql`
-      insert into app_settings (key, value) values ('offer_window_days', ${String(data.offerWindowDays)})
-      on conflict (key) do update set value = excluded.value
-    `;
+    await withTransaction(sql, async (tx) => {
+      const before = await tx`select key, value from app_settings where key in ('inquiry_window_days', 'offer_window_days')`;
+      await tx`
+        insert into app_settings (key, value) values ('inquiry_window_days', ${String(data.inquiryWindowDays)})
+        on conflict (key) do update set value = excluded.value
+      `;
+      await tx`
+        insert into app_settings (key, value) values ('offer_window_days', ${String(data.offerWindowDays)})
+        on conflict (key) do update set value = excluded.value
+      `;
+      await logOp(tx, "update", "settings", "windows", { principal, before, after: data });
+    });
     return { ok: true as const };
   });
 
@@ -40,13 +47,16 @@ export const upsertWarehouse = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { id?: string; code: string; name: string }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
     const sql = await sqlClient();
     const code = data.code.trim();
     const name = data.name.trim() || code;
     if (!code) throw new Error("仓库代码不能为空");
     if (data.id) {
-      await sql`update warehouses set code = ${code}, name = ${name} where id = ${data.id}`;
+      const before = await sql`select * from warehouses where id = ${data.id} limit 1`;
+      const after = await sql`update warehouses set code = ${code}, name = ${name} where id = ${data.id} returning *`;
+      if (!after[0]) throw new Error("仓库不存在");
+      await logOp(sql, "update", "warehouse", data.id, { principal, before: before[0], after: after[0] });
       return { id: data.id };
     }
     const id = nid();
@@ -56,6 +66,7 @@ export const upsertWarehouse = createServerFn({ method: "POST" })
     await sql`
       insert into warehouses (id, code, name, sort_order) values (${id}, ${code}, ${name}, ${(max[0]?.n ?? 0) + 1})
     `;
+    await logOp(sql, "create", "warehouse", id, { principal, after: { id, code, name } });
     return { id };
   });
 
@@ -63,9 +74,12 @@ export const setWarehouseActive = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { id: string; isActive: boolean }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "settings.manage");
     const sql = await sqlClient();
-    await sql`update warehouses set is_active = ${data.isActive} where id = ${data.id}`;
+    const before = await sql`select * from warehouses where id = ${data.id} limit 1`;
+    const after = await sql`update warehouses set is_active = ${data.isActive} where id = ${data.id} returning *`;
+    if (!after[0]) throw new Error("仓库不存在");
+    await logOp(sql, data.isActive ? "enable" : "disable", "warehouse", data.id, { principal, before: before[0], after: after[0] });
     return { ok: true as const };
   });
 
@@ -75,8 +89,9 @@ export const listImportBatches = createServerFn({ method: "GET" })
     const principal = await getCurrentPrincipal(context.bearerToken);
     requireRole(principal, "model.read");
     const sql = await sqlClient();
+    const canReadAll = principal.permissions.includes("logs.read");
     const rows =
-      principal.role === "老板"
+      canReadAll
         ? await sql`select * from import_batches order by created_at desc limit 30`
         : await sql`select * from import_batches where created_by = ${principal.userId} order by created_at desc limit 30`;
     const output = [];
@@ -124,7 +139,12 @@ export const listImportBatches = createServerFn({ method: "GET" })
         writtenRows:
           result?.writtenCount ?? result?.summary?.potential ?? result?.summary?.identified ?? null,
         context,
-        canRevoke: !r.undone_at && (principal.role === "老板" || principal.role === "跟进人"),
+        canRevoke: !r.undone_at && Boolean(
+          principal.permissions.includes("logs.read") ||
+          (principal.permissions.includes("inventory.import") && String(r.created_by ?? "") === principal.userId) ||
+          (principal.permissions.includes("market.write") && String(r.created_by ?? "") === principal.userId) ||
+          (principal.permissions.includes("potential.write") && String(r.created_by ?? "") === principal.userId),
+        ),
       });
     }
     return output;
@@ -135,8 +155,8 @@ export const undoImportBatch = createServerFn({ method: "POST" })
   .validator((input: { id: string }) => input)
   .handler(async ({ data, context }) => {
     const principal = await getCurrentPrincipal(context.bearerToken);
-    if (principal.role !== "老板") {
-      if (principal.role !== "跟进人") throw new ForbiddenError("无权撤销导入批次");
+    if (!principal.permissions.includes("logs.read")) {
+      if (!(principal.permissions.includes("inventory.import") || principal.permissions.includes("market.write") || principal.permissions.includes("potential.write"))) throw new ForbiddenError("无权撤销导入批次");
       const sql = await sqlClient();
       const owner = await sql`select created_by from import_batches where id = ${data.id} limit 1`;
       if (!owner[0] || String(owner[0].created_by ?? "") !== principal.userId) {
@@ -172,7 +192,7 @@ export const undoImportBatch = createServerFn({ method: "POST" })
       await tx`update customer_inquiries set deleted_at = now() where import_batch_id = ${data.id}`;
       await tx`delete from potential_models where import_batch_id = ${data.id}`;
       await tx`update import_batches set undone_at = now() where id = ${data.id}`;
-      await logOp(tx, "undo_batch", "import_batch", data.id);
+      await logOp(tx, "undo_batch", "import_batch", data.id, { principal, importBatchId: data.id });
       return { ok: true as const };
     });
   });

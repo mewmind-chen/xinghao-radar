@@ -227,7 +227,7 @@ export const stockInbound = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     positiveInteger(data.qty);
     validateCost(data.costAmount ?? null, data.costCurrency ?? null, data.costTax ?? null);
     const sql = await sqlClient();
@@ -253,6 +253,7 @@ export const stockInbound = createServerFn({ method: "POST" })
         values (${nid()}, ${part.id}, ${id}, 'in', ${data.qty}, ${data.warehouseId})
       `;
       await tx`update parts set updated_at = now() where id = ${part.id}`;
+      await logOp(tx, "in", "lot", id, { principal, after: { partId: part.id, warehouseId: data.warehouseId, qty: data.qty } });
       return { id, partId: part.id };
     });
   });
@@ -261,7 +262,7 @@ export const stockOutbound = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { lotId: string; qty: number; note?: string }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     positiveInteger(data.qty);
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
@@ -272,6 +273,7 @@ export const stockOutbound = createServerFn({ method: "POST" })
         values (${nid()}, ${used.lot.part_id}, ${data.lotId}, 'out', ${data.qty}, ${warehouseId}, ${data.note ?? null})
       `;
       await tx`update parts set updated_at = now() where id = ${used.lot.part_id}`;
+      await logOp(tx, "out", "lot", data.lotId, { principal, before: { qtyRemaining: Number(used.lot.qty_remaining) }, after: { qtyRemaining: used.next, qty: data.qty } });
       return { ok: true as const, lotId: data.lotId, qtyRemaining: used.next };
     });
   });
@@ -282,7 +284,7 @@ export const stockTransfer = createServerFn({ method: "POST" })
     (input: { lotId: string; toWarehouseId: string; qty: number; note?: string }) => input,
   )
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     positiveInteger(data.qty);
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
@@ -313,6 +315,7 @@ export const stockTransfer = createServerFn({ method: "POST" })
         )
       `;
       await tx`update parts set updated_at = now() where id = ${lot.part_id}`;
+      await logOp(tx, "transfer", "lot", data.lotId, { principal, before: { warehouseId: lot.warehouse_id, qtyRemaining: Number(lot.qty_remaining) }, after: { warehouseId: data.toWarehouseId, qty: data.qty, destinationLotId: newId } });
       return { ok: true as const, sourceLotId: data.lotId, destinationLotId: newId, qtyRemaining: used.next };
     });
   });
@@ -321,14 +324,17 @@ export const stockAdjust = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { lotId: string; countedQty: number; note?: string }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     nonNegativeInteger(data.countedQty);
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
       const before = await readOnHandLot(tx, data.lotId);
       const beforeQty = Number(before.qty_remaining);
       const delta = data.countedQty - beforeQty;
-      if (delta === 0) return { ok: true as const, lotId: data.lotId, qtyRemaining: beforeQty, unchanged: true as const };
+      if (delta === 0) {
+        await logOp(tx, "adjust_unchanged", "lot", data.lotId, { principal, before: { qtyRemaining: beforeQty }, after: { qtyRemaining: beforeQty } });
+        return { ok: true as const, lotId: data.lotId, qtyRemaining: beforeQty, unchanged: true as const };
+      }
       const after = await creditLot(tx, data.lotId, delta);
       const warehouseId = String(before.warehouse_id);
       await tx`
@@ -340,7 +346,7 @@ export const stockAdjust = createServerFn({ method: "POST" })
           ${data.note ?? `修 ${beforeQty} → ${data.countedQty}`}
         )
       `;
-      await logOp(tx, "adjust", "lot", data.lotId, `${beforeQty}→${data.countedQty}`);
+      await logOp(tx, "adjust", "lot", data.lotId, { principal, detail: `${beforeQty}→${data.countedQty}`, before: { qtyRemaining: beforeQty }, after: { qtyRemaining: data.countedQty } });
       await tx`update parts set updated_at = now() where id = ${before.part_id}`;
       return { ok: true as const, lotId: data.lotId, qtyRemaining: Number(after.qty_remaining), beforeQty, countedQty: data.countedQty };
     });
@@ -359,12 +365,12 @@ export const stockLotUpdate = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     validateCost(data.costAmount, data.costCurrency, data.costTax);
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
       const current = await tx`
-        select part_id, supplier_id, date_code, coalesce(origin_lot_id, id) as origin_lot_id
+        select * , coalesce(origin_lot_id, id) as origin_lot_id
         from stock_lots
         where id = ${data.lotId} and deleted_at is null
       `;
@@ -386,7 +392,7 @@ export const stockLotUpdate = createServerFn({ method: "POST" })
         returning id
       `;
       if (!rows[0]) throw new Error("批次不存在");
-      await logOp(tx, "cost_update", "lot", data.lotId);
+      await logOp(tx, "cost_update", "lot", data.lotId, { principal, before: current[0], after: { costAmount: data.costAmount, costCurrency: data.costCurrency, costTax: data.costTax, supplierId, dateCode } });
       return { ok: true as const, originLotId, updatedLots: rows.length };
     });
   });
@@ -409,7 +415,7 @@ export const openTransit = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     positiveInteger(data.qty);
     validateCost(data.costAmount ?? null, data.costCurrency ?? null, data.costTax ?? null);
     const sql = await sqlClient();
@@ -434,6 +440,7 @@ export const openTransit = createServerFn({ method: "POST" })
         insert into stock_movements (id, part_id, lot_id, type, qty, note)
         values (${nid()}, ${part.id}, ${id}, 'transit_open', ${data.qty}, ${data.etaText ?? null})
       `;
+      await logOp(tx, "transit_open", "lot", id, { principal, after: { partId: part.id, qty: data.qty, etaText: data.etaText ?? null } });
       return { id, partId: part.id };
     });
   });
@@ -442,7 +449,7 @@ export const receiveTransit = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { lotId: string; warehouseId: string; qty: number }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "stock.write");
     positiveInteger(data.qty);
     const sql = await sqlClient();
     return withTransaction(sql, async (tx) => {
@@ -479,7 +486,7 @@ export const receiveTransit = createServerFn({ method: "POST" })
         insert into stock_movements (id, part_id, lot_id, source_lot_id, type, qty, to_warehouse_id, note)
         values (${nid()}, ${lot.part_id}, ${newId}, ${data.lotId}, 'transit_in', ${data.qty}, ${data.warehouseId}, ${"途→仓"})
       `;
-      await logOp(tx, "transit_in", "lot", data.lotId, data.warehouseId);
+      await logOp(tx, "transit_in", "lot", data.lotId, { principal, detail: data.warehouseId, before: { qtyRemaining: Number(lot.qty_remaining), status: lot.status }, after: { qtyRemaining: next, destinationLotId: newId, warehouseId: data.warehouseId } });
       return { ok: true as const, partId: String(lot.part_id), destinationLotId: newId };
     });
   });

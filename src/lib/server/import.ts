@@ -38,10 +38,12 @@ import {
   matchFlagsForParts,
   nid,
   sqlClient,
+  logOp,
   withTransaction,
 } from "./helpers";
 import { ensureSeed } from "./seed";
 import { resolveDateCode } from "@/lib/inventory/date-code";
+import { sameNullableNumber } from "@/lib/import-duplicate";
 
 const IMPORT_KINDS = ["offer", "inquiry", "stock", "transit", "potential", "mixed"] as const;
 const IMPORT_PARSE_KINDS = [...IMPORT_KINDS, "neutral"] as const;
@@ -415,12 +417,56 @@ async function markDuplicates(
     channel: defaultChannel,
     customer: defaultCustomer,
   });
+  const keys = [...new Set(rows.map((row) => normalizeMpn(row.mpn)).filter(Boolean))];
+  const parts = keys.length
+    ? await sql.query<{ id: string; mpn_key: string }>(
+        `select id, mpn_key from parts where mpn_key in (${keys.map((_, index) => `$${index + 1}`).join(",")})`,
+        keys,
+      )
+    : [];
+  const partByKey = new Map(parts.map((row) => [String(row.mpn_key), String(row.id)]));
+  const partIds = [...partByKey.values()];
+  const placeholders = partIds.map((_, index) => `$${index + 1}`).join(",");
+  const existingLots = partIds.length
+    ? await sql.query<Record<string, unknown>>(
+        `select l.part_id, l.qty_in, l.date_code, l.cost_amount, l.cost_currency, l.cost_tax,
+            w.id as warehouse_id, w.code as warehouse_code, ch.name as supplier_name
+         from stock_lots l left join warehouses w on w.id = l.warehouse_id left join channels ch on ch.id = l.supplier_id
+         where l.part_id in (${placeholders}) and l.deleted_at is null and l.status in ('on_hand','in_transit')
+           and l.inbound_at >= now() - (${DUPLICATE_STOCK_DAYS} || ' days')::interval`,
+        partIds,
+      )
+    : [];
+  const existingOffers = partIds.length
+    ? await sql.query<Record<string, unknown>>(
+        `select o.part_id, o.qty, o.date_code, o.price_amount, o.is_tp, ch.name as channel_name
+         from channel_offers o join channels ch on ch.id = o.channel_id
+         where o.part_id in (${placeholders}) and o.deleted_at is null
+           and o.offered_at >= now() - (${DUPLICATE_OFFER_HOURS} || ' hours')::interval`,
+        partIds,
+      )
+    : [];
+  const existingInquiries = partIds.length
+    ? await sql.query<Record<string, unknown>>(
+        `select i.part_id, i.qty, c.name as customer_name
+         from customer_inquiries i join customers c on c.id = i.customer_id
+         where i.part_id in (${placeholders}) and i.deleted_at is null
+           and i.inquired_at >= now() - (${DUPLICATE_INQUIRY_HOURS} || ' hours')::interval`,
+        partIds,
+      )
+    : [];
+  const followed = potentialUserId && partIds.length
+    ? await sql.query<{ part_id: string }>(
+        `select part_id from potential_models where user_id = $${partIds.length + 1} and part_id in (${placeholders})`,
+        [...partIds, potentialUserId],
+      )
+    : [];
+  const followedSet = new Set(followed.map((row) => String(row.part_id)));
+  const sameName = (a: unknown, b: unknown) => String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
   for (const row of rows) {
     if (row.duplicate) continue;
-    const key = normalizeMpn(row.mpn);
-    const part = await sql`select id from parts where mpn_key = ${key} limit 1`;
-    if (!part[0]) continue;
-    const partId = String(part[0].id);
+    const partId = partByKey.get(normalizeMpn(row.mpn));
+    if (!partId) continue;
     const kind = effectiveImportKind(row, selectedKind);
     if (kind === "stock") {
       const warehouse = row.warehouse ?? defaultWarehouseId ?? "";
@@ -428,24 +474,14 @@ async function markDuplicates(
       const cost = row.costAmount;
       const currency = cost == null ? null : (row.costCurrency ?? defaultCurrency ?? null);
       const tax = cost == null ? null : (row.costTax ?? defaultTax ?? null);
-      const hits = await sql`
-        select l.id
-        from stock_lots l
-        left join warehouses w on w.id = l.warehouse_id
-        left join channels ch on ch.id = l.supplier_id
-        where l.part_id = ${partId} and l.deleted_at is null
-          and l.status in ('on_hand', 'in_transit')
-          and l.inbound_at >= now() - (${DUPLICATE_STOCK_DAYS} || ' days')::interval
-          and coalesce(l.qty_in, 0) = coalesce(${row.qty}, 0)
-          and coalesce(l.date_code, '') = coalesce(${row.dateCode ?? ""}, '')
-          and coalesce(l.cost_amount, -1::numeric) = coalesce(${cost ?? null}::numeric, -1::numeric)
-          and coalesce(l.cost_currency, '') = coalesce(${currency ?? ""}, '')
-          and coalesce(l.cost_tax, '') = coalesce(${tax ?? ""}, '')
-          and (${warehouse} = '' or w.id = ${warehouse} or w.code = ${warehouse})
-          and (${supplierName} = '' or ch.name = ${supplierName})
-        limit 3
-      `;
-      if (hits.length > 0) {
+      const hit = existingLots.some((lot) =>
+        String(lot.part_id) === partId && sameNullableNumber(lot.qty_in ?? 0, row.qty ?? 0) &&
+        String(lot.date_code ?? "") === String(row.dateCode ?? "") && sameNullableNumber(lot.cost_amount ?? -1, cost ?? -1) &&
+        String(lot.cost_currency ?? "") === String(currency ?? "") && String(lot.cost_tax ?? "") === String(tax ?? "") &&
+        (!warehouse || String(lot.warehouse_id ?? "") === warehouse || String(lot.warehouse_code ?? "") === warehouse) &&
+        (!supplierName || sameName(lot.supplier_name, supplierName)),
+      );
+      if (hit) {
         row.duplicate = true;
         row.duplicateReason =
           "疑似重复：相同型号、仓库、数量、DC 和成本已有库存批次（若确为新批次可勾选）";
@@ -454,22 +490,12 @@ async function markDuplicates(
     }
     if (kind === "offer") {
       const chName = row.channel ?? defaultChannel ?? "";
-      const hits = await sql`
-        select o.id from channel_offers o
-        join channels ch on ch.id = o.channel_id
-        where o.part_id = ${partId} and o.deleted_at is null
-          and o.offered_at >= now() - (${DUPLICATE_OFFER_HOURS} || ' hours')::interval
-          and coalesce(o.qty, -1) = coalesce(${row.qty}, -1)
-          and coalesce(o.date_code,'') = coalesce(${row.dateCode ?? ""}, '')
-          and o.is_tp = ${row.isTp}
-          -- price_amount is numeric; keep the NULL sentinel numeric as well.
-          -- Otherwise PGlite/Postgres infer the parameter as integer from -1
-          -- and reject valid decimal prices such as 1.32 during preview.
-          and coalesce(o.price_amount, -1::numeric) = coalesce(${row.priceAmount ?? null}::numeric, -1::numeric)
-          and (${chName} = '' or ch.name = ${chName})
-        limit 3
-      `;
-      if (hits.length > 0) {
+      const hit = existingOffers.some((offer) =>
+        String(offer.part_id) === partId && sameNullableNumber(offer.qty ?? -1, row.qty ?? -1) &&
+        String(offer.date_code ?? "") === String(row.dateCode ?? "") && Boolean(offer.is_tp) === Boolean(row.isTp) &&
+        sameNullableNumber(offer.price_amount ?? -1, row.priceAmount ?? -1) && (!chName || sameName(offer.channel_name, chName)),
+      );
+      if (hit) {
         row.duplicate = true;
         row.duplicateReason = `疑似重复：同渠道同型号近 ${DUPLICATE_OFFER_HOURS}h 已有推货`;
         row.selected = false;
@@ -477,28 +503,18 @@ async function markDuplicates(
     }
     if (kind === "inquiry") {
       const cuName = row.customer ?? defaultCustomer ?? "";
-      const hits = await sql`
-        select i.id from customer_inquiries i
-        join customers c on c.id = i.customer_id
-        where i.part_id = ${partId} and i.deleted_at is null
-          and i.inquired_at >= now() - (${DUPLICATE_INQUIRY_HOURS} || ' hours')::interval
-          and coalesce(i.qty, -1) = coalesce(${row.qty}, -1)
-          and (${cuName} = '' or c.name = ${cuName})
-        limit 3
-      `;
-      if (hits.length > 0) {
+      const hit = existingInquiries.some((inquiry) =>
+        String(inquiry.part_id) === partId && sameNullableNumber(inquiry.qty ?? -1, row.qty ?? -1) &&
+        (!cuName || sameName(inquiry.customer_name, cuName)),
+      );
+      if (hit) {
         row.duplicate = true;
         row.duplicateReason = `疑似重复：同客户同型号近 ${DUPLICATE_INQUIRY_HOURS}h 已有询价（若确为再次询价可勾选）`;
         row.selected = false;
       }
     }
     if (kind === "potential" && potentialUserId) {
-      const hits = await sql`
-        select part_id from potential_models
-        where user_id = ${potentialUserId} and part_id = ${partId}
-        limit 1
-      `;
-      if (hits.length > 0) {
+      if (followedSet.has(partId)) {
         row.duplicate = true;
         row.duplicateReason = "当前用户已关注，默认不重复加入";
         row.selected = false;
@@ -670,12 +686,22 @@ export const confirmImport = createServerFn({ method: "POST" })
     const sql = await sqlClient();
     const submissionId = data.submissionId || nid();
     const existing =
-      await sql`select status, result_json, error_message from import_batches where submission_id = ${submissionId} limit 1`;
+      await sql`select id, status, result_json, error_message, writing_started_at from import_batches where submission_id = ${submissionId} limit 1`;
     if (existing[0]) {
       if (existing[0].status === "success" && existing[0].result_json)
         return JSON.parse(String(existing[0].result_json));
-      if (existing[0].status === "writing") throw new Error("这份导入正在写入，请勿重复提交");
-      throw new Error(String(existing[0].error_message || "这份导入上次写入失败，请重新生成预览"));
+      const startedAt = existing[0].writing_started_at ? new Date(String(existing[0].writing_started_at)).getTime() : 0;
+      const stale = !startedAt || Date.now() - startedAt > 10 * 60 * 1000;
+      if (existing[0].status === "writing" && !stale) throw new Error("这份导入正在写入，请勿重复提交");
+      if (existing[0].status === "writing" || existing[0].status === "failed") {
+        await sql`
+          update import_batches set status = 'writing', error_message = null, result_json = null,
+            writing_started_at = now(), finished_at = null
+          where id = ${existing[0].id}
+        `;
+      } else {
+        throw new Error(String(existing[0].error_message || "这份导入状态不可重试，请重新生成预览"));
+      }
     }
     const selected = data.rows.filter((r) => r.selected && r.mpn);
     if (selected.length === 0) throw new Error("没有勾选可写入的行");
@@ -758,11 +784,13 @@ export const confirmImport = createServerFn({ method: "POST" })
       }
     }
 
-    const batchId = nid();
-    await sql`
-      insert into import_batches (id, kind, source_type, filename, raw_excerpt, created_by, submission_id, status)
-      values (${batchId}, ${data.kind}, ${data.sourceType}, ${data.filename ?? null}, ${data.excerpt ?? null}, ${principal.userId}, ${submissionId}, 'writing')
-    `;
+    const batchId = existing[0]?.id ? String(existing[0].id) : nid();
+    if (!existing[0]) {
+      await sql`
+        insert into import_batches (id, kind, source_type, filename, raw_excerpt, created_by, submission_id, status, writing_started_at)
+        values (${batchId}, ${data.kind}, ${data.sourceType}, ${data.filename ?? null}, ${data.excerpt ?? null}, ${principal.userId}, ${submissionId}, 'writing', now())
+      `;
+    }
     try {
       // Keep confirmImport's transactional write boundary explicit: return withTransaction(sql, ...).
       return await withTransaction(sql, async (tx) => {
@@ -935,11 +963,25 @@ export const confirmImport = createServerFn({ method: "POST" })
           writtenByKind,
           customerCount: inquiryCustomers.size,
         };
-        await tx`update import_batches set status = 'success', result_json = ${JSON.stringify(result)} where id = ${batchId}`;
+        await tx`update import_batches set status = 'success', result_json = ${JSON.stringify(result)}, error_message = null, finished_at = now() where id = ${batchId}`;
+        await logOp(tx, "confirm", "import_batch", batchId, {
+          principal,
+          requestId: submissionId,
+          importBatchId: batchId,
+          after: { kind: data.kind, writtenCount, writtenByKind, customerCount: inquiryCustomers.size },
+        });
         return result;
       });
     } catch (error) {
-      await sql`update import_batches set status = 'failed', error_message = ${error instanceof Error ? error.message : String(error)} where id = ${batchId}`;
+      const failureReason = error instanceof Error ? error.message : String(error);
+      await sql`update import_batches set status = 'failed', error_message = ${failureReason}, finished_at = now() where id = ${batchId}`;
+      await logOp(sql, "confirm_failed", "import_batch", batchId, {
+        principal,
+        outcome: "failure",
+        failureReason,
+        requestId: submissionId,
+        importBatchId: batchId,
+      }).catch(() => undefined);
       throw error;
     }
   });
