@@ -1,30 +1,23 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { emailAndPasswordEnabled } from "./auth/email-password";
+import { readDatabaseConfig } from "./db-config.mjs";
 
 /** Which database backend is active. */
 export type DbSource = "neon" | "pglite";
 
-// An empty/whitespace DATABASE_URL (an easy misconfig in deploy UIs) must mean
-// "unset" — otherwise production would silently run on the PGLite fallback.
-const rawDatabaseUrl =
-  typeof process !== "undefined" ? process.env.DATABASE_URL : undefined;
-const databaseUrl =
-  rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl : undefined;
-const productionRuntime =
-  typeof process !== "undefined" && process.env.RADAR_RUNTIME === "production";
-if (productionRuntime && !databaseUrl) {
-  throw new Error("生产运行必须配置 DATABASE_URL；未连接数据库时拒绝启动");
-}
+const databaseConfig = readDatabaseConfig();
+const databaseUrl = databaseConfig.databaseUrl;
+const productionRuntime = databaseConfig.production;
 
 /**
- * Active backend: real **Neon** when `DATABASE_URL` is set (deployed / configured
- * sandbox), otherwise a local embedded **PGLite** (Postgres compiled to WASM) for
- * local preview only. The production runner sets `RADAR_RUNTIME=production` and
- * fails closed when `DATABASE_URL` is absent.
+ * The explicit mode is shared by application data and Better Auth. Development
+ * keeps the historical default (PGLite without a URL); production must opt into
+ * `pglite` or `postgres` through RADAR_DB_MODE.
  */
-export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
+export const dbMode = databaseConfig.mode;
+export const dbSource: DbSource = dbMode === "postgres" ? "neon" : "pglite";
 
 /**
  * Minimal shared SQL surface, satisfied by both Neon and PGLite. Both the
@@ -96,6 +89,9 @@ function toSql(run: Run, transaction?: <T>(fn: (sql: Sql) => Promise<T>) => Prom
 }
 
 function createNeonSql(): Promise<Sql> {
+  if (!databaseUrl) {
+    throw new Error("RADAR_DB_MODE=postgres 时缺少 DATABASE_URL");
+  }
   globalRef.__pgSqlPromise__ ??= (async () => {
     // Regular Postgres driver: node-postgres (`pg`) — works directly with Neon's
     // pooled endpoint. One pool per process; warm serverless instances reuse it.
@@ -135,18 +131,27 @@ function createNeonSql(): Promise<Sql> {
 
 async function createPgliteSql(): Promise<Sql> {
   // Embedded Postgres, imported on demand so it never loads on the Neon path.
-  // One in-memory instance per process, shared across HMR module instances, so
-  // data survives source edits (it resets on dev-server restart).
+  // One persistent instance per process, shared across HMR module instances;
+  // the configured data directory also survives process restarts.
   globalRef.__pgliteInstance__ ??= (async () => {
     const { PGlite } = await import("@electric-sql/pglite");
-    // 本地持久化：业务库（型号/库存/渠道/询价/流水）全部落盘到
-    // `<DATA_DIR>/pglite`（DATA_DIR 默认 <cwd>/data，LaunchAgent 已注入项目根）。
-    // 重启/重建后数据保留；迁移与 seed 均幂等（_migrations 追踪 / on conflict）。
-    const dataDir = join(process.env.DATA_DIR || join(process.cwd(), "data"), "pglite");
-    try {
+    const configuredDataRoot = String(process.env.DATA_DIR || "").trim();
+    const dataRoot = resolve(configuredDataRoot || join(process.cwd(), "data"));
+    const dataDir = join(dataRoot, "pglite");
+    if (productionRuntime) {
+      // A typo must fail rather than create a new empty production database.
+      if (!configuredDataRoot || !isDirectory(dataRoot)) {
+        throw new Error(
+          `生产 PGlite 要求 DATA_DIR 指向已存在的数据目录：${dataRoot}`,
+        );
+      }
+      if (!isDirectory(dataDir)) {
+        throw new Error(
+          `生产 PGlite 数据目录不存在或不可用：${dataDir}；不会创建空库`,
+        );
+      }
+    } else {
       mkdirSync(dataDir, { recursive: true });
-    } catch {
-      /* 目录创建失败时退回内存模式 */
     }
     console.info(`[db] pglite data dir: ${dataDir}`);
     const pg = new PGlite({
@@ -223,6 +228,15 @@ async function createPgliteSql(): Promise<Sql> {
   );
 }
 
+function isDirectory(path: string): boolean {
+  if (!existsSync(path)) return false;
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 let sqlPromise: Promise<Sql> | null = null;
 
 async function createSql(): Promise<Sql> {
@@ -236,8 +250,8 @@ async function createSql(): Promise<Sql> {
 }
 
 /**
- * Get the shared, **server-only** SQL client. Neon when `DATABASE_URL` is set,
- * otherwise the local PGLite fallback. Memoized — safe to call per request.
+ * Get the shared, **server-only** SQL client. The backend is selected by the
+ * explicit database mode and memoized — safe to call per request.
  *
  * Schema comes from `migrations/*.sql`, auto-applied before the first query on
  * both backends — define tables there, never inline in server functions.
@@ -251,13 +265,12 @@ export function getSql(): Promise<Sql> {
 }
 
 /**
- * The shared PGLite instance (preview only), with `migrations/*.sql` applied.
- * Lets Better Auth persist to the SAME embedded DB as app data in preview (via a
- * Kysely dialect). Throws when `DATABASE_URL` is set (that path uses Neon).
+ * The shared PGLite instance, with `migrations/*.sql` applied. Lets Better Auth
+ * persist to the SAME embedded DB as app data via a Kysely dialect.
  */
 export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite> {
   if (dbSource !== "pglite") {
-    throw new Error("getPglite() is only available on the PGLite fallback (no DATABASE_URL)");
+    throw new Error("getPglite() is only available when RADAR_DB_MODE=pglite");
   }
   await getSql();
   const pg = await globalRef.__pgliteInstance__;
@@ -268,9 +281,8 @@ export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite
 /**
  * Finish DB bootstrap before the server handles traffic.
  *
- * - **PGLite** (preview / no `DATABASE_URL`): open the in-memory DB and apply
- *   `migrations/*.sql`. Idempotent — concurrent callers share one promise.
- * - **Neon**: no-op (pool is created lazily on first query).
+ * - **PGLite**: open the configured persistent DB and apply `migrations/*.sql`.
+ * - **Postgres**: no-op (pool is created lazily on first query).
  *
  * Vite `configureServer` awaits this at dev startup; production imports of this
  * module kick it off immediately (see bottom of file).

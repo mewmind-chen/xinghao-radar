@@ -21,6 +21,8 @@
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "test": "node scripts/run-tests.mjs",
+    "verify:migration": "node --test scripts/persistent-db-rehearsal.test.mjs",
+    "verify:production-pglite": "node scripts/production-pglite-rehearsal.mjs",
     "lint": "eslint .",
     "format": "prettier --write ."
   },

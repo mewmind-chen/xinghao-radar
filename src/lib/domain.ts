@@ -220,18 +220,88 @@ export function formatEtaLabel(opts: {
   return null;
 }
 
+const MONTH_NUMBERS: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
+};
+
+function formatCalendarDate(year: number, month: number, day: number): string {
+  const check = new Date(Date.UTC(year, month - 1, day));
+  if (
+    check.getUTCFullYear() !== year ||
+    check.getUTCMonth() + 1 !== month ||
+    check.getUTCDate() !== day
+  ) {
+    return "";
+  }
+  return `${String(year).slice(-2)}-${month}-${day}`;
+}
+
+function datePartsFromEnglish(value: string): [number, number, number] | null {
+  // Date#toString() from the old PGlite path: Mon Aug 24 2026 03:01:00 GMT+0800.
+  const weekdayFirst = value.match(
+    /\b(?:sun|mon|tue|wed|thu|fri|sat),?\s+([a-z]+)\s+(\d{1,2}),?\s+(\d{4})\b/i,
+  );
+  if (weekdayFirst) {
+    const month = MONTH_NUMBERS[weekdayFirst[1].toLowerCase()];
+    if (month) return [Number(weekdayFirst[3]), month, Number(weekdayFirst[2])];
+  }
+
+  // RFC-style strings such as 24 Aug 2026 03:01:00 GMT+0800.
+  const dayFirst = value.match(/\b(\d{1,2})\s+([a-z]+)\s+(\d{4})\b/i);
+  if (dayFirst) {
+    const month = MONTH_NUMBERS[dayFirst[2].toLowerCase()];
+    if (month) return [Number(dayFirst[3]), month, Number(dayFirst[1])];
+  }
+  return null;
+}
+
 export function formatMd(iso: string | null | undefined): string {
-  // 服务端对 timestamptz 曾用 String() 序列化，得到的是本地时区的英文日期串
-  // （如 "Mon Aug 24 2026 03:01:00 GMT+0800 (China Standard Time)"），而不是
-  // YYYY-MM-DD；先按 YYYY-MM-DD 前缀直接取，避免纯日期被 new Date 按 UTC
-  // 午夜解析而在西时区跨天偏移。自 26-8-24 起，服务端一律经 iso() 归一为
-  // UTC ISO，本函数兜底兼容旧串并防御非法输入。
-  if (iso == null || iso === "") return "";
-  const m = iso.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (m) return `${m[1].slice(-2)}-${Number(m[2])}-${Number(m[3])}`;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return ""; // 非法输入 → 空串，绝不输出 NaN/原始怪串
-  return `${String(d.getFullYear()).slice(-2)}-${d.getMonth() + 1}-${d.getDate()}`;
+  // Date labels are calendar dates, not instants to be converted into the
+  // server's local timezone. Read explicit year/month/day fields first so the
+  // same record renders identically in UTC, China, and US CI environments.
+  if (iso == null || String(iso).trim() === "") return "";
+  const value = String(iso).trim();
+  const isoDate = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoDate) {
+    return formatCalendarDate(Number(isoDate[1]), Number(isoDate[2]), Number(isoDate[3]));
+  }
+  const slashDate = value.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (slashDate) {
+    return formatCalendarDate(Number(slashDate[1]), Number(slashDate[2]), Number(slashDate[3]));
+  }
+  const englishParts = datePartsFromEnglish(value);
+  if (englishParts) return formatCalendarDate(...englishParts);
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return formatCalendarDate(
+    parsed.getUTCFullYear(),
+    parsed.getUTCMonth() + 1,
+    parsed.getUTCDate(),
+  );
 }
 
 export function formatWhen(iso: string): string {

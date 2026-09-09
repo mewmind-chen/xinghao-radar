@@ -32,10 +32,12 @@
 
 - React 19 + TanStack Start / Router / Query
 - Tailwind CSS v4
-- PGLite（本地）/ Postgres（部署）
+- PGLite（本地或明确配置的自托管部署）/ Postgres（明确配置的部署）
 - Vite 8 + Nitro
 
-默认不开启登录。部署到带 `DATABASE_URL` 的 Postgres 环境即可持久化。
+默认不开启登录。开发环境未指定数据库模式时使用本地 PGlite；生产环境必须
+明确设置 `RADAR_DB_MODE=pglite` 或 `RADAR_DB_MODE=postgres`。PGlite 生产模式还
+必须设置指向稳定持久化目录的 `DATA_DIR`，Postgres 模式必须设置 `DATABASE_URL`。
 
 ## 本地运行
 
@@ -67,7 +69,9 @@ Radar 只把“型号理解、研究与建议”交给 `electronics-agent-platfo
 - `AGENT_API_URL`：Platform 服务地址，默认 `http://127.0.0.1:8787`。
 - `ELECTRONICS_AGENT_PLATFORM_TOKEN`：仅供 Radar 调用 Platform 的专用服务端 token。生产环境必须单独签发；不兼容、也不回退读取泛用的 `AGENT_API_TOKEN`。
 - `HQB_BASE_URL`：Workbench 降级服务地址，默认 `http://127.0.0.1:8081`。
-- `DATABASE_URL`：生产 Postgres 连接；未设置时本地预览使用 PGLite，生产运行器会拒绝启动，不会悄悄启用本地数据库。型号分析结果也写入该同一持久层的 `part_analyses` 表：部署时由 `npm run build` 的迁移创建，冷启动实例可直接读取；离线开发则保存在 `<DATA_DIR>/pglite`，不再使用 serverless 本地 SQLite 文件。旧版 `data/analyses.db` 可先运行 `node scripts/import-legacy-analyses.mjs` 只读预检，再用 `node scripts/import-legacy-analyses.mjs --apply` 幂等导入；源文件始终保留，不会自动删除。
+- `RADAR_DB_MODE`：数据库模式，只能是 `pglite` 或 `postgres`。生产必须显式设置，不能只依赖 `RADAR_RUNTIME`。
+- `DATA_DIR`：PGlite 的稳定数据根目录，数据库实际位于 `<DATA_DIR>/pglite`。生产模式要求目录已经存在；release 目录与 data 目录必须分离，路径错误不会创建新的空库。
+- `DATABASE_URL`：仅 `RADAR_DB_MODE=postgres` 使用的 Postgres 连接；PGlite 模式不得同时设置。PGlite 生产模式不需要此变量。型号分析结果也写入所选持久层的 `part_analyses` 表：Postgres 在构建迁移时创建，PGlite 在应用启动迁移时创建，冷启动实例可直接读取；离线开发则保存在 `<DATA_DIR>/pglite`。旧版 `data/analyses.db` 可先运行 `node scripts/import-legacy-analyses.mjs` 只读预检，再用 `node scripts/import-legacy-analyses.mjs --apply` 幂等导入；源文件始终保留，不会自动删除。
 
 不要将 token 放入 `VITE_*` 变量、浏览器代码、截图或日志。服务日志只记录诸如 `platform_unavailable / timeout` 的粗粒度原因，不输出凭据、URL 或上游响应内容。
 

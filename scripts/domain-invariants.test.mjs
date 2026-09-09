@@ -3,6 +3,7 @@
 // domain.ts 仅含 import type（strip 后零运行时依赖），可直接被 Node 加载。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 
 import {
   brandShort,
@@ -214,6 +215,30 @@ test("formatMd: ISO→26-8-24; 英文Date串兼容; 非法/空输入绝不输出
   assert.match(formatMd("Mon Aug 24 2026 03:01:00 GMT+0800"), /^\d{2}-\d{1,2}-\d{1,2}$/);
   // 单数字月日不补零
   assert.equal(formatMd("2026-09-05T00:00:00Z"), "26-9-5");
+});
+
+test("formatMd: UTC/中国/洛杉矶时区下的日历日期保持稳定", () => {
+  const moduleUrl = new URL("../src/lib/domain.ts", import.meta.url).href;
+  const probe = `
+    import { formatMd } from ${JSON.stringify(moduleUrl)};
+    const values = [
+      formatMd("2026-08-24T23:01:00.000Z"),
+      formatMd("2026-08-24"),
+      formatMd("Mon Aug 24 2026 03:01:00 GMT+0800 (China Standard Time)"),
+      formatMd("garbage"),
+      formatMd(""),
+    ];
+    process.stdout.write(JSON.stringify(values));
+  `;
+  const expected = ["26-8-24", "26-8-24", "26-8-24", "", ""];
+  for (const timezone of ["UTC", "Asia/Shanghai", "America/Los_Angeles"]) {
+    const output = execFileSync(
+      process.execPath,
+      ["--experimental-strip-types", "--input-type=module", "-e", probe],
+      { env: { ...process.env, TZ: timezone } },
+    ).toString();
+    assert.deepEqual(JSON.parse(output), expected, `TZ=${timezone}`);
+  }
 });
 
 test("formatStockLine: 多仓多批聚合展示（验收4 的展示面）", () => {
