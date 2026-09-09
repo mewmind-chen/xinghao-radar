@@ -300,19 +300,56 @@ async function isServiceLoaded(config) {
 async function stopService(config) {
   const uid = typeof process.getuid === "function" ? process.getuid() : 501;
   if (!(await isServiceLoaded(config))) return false;
-  await run(config.launchctl, ["bootout", `gui/${uid}`, config.serviceLabel], {
+  const bootout = await run(config.launchctl, ["bootout", `gui/${uid}`, config.serviceLabel], {
     timeoutMs: 20_000,
     quiet: true,
+    allowFailure: true,
   });
-  return true;
+  if (bootout.code === 0) return true;
+
+  // A user LaunchAgent loaded through the legacy launchctl API can reject
+  // bootout with I/O error 5 even though the job is healthy and printable.
+  // Fall back to the legacy path on those Macs instead of leaving the service
+  // loaded and then failing bootstrap with the same error.
+  const unload = await run(config.launchctl, ["unload", config.plistPath], {
+    timeoutMs: 20_000,
+    quiet: true,
+    allowFailure: true,
+  });
+  if (unload.code === 0) {
+    log("used legacy launchctl unload for the production service");
+    return true;
+  }
+  if (!(await isServiceLoaded(config))) return true;
+  throw new Error(
+    `could not stop ${config.serviceLabel}: bootout exit ${bootout.code}; ` +
+      `unload exit ${unload.code}`,
+  );
 }
 
 async function startService(config) {
   const uid = typeof process.getuid === "function" ? process.getuid() : 501;
-  await run(config.launchctl, ["bootstrap", `gui/${uid}`, config.plistPath], {
+  const bootstrap = await run(config.launchctl, ["bootstrap", `gui/${uid}`, config.plistPath], {
     timeoutMs: 20_000,
     quiet: true,
+    allowFailure: true,
   });
+  if (bootstrap.code === 0) return;
+
+  const load = await run(config.launchctl, ["load", config.plistPath], {
+    timeoutMs: 20_000,
+    quiet: true,
+    allowFailure: true,
+  });
+  if (load.code === 0) {
+    log("used legacy launchctl load for the production service");
+    return;
+  }
+  if (await isServiceLoaded(config)) return;
+  throw new Error(
+    `could not start ${config.serviceLabel}: bootstrap exit ${bootstrap.code}; ` +
+      `load exit ${load.code}`,
+  );
 }
 
 async function waitForHealth(config, expectedRelease) {
