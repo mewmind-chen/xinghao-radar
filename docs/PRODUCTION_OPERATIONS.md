@@ -4,21 +4,22 @@
 
 ## 当前生产状态
 
-| 项目 | 当前值 |
-| --- | --- |
-| GitHub 仓库 | `https://github.com/mewmind-chen/xinghao-radar` |
-| GitHub `main` SHA | `d0ed911ce393b533ad58745c5ffa7af60474e651` |
-| 生产源码 SHA | `d0ed911ce393b533ad58745c5ffa7af60474e651` |
-| 线上 release | `20260908-221004-pr12-d0ed911` |
-| 生产服务 | `com.xinghao-radar.vite-dev` |
-| 监听端口 | `8082` |
-| 公网地址 | `https://radar.newmindchen.com` |
-| 数据库后端 | 本机 PGlite；当前生产没有 `DATABASE_URL` |
-| 导入引擎 | V2 已启用 |
-| 导入模型 | `google/gemini-3.8-flash` |
-| 最近核验 | 2026-09-09 17:58 CST；本地和公网 `/healthz` 均正常 |
+| 项目                         | 当前值                                             |
+| ---------------------------- | -------------------------------------------------- |
+| GitHub 仓库                  | `https://github.com/mewmind-chen/xinghao-radar`    |
+| 最近核验的 GitHub `main` SHA | `6a926d8a2301dae11d46579dccc11a4a6413f1a4`         |
+| 生产源码 SHA                 | `6a926d8a2301dae11d46579dccc11a4a6413f1a4`         |
+| 线上运行代码 SHA             | `6a926d8a2301dae11d46579dccc11a4a6413f1a4`         |
+| 线上 release                 | `20260909-102737-pr15-6a926d8`                     |
+| 生产服务                     | `com.xinghao-radar.vite-dev`                       |
+| 监听端口                     | `8082`                                             |
+| 公网地址                     | `https://radar.newmindchen.com`                    |
+| 数据库后端                   | 本机 PGlite；当前生产没有 `DATABASE_URL`           |
+| 导入引擎                     | V2 已启用                                          |
+| 导入模型                     | `google/gemini-3.8-flash`                          |
+| 最近核验                     | 2026-09-09 18:28 CST；本地和公网 `/healthz` 均正常 |
 
-当前生产运行的是 PR12 合并后的 `main`，PR13 尚未部署。
+当前生产源码和线上运行代码均为 PR15；后续文档提交可能只推进生产源码镜像，不自动改变当前 release。
 
 ## 三类目录
 
@@ -38,17 +39,56 @@
 
 ### 生产源码
 
-`/Users/ylf/Desktop/型号追踪/xinghao-radar-production` 是当前生产源码的干净快照，锁定到线上 SHA。它不是开发目录，不在里面直接修改业务代码。当前 launchd 的 `WorkingDirectory` 指向这里，生产启动脚本也来自这里。
+`/Users/ylf/Desktop/型号追踪/xinghao-radar-production` 是当前 `main` 的干净生产源码镜像。它不是开发目录，不在里面直接修改业务代码。当前 launchd 的 `WorkingDirectory` 指向这里，生产启动脚本也来自这里；线上实际加载的构建产物由 `RADAR_OUTPUT_DIR` 独立决定。
 
 ### 生产运营目录
 
 `/Users/ylf/Desktop/型号追踪/xinghao-radar-deploy` 保存运行时状态，不作为开发仓库使用：
 
-- `releases/` 保存构建后的可运行版本；当前服务使用 `releases/20260908-221004-pr12/output`。
+- `releases/` 保存构建后的可运行版本；当前服务使用 `releases/20260909-102737-pr15-6a926d8/output`。
 - `data/pglite/` 保存业务数据，发布和回滚都不能删除、覆盖或提交到 Git。
 - `logs/` 保存服务日志，不提交到 Git。
 
 生产运营目录中历史遗留的源码、构建文件和未跟踪文件不得通过 `git clean` 清理；需要新版本时建立新的干净源码快照和新的 release 目录。
+
+## 自动拉取与自动部署
+
+生产 Mac 使用独立的 launchd 任务定时拉取 `origin/main`，配置模板为：
+
+`ops/com.xinghao-radar.auto-deploy.plist.example`
+
+安装后的任务标签是 `com.xinghao-radar.auto-deploy`，默认每 300 秒检查一次。它只跟踪已合并的 `main`，不会拉取或部署 feature 分支。
+
+流程如下：
+
+```text
+fetch origin/main
+    │
+    ├─ 生产源码有未提交修改 → 中止，不覆盖
+    ├─ 非快进历史 → 中止，等待人工处理
+    ├─ 只有文档/测试/CI 变化 → 同步生产源码，不重启线上
+    ├─ migrations/ 变化 → 默认阻断，需显式批准
+    └─ 普通运行时代码变化
+         → 临时 worktree
+         → npm ci + typecheck + test + build
+         → 校验 Nitro/PGlite 构建产物
+         → 新 release 目录
+         → 更新服务 plist 并重启
+         → /healthz 必须返回新 release
+         → 失败则恢复旧 plist、源码和线上 release
+```
+
+自动部署器不会把 `OPENROUTER_API_KEY`、平台 Token、数据库连接串或业务数据带入构建环境。生产数据仍只位于 `data/pglite/`，不进入 Git；涉及数据库迁移时，必须先完成数据备份和迁移评审，再设置 `AUTO_DEPLOY_ALLOW_MIGRATIONS=true` 执行一次。
+
+生产 Mac 上的核验命令：
+
+```bash
+launchctl print gui/$(id -u)/com.xinghao-radar.auto-deploy
+tail -n 100 /Users/ylf/Desktop/型号追踪/xinghao-radar-deploy/logs/auto-deploy.out.log
+AUTO_DEPLOY_DRY_RUN=true node /Users/ylf/Desktop/型号追踪/xinghao-radar-production/scripts/auto-deploy.mjs
+```
+
+手工回滚或排障时，先暂停 `com.xinghao-radar.auto-deploy`，避免它在人工操作期间再次拉取并覆盖生产状态。
 
 ## 服务配置位置
 
@@ -60,7 +100,7 @@ launchd 配置文件：
 
 ```text
 WorkingDirectory  = /Users/ylf/Desktop/型号追踪/xinghao-radar-production
-RADAR_OUTPUT_DIR  = /Users/ylf/Desktop/型号追踪/xinghao-radar-deploy/releases/20260908-221004-pr12/output
+RADAR_OUTPUT_DIR  = /Users/ylf/Desktop/型号追踪/xinghao-radar-deploy/releases/20260909-102737-pr15-6a926d8/output
 DATA_DIR          = /Users/ylf/Desktop/型号追踪/xinghao-radar-deploy/data
 StandardOutPath   = /Users/ylf/Desktop/型号追踪/xinghao-radar-deploy/logs/production.out.log
 StandardErrorPath = /Users/ylf/Desktop/型号追踪/xinghao-radar-deploy/logs/production.err.log
@@ -93,6 +133,6 @@ curl -fsS https://radar.newmindchen.com/healthz
 
 禁止将以下内容推送到 GitHub：生产 `data/`、上传文件、`logs/`、`.env`、API Key、Token、SSH 私钥、数据库连接串和真实业务数据。
 
-## PR13 状态
+## PR15 状态
 
-PR13 当前未部署。它的 GitHub `quality` 检查在 UTC 环境下因日期格式测试失败；同时 PR13 强制生产运行必须配置 `DATABASE_URL`，而当前生产使用 PGlite。修复 CI、明确数据库迁移方案并完成数据安全评估前，不得将 PR13 合并或部署。
+PR15 已合并并部署。它修复了 PR13 的 UTC 测试问题，明确生产数据库模式为 `pglite`，并通过迁移演练和生产 PGlite 演练后在真实生产数据上执行了 `0009_integrity_audit.sql`。上线前备份保存在生产运营目录的 `backups/` 下。
