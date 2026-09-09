@@ -44,6 +44,7 @@ import {
 import { ensureSeed } from "./seed";
 import { resolveDateCode } from "@/lib/inventory/date-code";
 import { sameNullableNumber } from "@/lib/import-duplicate";
+import { inquiryTpPersistenceIssue } from "@/lib/import-review";
 
 const IMPORT_KINDS = ["offer", "inquiry", "stock", "transit", "potential", "mixed"] as const;
 const IMPORT_PARSE_KINDS = [...IMPORT_KINDS, "neutral"] as const;
@@ -349,6 +350,9 @@ function rowsForImportReview(
     const eligible = targetKind !== "mixed" && Boolean(row.mpn.trim()) && !warning && !row.brandConflict;
     return {
       ...row,
+      ...(targetKind === "inquiry"
+        ? { costAmount: null, costCurrency: null, costTax: null }
+        : {}),
       kind: targetKind,
       warning,
       duplicate: false,
@@ -712,6 +716,8 @@ export const confirmImport = createServerFn({ method: "POST" })
       if (row.warning?.includes("多个型号候选"))
         throw new Error(`${row.mpn} 原始输入包含多个型号候选，请拆分为一行一个型号`);
       if (row.brandConflict) throw new Error(`${row.mpn} 存在品牌冲突，请人工修改并重新勾选`);
+      const tpIssue = inquiryTpPersistenceIssue(row, data.kind);
+      if (tpIssue) throw new Error(`${row.mpn}：${tpIssue}`);
     }
     for (const row of selected) {
       const effectiveKind = effectiveImportKind(row, data.kind);

@@ -23,9 +23,9 @@ export function renderStandaloneLoginPage() {
     <p class="eyebrow">型号雷达 · 安全登录</p>
     <h1 class="title">登录</h1>
     <p class="hint">请输入已分配的账号和密码。</p>
-    <form id="login-form" novalidate>
+    <form id="login-form" autocomplete="on" novalidate>
       <label for="login-email">邮箱</label>
-      <input id="login-email" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="none" required>
+      <input id="login-email" name="email" type="email" inputmode="email" autocomplete="username" autocapitalize="none" required>
       <label for="login-password">密码</label>
       <input id="login-password" name="password" type="password" autocomplete="current-password" minlength="8" required>
       <p id="error" role="alert"></p>
