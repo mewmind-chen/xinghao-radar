@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildConfig, formatReleaseId, hasMigrationChange, isRuntimePath } from "./auto-deploy.mjs";
+import {
+  buildConfig,
+  buildTestEnv,
+  formatReleaseId,
+  hasMigrationChange,
+  isRuntimePath,
+  sanitizeBuildEnv,
+} from "./auto-deploy.mjs";
 
 test("classifies documentation and fixture changes as non-runtime", () => {
   assert.equal(isRuntimePath("docs/PRODUCTION_OPERATIONS.md"), false);
@@ -32,4 +39,22 @@ test("production config defaults to the sibling operations directory", () => {
   assert.equal(config.remote, "origin");
   assert.equal(config.branch, "main");
   assert.equal(config.allowMigrations, false);
+});
+
+test("test commands use test mode while the build keeps production mode", () => {
+  const buildEnv = sanitizeBuildEnv({
+    NODE_ENV: "development",
+    DATABASE_URL: "unexpected",
+    OPENROUTER_API_KEY: "placeholder",
+    RADAR_OUTPUT_DIR: "/production/output",
+    RADAR_RELEASE: "production-release",
+  });
+  const testEnv = buildTestEnv(buildEnv);
+  assert.equal(buildEnv.NODE_ENV, "production");
+  assert.equal(testEnv.NODE_ENV, "test");
+  assert.equal(buildEnv.DATABASE_URL, "");
+  assert.equal(testEnv.DATABASE_URL, "");
+  assert.equal("OPENROUTER_API_KEY" in buildEnv, false);
+  assert.equal("RADAR_OUTPUT_DIR" in buildEnv, false);
+  assert.equal("RADAR_RELEASE" in buildEnv, false);
 });
