@@ -335,8 +335,8 @@ async function waitForHealth(config, expectedRelease) {
   throw new Error(`health check did not reach release ${expectedRelease}`);
 }
 
-function sanitizeBuildEnv() {
-  const env = { ...process.env, NODE_ENV: "production", DATABASE_URL: "" };
+export function sanitizeBuildEnv(inputEnv = process.env) {
+  const env = { ...inputEnv, NODE_ENV: "production", DATABASE_URL: "" };
   // A build must never receive production credentials or runtime pointers.
   for (const key of [
     "OPENROUTER_API_KEY",
@@ -347,6 +347,11 @@ function sanitizeBuildEnv() {
     delete env[key];
   }
   return env;
+}
+
+/** Keep test-only behavior deterministic while retaining the sanitized inputs. */
+export function buildTestEnv(buildEnv) {
+  return { ...buildEnv, NODE_ENV: "test" };
 }
 
 async function verifyOutput(outputDir) {
@@ -407,23 +412,24 @@ async function removeBuildWorktree(config, worktreeDir) {
 async function buildRelease(config, target, releaseId) {
   let worktreeDir;
   const buildEnv = sanitizeBuildEnv();
+  const testEnv = buildTestEnv(buildEnv);
   try {
     worktreeDir = await createBuildWorktree(config, target);
     log(`building ${target.slice(0, 12)} in isolated worktree`);
     await run(config.npm, ["ci"], {
       cwd: worktreeDir,
-      env: buildEnv,
+      env: testEnv,
       timeoutMs: config.commandTimeoutMs,
     });
     if (config.runTests) {
       await run(config.npm, ["run", "typecheck"], {
         cwd: worktreeDir,
-        env: buildEnv,
+        env: testEnv,
         timeoutMs: config.commandTimeoutMs,
       });
       await run(config.npm, ["test"], {
         cwd: worktreeDir,
-        env: buildEnv,
+        env: testEnv,
         timeoutMs: config.commandTimeoutMs,
       });
     } else {

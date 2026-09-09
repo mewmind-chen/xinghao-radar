@@ -78,7 +78,7 @@ fetch origin/main
          → 失败则恢复旧 plist、源码和线上 release
 ```
 
-自动部署器不会把 `OPENROUTER_API_KEY`、平台 Token、数据库连接串或业务数据带入构建环境。生产数据仍只位于 `data/pglite/`，不进入 Git；涉及数据库迁移时，必须先完成数据备份和迁移评审，再设置 `AUTO_DEPLOY_ALLOW_MIGRATIONS=true` 执行一次。
+自动部署器不会把 `OPENROUTER_API_KEY`、平台 Token、数据库连接串或业务数据带入构建环境。依赖安装、类型检查和测试使用 `NODE_ENV=test`，正式构建使用 `NODE_ENV=production`；生产数据仍只位于 `data/pglite/`，不进入 Git。涉及数据库迁移时，必须先完成数据备份和迁移评审，再设置 `AUTO_DEPLOY_ALLOW_MIGRATIONS=true` 执行一次。
 
 生产 Mac 上的核验命令：
 
