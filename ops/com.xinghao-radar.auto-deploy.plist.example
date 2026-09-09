@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.xinghao-radar.auto-deploy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/ylf/Desktop/型号追踪/xinghao-radar-production/scripts/auto-deploy.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ylf/Desktop/型号追踪/xinghao-radar-production</string>
+  <key>StandardOutPath</key>
+  <string>/Users/ylf/Desktop/型号追踪/xinghao-radar-deploy/logs/auto-deploy.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ylf/Desktop/型号追踪/xinghao-radar-deploy/logs/auto-deploy.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/ylf</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>AUTO_DEPLOY_SOURCE_DIR</key>
+    <string>/Users/ylf/Desktop/型号追踪/xinghao-radar-production</string>
+    <key>AUTO_DEPLOY_DEPLOY_DIR</key>
+    <string>/Users/ylf/Desktop/型号追踪/xinghao-radar-deploy</string>
+    <key>AUTO_DEPLOY_PLIST</key>
+    <string>/Users/ylf/Library/LaunchAgents/com.xinghao-radar.vite-dev.plist</string>
+    <key>AUTO_DEPLOY_REMOTE</key>
+    <string>origin</string>
+    <key>AUTO_DEPLOY_BRANCH</key>
+    <string>main</string>
+    <key>AUTO_DEPLOY_SERVICE_LABEL</key>
+    <string>com.xinghao-radar.vite-dev</string>
+    <key>AUTO_DEPLOY_PORT</key>
+    <string>8082</string>
+    <key>AUTO_DEPLOY_RUN_TESTS</key>
+    <string>true</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+</dict>
+</plist>
