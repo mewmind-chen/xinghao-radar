@@ -51,14 +51,31 @@ function LoginPage() {
             请使用老板创建并分配给你的正式账号。未配置角色的账号不会获得业务数据权限。
           </p>
         </div>
-        <form className="grid gap-3" onSubmit={submit}>
+        <form className="grid gap-3" onSubmit={submit} autoComplete="on">
           <div>
             <Label htmlFor="login-email">邮箱</Label>
-            <Input id="login-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+            <Input
+              id="login-email"
+              name="email"
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username"
+            />
           </div>
           <div>
             <Label htmlFor="login-password">密码</Label>
-          <Input id="login-password" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+            <Input
+              id="login-password"
+              name="password"
+              type="password"
+              required
+              minLength={8}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+            />
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <Button type="submit" disabled={busy} className="mt-1 w-full">
