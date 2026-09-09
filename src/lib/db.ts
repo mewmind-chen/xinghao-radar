@@ -12,12 +12,17 @@ const rawDatabaseUrl =
   typeof process !== "undefined" ? process.env.DATABASE_URL : undefined;
 const databaseUrl =
   rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl : undefined;
+const productionRuntime =
+  typeof process !== "undefined" && process.env.RADAR_RUNTIME === "production";
+if (productionRuntime && !databaseUrl) {
+  throw new Error("生产运行必须配置 DATABASE_URL；未连接数据库时拒绝启动");
+}
 
 /**
  * Active backend: real **Neon** when `DATABASE_URL` is set (deployed / configured
- * sandbox), otherwise a local embedded **PGLite** (Postgres compiled to WASM) so
- * the app has a working database even with nothing configured — the live preview
- * included. Swap in Neon later by just setting `DATABASE_URL`; no code changes.
+ * sandbox), otherwise a local embedded **PGLite** (Postgres compiled to WASM) for
+ * local preview only. The production runner sets `RADAR_RUNTIME=production` and
+ * fails closed when `DATABASE_URL` is absent.
  */
 export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
 

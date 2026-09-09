@@ -130,6 +130,23 @@ export function createAnalysisRepository(sql: Sql): AnalysisRepository {
   };
 }
 
+/** Move an analysis key using the caller's transaction connection. */
+export async function moveAnalysisKeyWithSql(sql: Sql, fromMpn: string, toMpn: string): Promise<void> {
+  const fromKey = analysisKey(fromMpn);
+  const toKey = analysisKey(toMpn);
+  if (fromKey === toKey || !fromKey || !toKey) return;
+  await sql.query(
+    "with moved as (" +
+      "insert into part_analyses (mpn_key, mpn, analyzed_at, source_url, analysis) " +
+      "select $1, $2, analyzed_at, source_url, analysis from part_analyses where mpn_key = $3 " +
+      "on conflict (mpn_key) do update set mpn = excluded.mpn, analyzed_at = excluded.analyzed_at, " +
+      "source_url = excluded.source_url, analysis = excluded.analysis " +
+      "returning mpn_key" +
+      ") delete from part_analyses where mpn_key = $3 and exists (select 1 from moved)",
+    [toKey, toMpn.trim(), fromKey],
+  );
+}
+
 async function repository(): Promise<AnalysisRepository> {
   const { getSql } = await import("../db");
   return createAnalysisRepository(await getSql());
@@ -151,7 +168,7 @@ export async function listAnalysisTimes(): Promise<Record<string, string>> {
 
 /** 主档修正后，把旧 mpn_key 的分析记录迁移到新 key（保留时间戳）。 */
 export async function moveAnalysisKey(fromMpn: string, toMpn: string): Promise<void> {
-  await (await repository()).moveAnalysisKey(fromMpn, toMpn);
+  await moveAnalysisKeyWithSql(await (await import("../db")).getSql(), fromMpn, toMpn);
 }
 
 /** 记录人对该型号分析的人工决定（接受/拒绝/修正）。Radar 拥有最终决定。 */

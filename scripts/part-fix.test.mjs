@@ -16,7 +16,8 @@ test("cleanBrand: 括号原文归一为品牌 code", () => {
 
 // 用真实抓取响应验证 resolved* 字段(供修正表单自动带入)
 import { readFileSync } from "node:fs";
-const real = JSON.parse(readFileSync("/tmp/lookup4.json", "utf8"));
+import { join } from "node:path";
+const real = JSON.parse(readFileSync(process.env.HQB_SAMPLE || join(process.cwd(), "scripts/fixtures/lookup4.json"), "utf8"));
 test("mapHqbResponse: resolvedMpn/resolvedBrand 从立创身份带入", async () => {
   const { mapHqbResponse } = await import("../src/lib/server/knowledge-map.ts");
   const a = mapHqbResponse(real);

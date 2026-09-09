@@ -12,6 +12,8 @@ import { serve } from "srvx/node";
 import { serveStatic } from "srvx/static";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+// Never let a deployed process silently fall back to private local PGlite.
+process.env.RADAR_RUNTIME ??= "production";
 const outputDir = resolve(process.env.RADAR_OUTPUT_DIR || resolve(root, ".vercel/output"));
 const staticDir = resolve(outputDir, "static");
 const entryPath = resolve(outputDir, "functions/__server.func/index.mjs");

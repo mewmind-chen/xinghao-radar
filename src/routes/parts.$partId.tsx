@@ -7,7 +7,7 @@ import { updatePartIdentity } from "@/lib/server/parts";
 import { listStock } from "@/lib/server/stock";
 import { receiveTransit, stockAdjust, stockMeta, stockOutbound, stockTransfer } from "@/lib/server/stock";
 import { setOfferValid, setInquiryValid, toggleWatch } from "@/lib/server/market";
-import { analyzePartMpn, getPartAnalysis } from "@/lib/server/knowledge";
+import { analyzePartMpn, getPartAnalysis, getPartReview, submitPartReview } from "@/lib/server/knowledge";
 import type { PartKnowledgeAnalysis } from "@/lib/server/knowledge";
 import {
   formatCost,
@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -71,7 +72,7 @@ function PartDetail() {
     queryKey: ["part", partId],
     queryFn: () => getPartDetail({ data: { id: partId } }),
   });
-  const meta = useQuery({ queryKey: ["stock-meta"], queryFn: () => stockMeta() });
+  const meta = useQuery({ queryKey: ["stock-meta"], queryFn: () => stockMeta(), enabled: canStockWrite });
   const d = q.data;
   const [op, setOp] = useState<null | "out" | "move" | "adj" | "recv">(null);
   const [lotId, setLotId] = useState<string | null>(null);
@@ -172,6 +173,24 @@ function PartDetail() {
     queryFn: () => getPartAnalysis({ data: { mpn: d?.part.mpn ?? "" } }),
     enabled: Boolean(d?.part.mpn),
     staleTime: 60_000,
+  });
+  const review = useQuery({
+    queryKey: ["part-review", d?.part.mpn],
+    queryFn: () => getPartReview({ data: { mpn: d?.part.mpn ?? "" } }),
+    enabled: Boolean(d?.part.mpn) && access.can("analysis.read"),
+    staleTime: 60_000,
+  });
+  const [reviewDecision, setReviewDecision] = useState<"accept" | "reject" | "corrected">("accept");
+  const [reviewNote, setReviewNote] = useState("");
+  const [correctedJson, setCorrectedJson] = useState("");
+  const reviewMut = useMutation({
+    mutationFn: () => submitPartReview({ data: { mpn: d?.part.mpn ?? "", decision: reviewDecision, note: reviewNote || undefined, correctedJson: reviewDecision === "corrected" ? correctedJson : undefined } }),
+    onSuccess: (result) => {
+      if (!result.ok) { toast.error(result.error || "保存决定失败"); return; }
+      void qc.invalidateQueries({ queryKey: ["part-review"] });
+      toast.success("人工校准已保存");
+    },
+    onError: (error: Error) => toast.error(error.message),
   });
 
   if (q.isLoading) {
@@ -500,6 +519,31 @@ function PartDetail() {
           analysis={analyzeMut.data}
           loading={analyzeMut.isPending}
         />
+        {access.can("analysis.write") && (
+          <div className="mt-4 rounded-lg border border-border bg-secondary/30 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-medium">人工校准</h3>
+                <p className="mt-1 text-[11px] text-muted-foreground">分析只是建议；最终决定由人工确认并保存在本地。</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <NativeSelect value={reviewDecision} onChange={(e) => setReviewDecision(e.target.value as typeof reviewDecision)} className="h-8 text-xs">
+                  <option value="accept">接受</option>
+                  <option value="reject">拒绝</option>
+                  <option value="corrected">修正</option>
+                </NativeSelect>
+                <Button size="sm" disabled={reviewMut.isPending || (reviewDecision === "corrected" && !correctedJson.trim())} onClick={() => reviewMut.mutate()}>
+                  {reviewMut.isPending ? "保存中…" : "保存决定"}
+                </Button>
+              </div>
+            </div>
+            {reviewDecision === "corrected" && (
+              <Textarea className="mt-2 min-h-20 font-mono text-xs" value={correctedJson} onChange={(e) => setCorrectedJson(e.target.value)} placeholder="提交修正：填写已人工确认的 JSON" aria-label="提交修正 JSON" />
+            )}
+            <Input className="mt-2 h-8 text-xs" value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} placeholder="备注（可选）" aria-label="人工校准备注" />
+            {review.data?.decision && <p className="mt-2 text-[11px] text-muted-foreground">上次决定：{review.data.decision} · {review.data.reviewer || "—"}</p>}
+          </div>
+        )}
       </section>
 
       {canModelWrite && <CorrectPartDialog

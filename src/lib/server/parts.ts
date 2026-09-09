@@ -11,7 +11,8 @@ import {
 } from "./helpers";
 import { displayMpn, formatInventoryQty, formatStockLine, iso, normalizeMpn } from "@/lib/domain";
 import { cleanBrand } from "./part-identity";
-import { listAnalysisTimes, moveAnalysisKey } from "./analysis-db";
+import { listAnalysisTimes, moveAnalysisKeyWithSql } from "./analysis-db";
+import { withTransaction, logOp } from "./helpers";
 import type { MatchFlags, Part } from "@/lib/types";
 
 export type PartListItem = Part & {
@@ -95,7 +96,8 @@ export const getPartDetail = createServerFn({ method: "GET" })
     const flagsMap = await matchFlagsForParts(sql, [part.id], settings, principal.userId, potentialScopeFor(principal));
     const flags = flagsMap.get(part.id)!;
 
-    const lots = await sql`
+    const canReadStock = principal.permissions.includes("stock.read");
+    const lots = !canReadStock ? [] : await sql`
       select l.*, w.code as wh_code, ch.name as supplier_name
       from stock_lots l
       left join warehouses w on w.id = l.warehouse_id
@@ -104,7 +106,7 @@ export const getPartDetail = createServerFn({ method: "GET" })
         and (l.qty_remaining > 0 or l.status = 'in_transit')
       order by l.status asc, l.inbound_at desc
     `;
-    const movements = await sql`
+    const movements = !canReadStock ? [] : await sql`
       select m.*, wf.code as from_code, wt.code as to_code
       from stock_movements m
       left join warehouses wf on wf.id = m.from_warehouse_id
@@ -131,10 +133,19 @@ export const getPartDetail = createServerFn({ method: "GET" })
       ? await sql`select 1 from potential_models where user_id = ${principal.userId} and part_id = ${part.id} limit 1`
       : [];
 
+    const publicFlags = canReadStock ? flags : {
+      ...flags,
+      onHand: 0,
+      byWarehouse: [],
+      inTransit: 0,
+      transitEtaLabel: null,
+      stock: false,
+      transit: false,
+    };
     return {
       part,
-      flags,
-      stockLine: formatStockLine(flags.byWarehouse, flags.inTransit, flags.transitEtaLabel),
+      flags: publicFlags,
+      stockLine: canReadStock ? formatStockLine(flags.byWarehouse, flags.inTransit, flags.transitEtaLabel) : "",
       watched: watched.length > 0,
       settings,
       lots: lots.map((r) => ({
@@ -253,7 +264,7 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "model.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "model.write");
     const sql = await sqlClient();
     const mpn = displayMpn(data.mpn ?? "");
     if (!mpn) throw new Error("型号不能为空");
@@ -269,18 +280,22 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
     if (clash[0]) throw new Error("同型号已存在于另一主档，请直接使用该档");
 
     const brand = data.brand ? cleanBrand(data.brand) : null;
-    await sql`
-      update parts set
-        mpn = ${mpn},
-        mpn_key = ${key},
-        brand_code = coalesce(${brand}, brand_code),
-        category = coalesce(${data.category ?? null}, category),
-        package = coalesce(${data.package ?? null}, package),
-        description = coalesce(${data.description ?? null}, description),
-        params = coalesce(${data.params ?? null}, params),
-        updated_at = now()
-      where id = ${id}
-    `;
-    await moveAnalysisKey(oldKey, mpn);
+    await withTransaction(sql, async (tx) => {
+      const before = await tx`select * from parts where id = ${id} for update`;
+      await tx`
+        update parts set
+          mpn = ${mpn},
+          mpn_key = ${key},
+          brand_code = coalesce(${brand}, brand_code),
+          category = coalesce(${data.category ?? null}, category),
+          package = coalesce(${data.package ?? null}, package),
+          description = coalesce(${data.description ?? null}, description),
+          params = coalesce(${data.params ?? null}, params),
+          updated_at = now()
+        where id = ${id}
+      `;
+      await moveAnalysisKeyWithSql(tx, oldKey, mpn);
+      await logOp(tx, "correct", "part", id, { principal, before: before[0], after: { id, mpn, mpnKey: key } });
+    });
     return { ok: true as const };
   });

@@ -25,6 +25,7 @@ import {
   isPermission,
 } from "@/lib/auth/roles";
 import { getSql } from "@/lib/db";
+import { logOp } from "./helpers";
 
 export type AppUserRow = {
   userId: string;
@@ -201,6 +202,10 @@ export const createAppUser = createServerFn({ method: "POST" })
         insert into app_users (user_id, email, display_name, role, status)
         values (${created.id}, ${email}, ${name}, ${data.role}, ${data.status})
       `;
+      await logOp(sql, "create", "user", created.id, {
+        principal,
+        after: { userId: created.id, email, displayName: name, role: data.role, status: data.status },
+      });
       return await appUserById(sql, created.id);
     } catch (error) {
       if (created) await ctx.internalAdapter.deleteUser(created.id).catch(() => undefined);
@@ -288,6 +293,7 @@ export const updateAppUser = createServerFn({ method: "POST" })
       select "id" from "user" where lower(trim("email")) = ${email} and "id" <> ${userId} limit 1
     `;
     if (duplicate[0]) throw new ForbiddenError("登录账号已存在");
+    const before = await sql`select * from app_users where user_id = ${userId} limit 1`;
     if (hasProfile) {
       const ctx = await auth.$context;
       await ctx.internalAdapter.updateUser(userId, { name, email });
@@ -298,6 +304,11 @@ export const updateAppUser = createServerFn({ method: "POST" })
       `;
     }
     if (hasRoleStatus) await updateRoleAndStatus(sql, userId, data.role, data.status);
+    await logOp(sql, "update", "user", userId, {
+      principal,
+      before: before[0] ?? identity[0],
+      after: { userId, email, displayName: name, role: data.role ?? before[0]?.role ?? null, status: data.status ?? before[0]?.status ?? "active" },
+    });
     return await appUserById(sql, userId);
   });
 
@@ -321,6 +332,7 @@ export const setUserPassword = createServerFn({ method: "POST" })
     if (account) await ctx.internalAdapter.updateAccount(account.id, { password: passwordHash });
     else await ctx.internalAdapter.linkAccount({ userId: targetUserId, providerId: "credential", accountId: targetUserId, password: passwordHash });
     await deleteTargetSessions(targetUserId);
+    await logOp(sql, "reset_password", "user", targetUserId, { principal, detail: "管理员重置密码，目标会话已失效" });
     return { ok: true as const };
   });
 
@@ -339,6 +351,8 @@ export const changeOwnPassword = createServerFn({ method: "POST" })
     const passwordHash = await ctx.password.hash(password);
     await ctx.internalAdapter.updateAccount(account.id, { password: passwordHash });
     await deleteTargetSessions(principal.actorUserId);
+    const sql = await getSql();
+    await logOp(sql, "change_password", "user", principal.actorUserId, { principal, detail: "本人修改密码，旧会话已失效" });
     return { ok: true as const };
   });
 
@@ -410,6 +424,7 @@ export const updatePermissionGroup = createServerFn({ method: "POST" })
     );
     if (result.length !== 1) throw new ForbiddenError("固定权限组不存在，已拒绝保存");
     if (!permissionsFromGroupRow(data.role, result[0])) throw new ForbiddenError("保存后的权限组校验失败");
+    await logOp(sql, "update", "permission_group", key, { principal, after: { role: data.role, permissions } });
     return { ok: true as const, role: data.role, permissions };
   });
 
@@ -430,6 +445,7 @@ export const startIdentityCheck = createServerFn({ method: "POST" })
         insert into identity_checks (session_key, actor_user_id, target_user_id)
         values (${key}, ${principal.actorUserId}, ${data.targetUserId})
       `;
+      await logOp(tx, "start", "identity_check", key, { principal, after: { targetUserId: data.targetUserId } });
     });
     return { ok: true as const };
   });
@@ -489,6 +505,8 @@ export const exitIdentityCheck = createServerFn({ method: "POST" })
     const principal = requireRealBoss(await requirePrincipal(context.bearerToken, { ignoreIdentityCheck: true }));
     requireRole(principal, "identity.check");
     const sql = await getSql();
-    await sql`delete from identity_checks where session_key = ${sessionKeyForRequest(context.bearerToken)}`;
+    const key = sessionKeyForRequest(context.bearerToken);
+    await sql`delete from identity_checks where session_key = ${key}`;
+    await logOp(sql, "exit", "identity_check", key, { principal, after: { active: false } });
     return { ok: true as const };
   });

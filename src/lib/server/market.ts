@@ -18,6 +18,7 @@ import {
   matchFlagsForParts,
   nid,
   sqlClient,
+  withTransaction,
 } from "./helpers";
 import { ensureSeed } from "./seed";
 
@@ -43,28 +44,34 @@ export const upsertChannel = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { name: string }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    return ensureChannel(sql, data.name, { requireActive: false });
+    const channel = await ensureChannel(sql, data.name, { requireActive: false });
+    await logOp(sql, "upsert", "channel", channel.id, { principal, after: { name: channel.name } });
+    return channel;
   });
 
 export const upsertCustomer = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { name: string }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    return ensureCustomer(sql, data.name);
+    const customer = await ensureCustomer(sql, data.name);
+    await logOp(sql, "upsert", "customer", customer.id, { principal, after: { name: customer.name } });
+    return customer;
   });
 
 export const setChannelActive = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { id: string; isActive: boolean }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    await sql`update channels set is_active = ${data.isActive} where id = ${data.id}`;
-    await logOp(sql, data.isActive ? "enable" : "disable", "channel", data.id);
+    const before = await sql`select * from channels where id = ${data.id} limit 1`;
+    const after = await sql`update channels set is_active = ${data.isActive} where id = ${data.id} returning *`;
+    if (!after[0]) throw new Error("渠道不存在");
+    await logOp(sql, data.isActive ? "enable" : "disable", "channel", data.id, { principal, before: before[0], after: after[0] });
     return { ok: true as const };
   });
 
@@ -72,10 +79,12 @@ export const setCustomerActive = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { id: string; isActive: boolean }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    await sql`update customers set is_active = ${data.isActive} where id = ${data.id}`;
-    await logOp(sql, data.isActive ? "enable" : "disable", "customer", data.id);
+    const before = await sql`select * from customers where id = ${data.id} limit 1`;
+    const after = await sql`update customers set is_active = ${data.isActive} where id = ${data.id} returning *`;
+    if (!after[0]) throw new Error("客户不存在");
+    await logOp(sql, data.isActive ? "enable" : "disable", "customer", data.id, { principal, before: before[0], after: after[0] });
     return { ok: true as const };
   });
 
@@ -98,12 +107,18 @@ export type OfferListItem = {
   isValid: boolean;
   flags: MatchFlags | null;
   stockLine: string;
+  historyReason?: string | null;
 };
+
+function pageValue(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? Math.min(Math.max(parsed, min), max) : fallback;
+}
 
 export const listOffers = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .validator(
-    (input: { scope?: "valid" | "history" | "all"; q?: string; channelId?: string } | undefined) =>
+    (input: { scope?: "valid" | "history" | "all"; q?: string; channelId?: string; limit?: number; offset?: number } | undefined) =>
       input ?? {},
   )
   .handler(async ({ data, context }) => {
@@ -112,15 +127,32 @@ export const listOffers = createServerFn({ method: "GET" })
     const sql = await sqlClient();
     await ensureSeed(sql);
     const settings = await getSettings(sql);
-    const rows = await sql`
-      select o.*, ch.name as channel_name, ch.is_active as channel_active, p.mpn, p.brand_code
-      from channel_offers o
-      join channels ch on ch.id = o.channel_id
-      join parts p on p.id = o.part_id
-      where o.deleted_at is null
-      order by o.offered_at desc
-      limit 400
-    `;
+    const limit = pageValue(data.limit, 100, 1, 200);
+    const offset = pageValue(data.offset, 0, 0, 100_000_000);
+    const params: unknown[] = [];
+    const where = ["o.deleted_at is null"];
+    if (data.scope === "valid") where.push("o.is_valid = true and ch.is_active = true");
+    if (data.scope === "history") where.push("(o.is_valid = false or ch.is_active = false)");
+    if (data.channelId) {
+      params.push(data.channelId);
+      where.push(`o.channel_id = $${params.length}`);
+    }
+    if (data.q?.trim()) {
+      params.push(`%${data.q.trim()}%`);
+      const qParam = `$${params.length}`;
+      where.push(`(p.mpn ilike ${qParam} or coalesce(p.brand_code, '') ilike ${qParam} or ch.name ilike ${qParam})`);
+    }
+    const whereSql = where.join(" and ");
+    const countRows = await sql.query<{ n: number }>(
+      `select count(*)::int as n from channel_offers o join channels ch on ch.id = o.channel_id join parts p on p.id = o.part_id where ${whereSql}`,
+      params,
+    );
+    const rows = await sql.query<Record<string, unknown>>(
+      `select o.*, ch.name as channel_name, ch.is_active as channel_active, p.mpn, p.brand_code
+       from channel_offers o join channels ch on ch.id = o.channel_id join parts p on p.id = o.part_id
+       where ${whereSql} order by o.offered_at desc limit $${params.length + 1} offset $${params.length + 2}`,
+      [...params, limit, offset],
+    );
     const flags = await matchFlagsForParts(
       sql,
       [...new Set(rows.map((r) => String(r.part_id)))],
@@ -128,13 +160,13 @@ export const listOffers = createServerFn({ method: "GET" })
       principal.userId,
       potentialScopeFor(principal),
     );
-    let items: OfferListItem[] = rows.map((r) => {
+    const items: OfferListItem[] = rows.map((r) => {
       const f = flags.get(String(r.part_id)) ?? null;
       return {
         id: String(r.id),
         channelId: String(r.channel_id),
         channelName: String(r.channel_name),
-        channelActive: Boolean(r.channel_active),
+        channelActive: r.channel_active === true,
         partId: String(r.part_id),
         mpn: String(r.mpn),
         brandCode: r.brand_code ? String(r.brand_code) : null,
@@ -143,26 +175,19 @@ export const listOffers = createServerFn({ method: "GET" })
         priceAmount: r.price_amount != null ? Number(r.price_amount) : null,
         priceCurrency: asCurrency(r.price_currency),
         priceTax: asCostTax(r.price_tax),
-        isTp: Boolean(r.is_tp),
+        isTp: r.is_tp === true,
         leadTimeText: r.lead_time_text ? String(r.lead_time_text) : null,
         offeredAt: iso(r.offered_at),
-        isValid: Boolean(r.is_valid),
+        isValid: r.is_valid === true,
         flags: f,
         stockLine: f ? formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel) : "",
+        historyReason: r.is_valid !== true
+          ? "记录已停用"
+          : r.channel_active !== true
+            ? "渠道已停用"
+            : null,
       };
     });
-    if (data.scope === "valid") items = items.filter((i) => i.isValid && i.channelActive);
-    if (data.scope === "history") items = items.filter((i) => !i.isValid);
-    if (data.channelId) items = items.filter((i) => i.channelId === data.channelId);
-    if (data.q) {
-      const q = data.q.trim().toUpperCase();
-      items = items.filter(
-        (i) =>
-          i.mpn.toUpperCase().includes(q) ||
-          i.channelName.includes(data.q!) ||
-          (i.brandCode ?? "").toUpperCase().includes(q),
-      );
-    }
     const channels = (await sql`select * from channels order by name`).map(mapChannel);
     return {
       items,
@@ -170,6 +195,10 @@ export const listOffers = createServerFn({ method: "GET" })
       activeChannels: channels.filter((channel) => channel.isActive),
       disabledChannels: channels.filter((channel) => !channel.isActive),
       settings,
+      total: Number(countRows[0]?.n ?? 0),
+      limit,
+      offset,
+      hasMore: offset + items.length < Number(countRows[0]?.n ?? 0),
     };
   });
 
@@ -186,12 +215,13 @@ export type InquiryListItem = {
   isValid: boolean;
   flags: MatchFlags | null;
   stockLine: string;
+  historyReason?: string | null;
 };
 
 export const listInquiries = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .validator(
-    (input: { scope?: "valid" | "history" | "all"; q?: string; customerId?: string } | undefined) =>
+    (input: { scope?: "valid" | "history" | "all"; q?: string; customerId?: string; limit?: number; offset?: number } | undefined) =>
       input ?? {},
   )
   .handler(async ({ data, context }) => {
@@ -200,15 +230,32 @@ export const listInquiries = createServerFn({ method: "GET" })
     const sql = await sqlClient();
     await ensureSeed(sql);
     const settings = await getSettings(sql);
-    const rows = await sql`
-      select i.*, c.name as customer_name, c.is_active as customer_active, p.mpn, p.brand_code
-      from customer_inquiries i
-      join customers c on c.id = i.customer_id
-      join parts p on p.id = i.part_id
-      where i.deleted_at is null
-      order by i.inquired_at desc
-      limit 400
-    `;
+    const limit = pageValue(data.limit, 100, 1, 200);
+    const offset = pageValue(data.offset, 0, 0, 100_000_000);
+    const params: unknown[] = [];
+    const where = ["i.deleted_at is null"];
+    if (data.scope === "valid") where.push("i.is_valid = true and c.is_active = true");
+    if (data.scope === "history") where.push("(i.is_valid = false or c.is_active = false)");
+    if (data.customerId) {
+      params.push(data.customerId);
+      where.push(`i.customer_id = $${params.length}`);
+    }
+    if (data.q?.trim()) {
+      params.push(`%${data.q.trim()}%`);
+      const qParam = `$${params.length}`;
+      where.push(`(p.mpn ilike ${qParam} or coalesce(p.brand_code, '') ilike ${qParam} or c.name ilike ${qParam})`);
+    }
+    const whereSql = where.join(" and ");
+    const countRows = await sql.query<{ n: number }>(
+      `select count(*)::int as n from customer_inquiries i join customers c on c.id = i.customer_id join parts p on p.id = i.part_id where ${whereSql}`,
+      params,
+    );
+    const rows = await sql.query<Record<string, unknown>>(
+      `select i.*, c.name as customer_name, c.is_active as customer_active, p.mpn, p.brand_code
+       from customer_inquiries i join customers c on c.id = i.customer_id join parts p on p.id = i.part_id
+       where ${whereSql} order by i.inquired_at desc limit $${params.length + 1} offset $${params.length + 2}`,
+      [...params, limit, offset],
+    );
     const flags = await matchFlagsForParts(
       sql,
       [...new Set(rows.map((r) => String(r.part_id)))],
@@ -216,37 +263,31 @@ export const listInquiries = createServerFn({ method: "GET" })
       principal.userId,
       potentialScopeFor(principal),
     );
-    let items: InquiryListItem[] = rows.map((r) => {
+    const items: InquiryListItem[] = rows.map((r) => {
       const f = flags.get(String(r.part_id)) ?? null;
       return {
         id: String(r.id),
         customerId: String(r.customer_id),
         customerName: String(r.customer_name),
-        customerActive: Boolean(r.customer_active),
+        customerActive: r.customer_active === true,
         partId: String(r.part_id),
         mpn: String(r.mpn),
         brandCode: r.brand_code ? String(r.brand_code) : null,
         qty: r.qty != null ? Number(r.qty) : null,
         inquiredAt: iso(r.inquired_at),
-        isValid: Boolean(r.is_valid),
+        isValid: r.is_valid === true,
         flags: f,
         stockLine: f ? formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel) : "",
+        historyReason: r.is_valid !== true
+          ? "记录已停用"
+          : r.customer_active !== true
+            ? "客户已停用"
+            : null,
       };
     });
-    if (data.scope === "valid") items = items.filter((i) => i.isValid && i.customerActive);
-    if (data.scope === "history") items = items.filter((i) => !i.isValid);
-    if (data.customerId) items = items.filter((i) => i.customerId === data.customerId);
-    if (data.q) {
-      const q = data.q.trim().toUpperCase();
-      items = items.filter(
-        (i) =>
-          i.mpn.toUpperCase().includes(q) ||
-          i.customerName.includes(data.q!) ||
-          (i.brandCode ?? "").toUpperCase().includes(q),
-      );
-    }
     const customers = (await sql`select * from customers order by name`).map(mapCustomer);
-    return { items, customers, settings };
+    const total = Number(countRows[0]?.n ?? 0);
+    return { items, customers, settings, total, limit, offset, hasMore: offset + items.length < total };
   });
 
 export const createOffer = createServerFn({ method: "POST" })
@@ -265,22 +306,26 @@ export const createOffer = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    const part = await ensurePart(sql, data.mpn, { source: "渠道" });
-    const ch = await ensureChannel(sql, data.channel, { requireActive: true });
     const id = nid();
-    await sql`
-      insert into channel_offers (
-        id, channel_id, part_id, qty, date_code, price_amount, price_currency, price_tax, is_tp, lead_time_text
-      ) values (
-        ${id}, ${ch.id}, ${part.id}, ${data.qty ?? null}, ${data.dateCode ?? null},
-        ${data.priceAmount ?? null}, ${data.priceCurrency ?? null}, ${data.priceTax ?? null},
-        ${data.isTp ?? false}, ${data.leadTimeText ?? null}
-      )
-    `;
-    await sql`update parts set updated_at = now() where id = ${part.id}`;
-    const principal = await getCurrentPrincipal(context.bearerToken);
+    const partAndChannel = await withTransaction(sql, async (tx) => {
+      const part = await ensurePart(tx, data.mpn, { source: "渠道" });
+      const ch = await ensureChannel(tx, data.channel, { requireActive: true });
+      await tx`
+        insert into channel_offers (
+          id, channel_id, part_id, qty, date_code, price_amount, price_currency, price_tax, is_tp, lead_time_text
+        ) values (
+          ${id}, ${ch.id}, ${part.id}, ${data.qty ?? null}, ${data.dateCode ?? null},
+          ${data.priceAmount ?? null}, ${data.priceCurrency ?? null}, ${data.priceTax ?? null},
+          ${data.isTp ?? false}, ${data.leadTimeText ?? null}
+        )
+      `;
+      await tx`update parts set updated_at = now() where id = ${part.id}`;
+      await logOp(tx, "create", "offer", id, { principal, after: { partId: part.id, channelId: ch.id, qty: data.qty ?? null } });
+      return { part, ch };
+    });
+    const part = partAndChannel.part;
     const flags = await matchFlagsForParts(sql, [part.id], undefined, principal.userId, potentialScopeFor(principal));
     return { id, partId: part.id, flags: flags.get(part.id)! };
   });
@@ -289,17 +334,21 @@ export const createInquiry = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { customer: string; mpn: string; qty?: number | null }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    const part = await ensurePart(sql, data.mpn, { source: "询价" });
-    const cu = await ensureCustomer(sql, data.customer);
     const id = nid();
-    await sql`
-      insert into customer_inquiries (id, customer_id, part_id, qty)
-      values (${id}, ${cu.id}, ${part.id}, ${data.qty ?? null})
-    `;
-    await sql`update parts set updated_at = now() where id = ${part.id}`;
-    const principal = await getCurrentPrincipal(context.bearerToken);
+    const partAndCustomer = await withTransaction(sql, async (tx) => {
+      const part = await ensurePart(tx, data.mpn, { source: "询价" });
+      const cu = await ensureCustomer(tx, data.customer);
+      await tx`
+        insert into customer_inquiries (id, customer_id, part_id, qty)
+        values (${id}, ${cu.id}, ${part.id}, ${data.qty ?? null})
+      `;
+      await tx`update parts set updated_at = now() where id = ${part.id}`;
+      await logOp(tx, "create", "inquiry", id, { principal, after: { partId: part.id, customerId: cu.id, qty: data.qty ?? null } });
+      return { part, cu };
+    });
+    const part = partAndCustomer.part;
     const flags = await matchFlagsForParts(sql, [part.id], undefined, principal.userId, potentialScopeFor(principal));
     return { id, partId: part.id, flags: flags.get(part.id)! };
   });
@@ -308,16 +357,21 @@ export const setOfferValid = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { ids: string[]; isValid: boolean }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    for (const id of data.ids) {
-      await sql`
-        update channel_offers
-        set is_valid = ${data.isValid}, invalidated_at = ${data.isValid ? null : new Date().toISOString()}
-        where id = ${id} and deleted_at is null
-      `;
-      await logOp(sql, data.isValid ? "restore" : "invalidate", "offer", id);
-    }
+    const ids = [...new Set(data.ids)].filter(Boolean);
+    if (!ids.length) throw new Error("没有选择记录");
+    await withTransaction(sql, async (tx) => {
+      for (const id of ids) {
+        const before = await tx`select * from channel_offers where id = ${id} and deleted_at is null for update`;
+        if (!before[0]) throw new Error("存在不可操作的渠道记录");
+        const after = await tx`
+          update channel_offers set is_valid = ${data.isValid}, invalidated_at = ${data.isValid ? null : new Date().toISOString()}
+          where id = ${id} and deleted_at is null returning *
+        `;
+        await logOp(tx, data.isValid ? "restore" : "invalidate", "offer", id, { principal, before: before[0], after: after[0] });
+      }
+    });
     return { ok: true as const };
   });
 
@@ -325,16 +379,21 @@ export const setInquiryValid = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { ids: string[]; isValid: boolean }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    for (const id of data.ids) {
-      await sql`
-        update customer_inquiries
-        set is_valid = ${data.isValid}, invalidated_at = ${data.isValid ? null : new Date().toISOString()}
-        where id = ${id} and deleted_at is null
-      `;
-      await logOp(sql, data.isValid ? "restore" : "invalidate", "inquiry", id);
-    }
+    const ids = [...new Set(data.ids)].filter(Boolean);
+    if (!ids.length) throw new Error("没有选择记录");
+    await withTransaction(sql, async (tx) => {
+      for (const id of ids) {
+        const before = await tx`select * from customer_inquiries where id = ${id} and deleted_at is null for update`;
+        if (!before[0]) throw new Error("存在不可操作的询价记录");
+        const after = await tx`
+          update customer_inquiries set is_valid = ${data.isValid}, invalidated_at = ${data.isValid ? null : new Date().toISOString()}
+          where id = ${id} and deleted_at is null returning *
+        `;
+        await logOp(tx, data.isValid ? "restore" : "invalidate", "inquiry", id, { principal, before: before[0], after: after[0] });
+      }
+    });
     return { ok: true as const };
   });
 
@@ -342,12 +401,18 @@ export const softDeleteOffers = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { ids: string[] }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    for (const id of data.ids) {
-      await sql`update channel_offers set deleted_at = now() where id = ${id}`;
-      await logOp(sql, "delete", "offer", id);
-    }
+    const ids = [...new Set(data.ids)].filter(Boolean);
+    if (!ids.length) throw new Error("没有选择记录");
+    await withTransaction(sql, async (tx) => {
+      for (const id of ids) {
+        const before = await tx`select * from channel_offers where id = ${id} and deleted_at is null for update`;
+        if (!before[0]) throw new Error("存在不可删除的渠道记录");
+        const after = await tx`update channel_offers set deleted_at = now() where id = ${id} returning *`;
+        await logOp(tx, "delete", "offer", id, { principal, before: before[0], after: after[0] });
+      }
+    });
     return { ok: true as const };
   });
 
@@ -355,12 +420,18 @@ export const softDeleteInquiries = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { ids: string[] }) => input)
   .handler(async ({ data, context }) => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
+    const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
-    for (const id of data.ids) {
-      await sql`update customer_inquiries set deleted_at = now() where id = ${id}`;
-      await logOp(sql, "delete", "inquiry", id);
-    }
+    const ids = [...new Set(data.ids)].filter(Boolean);
+    if (!ids.length) throw new Error("没有选择记录");
+    await withTransaction(sql, async (tx) => {
+      for (const id of ids) {
+        const before = await tx`select * from customer_inquiries where id = ${id} and deleted_at is null for update`;
+        if (!before[0]) throw new Error("存在不可删除的询价记录");
+        const after = await tx`update customer_inquiries set deleted_at = now() where id = ${id} returning *`;
+        await logOp(tx, "delete", "inquiry", id, { principal, before: before[0], after: after[0] });
+      }
+    });
     return { ok: true as const };
   });
 
@@ -370,7 +441,7 @@ export const listWatchlist = createServerFn({ method: "GET" })
   const principal = requirePotential(await getCurrentPrincipal(context.bearerToken), "potential.read");
   const sql = await sqlClient();
   await ensureSeed(sql);
-  const rows = !principal.permissions.includes("market.read")
+  const rows = potentialScopeFor(principal) === "own"
     ? await sql`
         select w.part_id, w.note, w.created_at as added_at, p.*
         from potential_models w join parts p on p.id = w.part_id
