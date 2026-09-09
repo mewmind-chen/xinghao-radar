@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import {
   buildConfig,
   buildTestEnv,
@@ -35,7 +36,7 @@ test("release ids contain a sortable timestamp and commit", () => {
 
 test("production config defaults to the sibling operations directory", () => {
   const config = buildConfig({ AUTO_DEPLOY_SOURCE_DIR: "/srv/radar/source" });
-  assert.equal(config.deployDir, "/srv/radar/xinghao-radar-deploy");
+  assert.equal(config.deployDir, resolve("/srv/radar/xinghao-radar-deploy"));
   assert.equal(config.remote, "origin");
   assert.equal(config.branch, "main");
   assert.equal(config.allowMigrations, false);
