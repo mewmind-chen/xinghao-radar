@@ -29,11 +29,39 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useAppAccess } from "@/lib/auth/use-app-access";
 import { resolveDateCode } from "@/lib/inventory/date-code";
-import { selectionState, withSelectedIds } from "@/lib/import-review";
+import {
+  fillMissingCustomer,
+  inquiryReviewBlockingReason,
+  inquiryReviewStatus,
+  selectionState,
+  withSelectedIds,
+} from "@/lib/import-review";
+
+const INQUIRY_TABLE_COLUMNS = [
+  { key: "select", label: "", width: "4%" },
+  { key: "mpn", label: "型号", width: "21%" },
+  { key: "brand", label: "品牌", width: "10%" },
+  { key: "kind", label: "业务类型", width: "10%" },
+  { key: "customer", label: "客户", width: "16%" },
+  { key: "qty", label: "数量", width: "9%" },
+  { key: "tp", label: "TP（接受价）", width: "12%" },
+  { key: "currency", label: "币种", width: "8%" },
+  { key: "status", label: "状态", width: "10%" },
+] as const;
+type InquiryTableColumnKey = (typeof INQUIRY_TABLE_COLUMNS)[number]["key"];
+const INQUIRY_TABLE_CELL_CLASS = "box-border px-2 py-2 align-top";
 
 export const Route = createFileRoute("/import")({ component: ImportPage });
 
@@ -64,16 +92,23 @@ function fileSize(size: number): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function compositeMpnReason(mpn: string): string | null {
-  return /\s+(?:\/|\||或)\s+/.test(mpn.trim()) || /[／｜]/.test(mpn.trim())
-    ? "型号包含多个候选，请拆分为一行一个型号"
-    : null;
-}
-
 function shortStatus(
   row: ImportRow,
   blocking: string | null,
+  mode: "inquiry" | "default" = "default",
 ): { label: string; detail: string | null; tone: string } {
+  if (mode === "inquiry") {
+    const status = inquiryReviewStatus(row, blocking);
+    const tone =
+      status.label === "需修改"
+        ? "border-destructive/40 bg-destructive/10 text-destructive"
+        : status.label === "重复"
+          ? "border-warn/40 bg-warn/10 text-warn"
+          : status.label === "已确认"
+            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
+            : "border-border bg-secondary/40 text-foreground";
+    return { ...status, tone };
+  }
   if (row.brandConflict)
     return {
       label: "品牌冲突",
@@ -145,6 +180,7 @@ function ImportPage() {
   const [activity, setActivity] = useState<ImportActivity>({ state: "idle", label: "等待输入" });
   const [attachment, setAttachment] = useState<ImportAttachment | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [customerFillDialogOpen, setCustomerFillDialogOpen] = useState(false);
   const [voiceState, setVoiceState] = useState<
     "idle" | "recording" | "stopped" | "recognized" | "unsupported" | "permission-failed"
   >("idle");
@@ -157,7 +193,6 @@ function ImportPage() {
   const parseGenerationRef = useRef(0);
   const reviewGenerationRef = useRef(0);
   const [reviewedKind, setReviewedKind] = useState<ImportKind | null>(null);
-
   useEffect(() => {
     const preset = new URLSearchParams(window.location.search).get("kind");
     if (
@@ -201,6 +236,8 @@ function ImportPage() {
     kind: ImportKind;
     rows: ImportRow[];
     generation: number;
+    preserveSelection?: boolean;
+    preservedSelectionIds?: string[];
   };
 
   const reviewMut = useMutation({
@@ -227,11 +264,15 @@ function ImportPage() {
     },
     onSuccess: (r, variables) => {
       if (variables.generation !== reviewGenerationRef.current) return;
-      const preservedSelection = new Set(selectedIds);
-      const preserveExistingSelection = preservedSelection.size > 0 || (rows?.some((row) => row.selected) ?? false);
+      const preservedSelection = new Set(variables.preservedSelectionIds ?? selectedIds);
+      const preserveExistingSelection =
+        variables.preserveSelection !== false &&
+        (preservedSelection.size > 0 || (rows?.some((row) => row.selected) ?? false));
       const nextSelection = new Set(
         r.rows
-          .filter((row) => (preserveExistingSelection ? preservedSelection.has(row.id) : row.selected))
+          .filter((row) =>
+            preserveExistingSelection ? preservedSelection.has(row.id) : row.selected,
+          )
           .map((row) => row.id),
       );
       setSelectedIds(nextSelection);
@@ -630,38 +671,33 @@ function ImportPage() {
   function rowBlockingReason(row: ImportRow): string | null {
     if (!kind) return "请先选择导入类型";
     if (!row.mpn.trim()) return "型号为空";
-    if (compositeMpnReason(row.mpn)) return compositeMpnReason(row.mpn);
-    if (row.warning?.includes("多个型号候选")) return row.warning;
-    if (row.brandConflict) return row.brandConflict;
     const targetKind = kind === "mixed" ? row.kind : kind;
     if (targetKind === "mixed") return "业务类型未确定";
+    if (targetKind === "inquiry") return inquiryReviewBlockingReason(row, customer);
+    if (row.brandConflict) return row.brandConflict;
     if (targetKind === "offer" && !row.channel && !channel) return "缺少渠道";
-    if (targetKind === "inquiry" && !row.customer && !customer) return "缺少客户";
-    if (
-      targetKind === "inquiry" &&
-      (row.priceAmount != null || row.priceCurrency != null || row.isTp)
-    ) {
-      return "TP需先完成独立字段改造，当前写入已阻断";
-    }
     return stockRowError(row);
   }
 
   const reviewRows = rows ?? [];
   const eligibleIds = new Set(
-    reviewRows.filter((row) => !rowBlockingReason(row)).map((row) => row.id),
+    reviewRows.filter((row) => !rowBlockingReason(row) && !row.duplicate).map((row) => row.id),
   );
   const selection = selectionState(reviewRows, eligibleIds, selectedIds);
   const selectedCount = selection.selectedCount;
-  const blockingCount = reviewRows.filter(
-    (row) => selectedIds.has(row.id) && rowBlockingReason(row),
-  ).length;
+  const blockingCount = reviewRows.filter((row) => rowBlockingReason(row)).length;
+  const missingCustomerCount =
+    kind === "inquiry" ? reviewRows.filter((row) => !row.customer?.trim()).length : 0;
   const visibleRows =
     rows
       ?.map((row, idx) => ({ row, idx }))
       .filter(({ row }) => {
         const matchesQuery =
           !rowQuery.trim() ||
-          [row.mpn, row.brand, row.dateCode, row.warehouse, row.channel, row.customer]
+          (kind === "inquiry"
+            ? [row.mpn, row.brand, row.customer]
+            : [row.mpn, row.brand, row.dateCode, row.warehouse, row.channel, row.customer]
+          )
             .filter(Boolean)
             .join(" ")
             .toUpperCase()
@@ -673,8 +709,12 @@ function ImportPage() {
           (rowFilter === "duplicate" && row.duplicate);
         return matchesQuery && matchesFilter;
       }) ?? [];
-  const eligibleVisibleRows = visibleRows.filter(({ row }) => !rowBlockingReason(row));
-  const selectedVisibleCount = eligibleVisibleRows.filter(({ row }) => selectedIds.has(row.id)).length;
+  const eligibleVisibleRows = visibleRows.filter(
+    ({ row }) => !rowBlockingReason(row) && !row.duplicate,
+  );
+  const selectedVisibleCount = eligibleVisibleRows.filter(({ row }) =>
+    selectedIds.has(row.id),
+  ).length;
   const allVisibleSelected =
     eligibleVisibleRows.length > 0 && selectedVisibleCount === eligibleVisibleRows.length;
   const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
@@ -700,6 +740,34 @@ function ImportPage() {
     setRows((current) => current?.map((row) => ({ ...row, selected: false })) ?? null);
   }
 
+  function applyCustomerFill() {
+    if (!rows || kind !== "inquiry") return;
+    if (!customer.trim()) {
+      toast.error("请先选择或输入客户");
+      return;
+    }
+    const filled = fillMissingCustomer(rows, customer);
+    if (filled.affectedCount === 0) {
+      setCustomerFillDialogOpen(false);
+      toast.message("没有需要填充的记录");
+      return;
+    }
+    const preservedSelectionIds = filled.rows
+      .filter((row) => row.selected)
+      .map((row) => row.id);
+    setCustomerFillDialogOpen(false);
+    setRows(filled.rows);
+    setSelectedIds(new Set(preservedSelectionIds));
+    setReviewedKind(null);
+    const generation = ++reviewGenerationRef.current;
+    reviewMut.mutate({
+      kind,
+      rows: filled.rows,
+      generation,
+      preservedSelectionIds,
+    });
+  }
+
   function chooseTargetKind(value: string) {
     if (!rows || !value) return;
     const nextKind = value as ImportKind;
@@ -713,6 +781,8 @@ function ImportPage() {
     if (!rows || !kind) return;
     ++reviewGenerationRef.current;
     setReviewedKind(null);
+    setSelectedIds(new Set());
+    setRows((current) => current?.map((row) => ({ ...row, selected: false })) ?? null);
     setActivity({
       state: "preview",
       label: "默认条件已修改，请重新校验",
@@ -727,6 +797,24 @@ function ImportPage() {
   }
 
   const inputBusy = parseMut.isPending || reviewMut.isPending || voiceState === "recording";
+  const targetKindOptions: Array<{ value: ImportKind; label: string }> = [
+    ...(canMarketImport
+      ? [
+          { value: "offer" as ImportKind, label: "渠道推货" },
+          { value: "inquiry" as ImportKind, label: "客户询价" },
+        ]
+      : []),
+    ...(canStockImport
+      ? [
+          { value: "stock" as ImportKind, label: "入库" },
+          { value: "transit" as ImportKind, label: "在途" },
+        ]
+      : []),
+    ...(canPotentialImport ? [{ value: "potential" as ImportKind, label: "潜力型号" }] : []),
+    ...(canMarketImport && canStockImport
+      ? [{ value: "mixed" as ImportKind, label: "逐行选择类型" }]
+      : []),
+  ];
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-4">
@@ -838,45 +926,6 @@ function ImportPage() {
 
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <div className="grid gap-3 md:grid-cols-2">
-          <div>
-            <Label>导入类型（识别后选择）</Label>
-            <NativeSelect
-              value={kind ?? ""}
-              disabled={!rows || inputBusy || importStatus === "writing" || importStatus === "success"}
-              onChange={(e) => chooseTargetKind(e.target.value)}
-            >
-              <option value="">先完成中性识别</option>
-              {canMarketImport && (
-                <>
-                  <option value="offer">渠道推货</option>
-                  <option value="inquiry">客户询价</option>
-                </>
-              )}
-              {canStockImport && (
-                <>
-                  <option value="stock">入库</option>
-                  <option value="transit">在途</option>
-                </>
-              )}
-              {canPotentialImport && <option value="potential">潜力型号</option>}
-              {canMarketImport && canStockImport && <option value="mixed">逐行选择类型</option>}
-            </NativeSelect>
-            {!rows && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                AI 只负责识别、清洗和规范字段；看到预览后再决定写入哪个业务模块。
-              </p>
-            )}
-            {rows && !kind && (
-              <p className="mt-1 text-xs text-primary">
-                中性预览已完成，请先选择目标类型；此时不会写入任何业务数据。
-              </p>
-            )}
-            {kind === "potential" && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                只加入潜力型号关注池，不写入库存、渠道或客户数据。
-              </p>
-            )}
-          </div>
           {(kind === "offer" || kind === "mixed") && (
             <div>
               <Label>默认渠道（文本里没有时）</Label>
@@ -895,12 +944,13 @@ function ImportPage() {
               </datalist>
             </div>
           )}
-          {(kind === "inquiry" || kind === "mixed") && (
+          {kind === "mixed" && (
             <div>
-              <Label>默认客户</Label>
+              <Label>默认客户（仅补空白行）</Label>
               <Input
                 list="imp-cu"
                 value={customer}
+                placeholder="选择或输入客户名称"
                 onChange={(e) => {
                   setCustomer(e.target.value);
                   markTargetReviewStale();
@@ -1242,56 +1292,82 @@ function ImportPage() {
                             ? " · AI 识别（Platform）"
                             : ""}
               </h2>
-              <Button
-                className="hidden md:inline-flex"
-                disabled={
-                  confirmMut.isPending ||
-                  importStatus === "writing" ||
-                  importStatus === "success" ||
-                  !kind ||
-                  reviewedKind !== kind ||
-                  selectedCount === 0 ||
-                  blockingCount > 0
-                }
-                onClick={() => {
-                  setImportStatus("writing");
-                  confirmMut.mutate();
-                }}
-              >
-                {importStatus === "success"
-                  ? "✓ 已成功导入"
-                  : importStatus === "writing" || confirmMut.isPending
-                    ? `正在写入 ${selectedCount} 行…`
-                    : `确认写入 ${selectedCount} 行`}
-              </Button>
+              <div className="flex items-center gap-2">
+                {kind === "inquiry" && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={inputBusy || missingCustomerCount === 0}
+                    onClick={() => setCustomerFillDialogOpen(true)}
+                  >
+                    统一设置客户
+                  </Button>
+                )}
+                <Button
+                  className="hidden md:inline-flex"
+                  disabled={
+                    confirmMut.isPending ||
+                    importStatus === "writing" ||
+                    importStatus === "success" ||
+                    !kind ||
+                    reviewedKind !== kind ||
+                    selectedCount === 0
+                  }
+                  onClick={() => {
+                    setImportStatus("writing");
+                    confirmMut.mutate();
+                  }}
+                >
+                  {importStatus === "success"
+                    ? "✓ 已成功导入"
+                    : importStatus === "writing" || confirmMut.isPending
+                      ? `正在写入 ${selectedCount} 行…`
+                      : `确认写入 ${selectedCount} 行`}
+                </Button>
+              </div>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
               <ReviewStat label="总行数" value={rows.length} />
-              <ReviewStat label="待写入" value={selectedCount} />
-              <ReviewStat
-                label="待检查"
-                value={rows.filter((row) => Boolean(row.warning || rowBlockingReason(row))).length}
-              />
-              <ReviewStat label="疑似重复" value={rows.filter((row) => row.duplicate).length} />
+              {kind === "inquiry" ? (
+                <>
+                  <ReviewStat label="可确认" value={eligibleIds.size} />
+                  <ReviewStat label="需修改" value={blockingCount} />
+                  <ReviewStat label="重复" value={rows.filter((row) => row.duplicate).length} />
+                </>
+              ) : (
+                <>
+                  <ReviewStat label="待写入" value={selectedCount} />
+                  <ReviewStat
+                    label="待检查"
+                    value={
+                      rows.filter((row) => Boolean(row.warning || rowBlockingReason(row))).length
+                    }
+                  />
+                  <ReviewStat label="疑似重复" value={rows.filter((row) => row.duplicate).length} />
+                </>
+              )}
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Input
-                className="h-8 min-w-48 flex-1 text-xs"
-                value={rowQuery}
-                onChange={(event) => setRowQuery(event.target.value)}
-                placeholder="搜索型号、DC、仓库…"
-              />
-              <NativeSelect
-                className="h-8 w-28 text-xs"
-                value={rowFilter}
-                onChange={(event) => setRowFilter(event.target.value as typeof rowFilter)}
-              >
-                <option value="all">全部行</option>
-                <option value="selected">待写入</option>
-                <option value="review">待检查</option>
-                <option value="duplicate">疑似重复</option>
-              </NativeSelect>
-            </div>
+            {kind !== "inquiry" && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Input
+                  className="h-8 min-w-48 flex-1 text-xs"
+                  value={rowQuery}
+                  onChange={(event) => setRowQuery(event.target.value)}
+                  placeholder="搜索型号、品牌、客户……"
+                />
+                <NativeSelect
+                  className="h-8 w-28 text-xs"
+                  value={rowFilter}
+                  onChange={(event) => setRowFilter(event.target.value as typeof rowFilter)}
+                >
+                  <option value="all">全部行</option>
+                  <option value="selected">待写入</option>
+                  <option value="review">待检查</option>
+                  <option value="duplicate">疑似重复</option>
+                </NativeSelect>
+              </div>
+            )}
             {!kind && (
               <div className="mt-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
                 <p className="text-xs font-medium text-primary">第 2 步：选择导入类型</p>
@@ -1304,20 +1380,11 @@ function ImportPage() {
                   onChange={(event) => chooseTargetKind(event.target.value)}
                 >
                   <option value="">请选择目标类型</option>
-                  {canMarketImport && (
-                    <>
-                      <option value="offer">渠道推货</option>
-                      <option value="inquiry">客户询价</option>
-                    </>
-                  )}
-                  {canStockImport && (
-                    <>
-                      <option value="stock">入库</option>
-                      <option value="transit">在途</option>
-                    </>
-                  )}
-                  {canPotentialImport && <option value="potential">潜力型号</option>}
-                  {canMarketImport && canStockImport && <option value="mixed">逐行选择类型</option>}
+                  {targetKindOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </NativeSelect>
               </div>
             )}
@@ -1335,12 +1402,6 @@ function ImportPage() {
                 )}
               </div>
             )}
-            {kind === "inquiry" &&
-              rows.some((row) => row.priceAmount != null || row.priceCurrency != null || row.isTp) && (
-                <div className="mt-2 rounded-md border border-warn/30 bg-warn/5 px-2 py-2 text-xs text-foreground">
-                  当前客户询价预览已识别 TP（接受价）。现有询价表尚无独立 TP 字段，本地预览仅供校对；确认写入已阻止，避免 TP 丢失或误写入渠道/库存字段。
-                </div>
-              )}
             {importStatus === "writing" && (
               <p className="mt-2 text-xs text-muted-foreground">
                 写入中…按钮已锁定，服务端会按幂等键处理重复请求。
@@ -1365,11 +1426,13 @@ function ImportPage() {
               {text || filename || "当前来源没有可展示的文本摘要"}
             </pre>
           </details>
-          <p className="mb-3 text-xs text-muted-foreground">
-            型号请人工核对。疑似重复已勾掉，若确为新事件可重新勾选。
-            {extractMessage ? ` ${extractMessage}` : ""}
-            {blockingCount > 0 ? ` 有 ${blockingCount} 行存在阻断错误，修正后才能确认。` : ""}
-          </p>
+          {kind !== "inquiry" && (
+            <p className="mb-3 text-xs text-muted-foreground">
+              型号请人工核对。疑似重复已勾掉，若确为新事件可重新勾选。
+              {extractMessage ? ` ${extractMessage}` : ""}
+              {blockingCount > 0 ? ` 有 ${blockingCount} 行需修改，批量选择会自动排除。` : ""}
+            </p>
+          )}
           <ImportReviewTable
             visibleRows={visibleRows}
             kind={kind}
@@ -1394,6 +1457,48 @@ function ImportPage() {
           />
         </section>
       )}
+
+      <Dialog open={customerFillDialogOpen} onOpenChange={setCustomerFillDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>统一设置客户</DialogTitle>
+            <DialogDescription>
+              将为当前批次 {missingCustomerCount} 条客户为空的询价设置同一客户；已经识别出的客户不会被覆盖。
+            </DialogDescription>
+          </DialogHeader>
+          <div>
+            <Label htmlFor="customer-fill-name">客户</Label>
+            <Input
+              id="customer-fill-name"
+              className="mt-1"
+              list="imp-cu-dialog"
+              value={customer}
+              placeholder="选择或输入客户名称"
+              onChange={(event) => setCustomer(event.target.value)}
+              autoFocus
+            />
+            <datalist id="imp-cu-dialog">
+              {customers.map((entry) => (
+                <option key={entry.id} value={entry.name} />
+              ))}
+            </datalist>
+          </div>
+          <div className="flex justify-end gap-2">
+            <DialogClose asChild>
+              <Button type="button" variant="ghost">
+                取消
+              </Button>
+            </DialogClose>
+            <Button
+              type="button"
+              disabled={!customer.trim() || missingCustomerCount === 0 || inputBusy}
+              onClick={applyCustomerFill}
+            >
+              填充 {missingCustomerCount} 行
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Sheet
         open={editingIdx != null}
@@ -1478,7 +1583,7 @@ function ImportReviewTable({
   onConfirm: () => void;
 }) {
   const disabled = importStatus === "writing" || importStatus === "success" || confirmPending;
-  const confirmDisabled = disabled || !ready || selectedCount === 0 || blockingCount > 0;
+  const confirmDisabled = disabled || !ready || selectedCount === 0;
 
   if (kind === "inquiry") {
     return (
@@ -1570,16 +1675,23 @@ function ImportReviewTable({
     );
   }
 
-  const eligibleVisibleRows = visibleRows.filter(({ row }) => !rowBlockingReason(row));
+  const eligibleVisibleRows = visibleRows.filter(
+    ({ row }) => !rowBlockingReason(row) && !row.duplicate,
+  );
 
   return (
     <>
       <div className="mb-2 hidden items-center justify-between gap-3 rounded-lg border border-border bg-secondary/20 px-3 py-2 text-xs md:flex">
-        <Button size="sm" variant="outline" disabled={disabled || eligibleVisibleRows.length === 0} onClick={() => onToggleAll(!allVisibleSelected)}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={disabled || eligibleVisibleRows.length === 0}
+          onClick={() => onToggleAll(!allVisibleSelected)}
+        >
           {allVisibleSelected ? "取消选择当前筛选结果" : "选择当前筛选结果"}
         </Button>
         <span className="text-muted-foreground">
-          已选 {selectedCount} 行 · 阻断 {blockingCount} 行
+          已选 {selectedCount} 行 · 需修改 {blockingCount} 行
         </span>
         <Button size="sm" variant="ghost" disabled={selectedCount === 0} onClick={onClearSelection}>
           清除全部选择
@@ -1770,7 +1882,12 @@ function ImportReviewTable({
       </div>
       <div className="space-y-2 pb-20 md:hidden">
         <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-secondary/20 px-3 py-2 text-xs">
-          <Button size="sm" variant="outline" disabled={disabled || eligibleVisibleRows.length === 0} onClick={() => onToggleAll(!allVisibleSelected)}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled || eligibleVisibleRows.length === 0}
+            onClick={() => onToggleAll(!allVisibleSelected)}
+          >
             {allVisibleSelected ? "取消选择当前筛选结果" : "选择当前筛选结果"}
           </Button>
           <button
@@ -1983,49 +2100,53 @@ function InquiryReviewTable({
   onConfirm: () => void;
 }) {
   const disabled = importStatus === "writing" || importStatus === "success" || confirmPending;
+  const eligibleVisibleRows = visibleRows.filter(
+    ({ row }) => !rowBlockingReason(row) && !row.duplicate,
+  );
 
   function patchText(idx: number, field: "mpn" | "brand" | "customer", value: string) {
     onPatch(idx, {
       [field]: value || null,
       selected: false,
       ...(field === "mpn" ? { warning: "型号已人工修改，请再次核对" } : {}),
-      ...(field === "brand"
-        ? { brandConflict: null, warning: "品牌已人工修改，请再次核对" }
-        : {}),
+      ...(field === "brand" ? { brandConflict: null, warning: "品牌已人工修改，请再次核对" } : {}),
     } as Partial<ImportRow>);
   }
 
   function amountCell(row: ImportRow, idx: number) {
     return (
-      <div className="flex min-w-0 items-center gap-1">
-        <Input
-          className="h-8 min-w-0 flex-1 text-xs"
-          value={row.priceAmount == null ? "" : String(row.priceAmount)}
-          onChange={(event) =>
-            onPatch(idx, {
-              priceAmount: event.target.value.trim() === "" ? null : Number(event.target.value),
-              selected: false,
-            })
-          }
-          aria-label={`${row.mpn} TP（接受价）`}
-          placeholder="TP"
-        />
-        <NativeSelect
-          className="h-8 w-[4.5rem] shrink-0 px-1 text-xs"
-          value={row.priceCurrency ?? ""}
-          onChange={(event) =>
-            onPatch(idx, {
-              priceCurrency: (event.target.value || null) as Currency | null,
-              selected: false,
-            })
-          }
-          aria-label={`${row.mpn} TP币种`}
-        >
-          <option value="">币种</option>
-          <option value="CNY">CNY</option>
-          <option value="USD">USD</option>
-        </NativeSelect>
-      </div>
+      <Input
+        className="h-8 w-full min-w-0 text-xs"
+        value={row.priceAmount == null ? "" : String(row.priceAmount)}
+        onChange={(event) =>
+          onPatch(idx, {
+            priceAmount: event.target.value.trim() === "" ? null : Number(event.target.value),
+            selected: false,
+          })
+        }
+        aria-label={`${row.mpn} TP（接受价）`}
+        placeholder="TP"
+      />
+    );
+  }
+
+  function currencyCell(row: ImportRow, idx: number) {
+    return (
+      <NativeSelect
+        className="h-8 w-full min-w-0 px-1 text-xs"
+        value={row.priceCurrency ?? ""}
+        onChange={(event) =>
+          onPatch(idx, {
+            priceCurrency: (event.target.value || null) as Currency | null,
+            selected: false,
+          })
+        }
+        aria-label={`${row.mpn} TP币种`}
+      >
+        <option value="">币种</option>
+        <option value="CNY">CNY</option>
+        <option value="USD">USD</option>
+      </NativeSelect>
     );
   }
 
@@ -2048,7 +2169,87 @@ function InquiryReviewTable({
 
   function rowStatus(row: ImportRow) {
     const blocking = rowBlockingReason(row);
-    return shortStatus(row, blocking);
+    return shortStatus(row, blocking, "inquiry");
+  }
+
+  function cellContent(
+    column: InquiryTableColumnKey,
+    row: ImportRow,
+    idx: number,
+    blocking: string | null,
+    status: ReturnType<typeof rowStatus>,
+  ) {
+    switch (column) {
+      case "select":
+        return (
+          <Checkbox
+            checked={row.selected}
+            disabled={Boolean(blocking) || disabled}
+            onCheckedChange={(value) => onToggle(idx, value === true)}
+            aria-label={`选择 ${row.mpn}`}
+          />
+        );
+      case "mpn":
+        return (
+          <>
+            <Input
+              className="h-8 w-full min-w-0 px-2 font-mono text-xs"
+              value={row.mpn}
+              onChange={(event) => patchText(idx, "mpn", event.target.value)}
+              aria-label={`${row.mpn} 型号`}
+            />
+            {blocking && (
+              <p className="mt-1 whitespace-normal text-[11px] leading-4 text-destructive">
+                {blocking}
+              </p>
+            )}
+          </>
+        );
+      case "brand":
+        return (
+          <Input
+            className="h-8 w-full min-w-0 px-2 text-xs"
+            value={row.brand ?? ""}
+            onChange={(event) => patchText(idx, "brand", event.target.value)}
+            aria-label={`${row.mpn} 品牌`}
+          />
+        );
+      case "kind":
+        return <span className="text-muted-foreground">客户询价</span>;
+      case "customer":
+        return (
+          <Input
+            className="h-8 w-full min-w-0 px-2 text-xs"
+            value={row.customer ?? ""}
+            onChange={(event) => patchText(idx, "customer", event.target.value)}
+            aria-label={`${row.mpn} 客户`}
+          />
+        );
+      case "qty":
+        return qtyCell(row, idx);
+      case "tp":
+        return amountCell(row, idx);
+      case "currency":
+        return currencyCell(row, idx);
+      case "status":
+        return (
+          <details>
+            <summary
+              className={cn(
+                "inline-flex cursor-pointer list-none whitespace-nowrap rounded-full border px-2 py-1 text-[11px]",
+                status.tone,
+              )}
+            >
+              {status.label}
+            </summary>
+            {status.detail && !blocking && (
+              <p className="mt-2 max-w-56 whitespace-normal rounded-md bg-secondary/50 p-2 text-[11px] leading-5">
+                {status.detail}
+              </p>
+            )}
+          </details>
+        );
+    }
   }
 
   return (
@@ -2057,13 +2258,13 @@ function InquiryReviewTable({
         <Button
           size="sm"
           variant="outline"
-          disabled={disabled || visibleRows.every(({ row }) => Boolean(rowBlockingReason(row)))}
+          disabled={disabled || eligibleVisibleRows.length === 0}
           onClick={() => onToggleAll(!allVisibleSelected)}
         >
           {allVisibleSelected ? "取消选择当前筛选结果" : "选择当前筛选结果"}
         </Button>
         <span className="text-muted-foreground">
-          已选 {selectedCount} 行 · 阻断 {blockingCount} 行
+          已选 {selectedCount} 行 · 需修改 {blockingCount} 行
           {someVisibleSelected ? " · 当前筛选为部分选中" : ""}
         </span>
         <Button size="sm" variant="ghost" disabled={selectedCount === 0} onClick={onClearSelection}>
@@ -2074,29 +2275,27 @@ function InquiryReviewTable({
       <div className="hidden rounded-lg border border-border md:block">
         <table className="w-full table-fixed border-collapse text-xs">
           <colgroup>
-            <col className="w-12" />
-            <col className="w-[22%]" />
-            <col className="w-[11%]" />
-            <col className="w-[10%]" />
-            <col className="w-[18%]" />
-            <col className="w-[10%]" />
-            <col className="w-[17%]" />
+            {INQUIRY_TABLE_COLUMNS.map((column) => (
+              <col key={column.key} style={{ width: column.width }} />
+            ))}
           </colgroup>
           <thead className="bg-secondary/40 text-left text-[11px] text-muted-foreground">
             <tr>
-              <th className="border-b border-border px-2 py-2">
-                <Checkbox
-                  checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false}
-                  onCheckedChange={(value) => onToggleAll(value === true)}
-                  aria-label="全选当前可写入询价行"
-                />
-              </th>
-              <th className="border-b border-border px-2 py-2">型号</th>
-              <th className="border-b border-border px-2 py-2">品牌</th>
-              <th className="border-b border-border px-2 py-2">业务类型</th>
-              <th className="border-b border-border px-2 py-2">客户</th>
-              <th className="border-b border-border px-2 py-2">数量</th>
-              <th className="border-b border-border px-2 py-2">TP（接受价） · 状态</th>
+              {INQUIRY_TABLE_COLUMNS.map((column) => (
+                <th key={column.key} className="border-b border-border px-2 py-2">
+                  {column.key === "select" ? (
+                    <Checkbox
+                      checked={
+                        allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false
+                      }
+                      onCheckedChange={(value) => onToggleAll(value === true)}
+                      aria-label="全选当前可写入询价行"
+                    />
+                  ) : (
+                    column.label
+                  )}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -2105,51 +2304,17 @@ function InquiryReviewTable({
               const status = rowStatus(row);
               return (
                 <tr key={row.id} className="border-b border-border last:border-b-0">
-                  <td className="px-2 py-2 align-top">
-                    <Checkbox
-                      checked={row.selected}
-                      disabled={Boolean(blocking) || disabled}
-                      onCheckedChange={(value) => onToggle(idx, value === true)}
-                      aria-label={`选择 ${row.mpn}`}
-                    />
-                  </td>
-                  <td className="px-2 py-2 align-top">
-                    <Input
-                      className="h-8 w-full min-w-0 px-2 font-mono text-xs"
-                      value={row.mpn}
-                      onChange={(event) => patchText(idx, "mpn", event.target.value)}
-                      aria-label={`${row.mpn} 型号`}
-                    />
-                  </td>
-                  <td className="px-2 py-2 align-top">
-                    <Input
-                      className="h-8 w-full min-w-0 px-2 text-xs"
-                      value={row.brand ?? ""}
-                      onChange={(event) => patchText(idx, "brand", event.target.value)}
-                      aria-label={`${row.mpn} 品牌`}
-                    />
-                  </td>
-                  <td className="px-2 py-2 align-top text-muted-foreground">客户询价</td>
-                  <td className="px-2 py-2 align-top">
-                    <Input
-                      className="h-8 w-full min-w-0 px-2 text-xs"
-                      value={row.customer ?? ""}
-                      onChange={(event) => patchText(idx, "customer", event.target.value)}
-                      aria-label={`${row.mpn} 客户`}
-                    />
-                  </td>
-                  <td className="px-2 py-2 align-top">{qtyCell(row, idx)}</td>
-                  <td className="px-2 py-2 align-top">
-                    <div className="flex min-w-0 items-start gap-2">
-                      <div className="min-w-0 flex-1">{amountCell(row, idx)}</div>
-                      <details className="shrink-0">
-                        <summary className={cn("cursor-pointer list-none whitespace-nowrap rounded-full border px-2 py-1 text-[11px]", status.tone)}>
-                          {status.label}
-                        </summary>
-                        {status.detail && <p className="mt-2 max-w-56 whitespace-normal rounded-md bg-secondary/50 p-2 text-[11px] leading-5">{status.detail}</p>}
-                      </details>
-                    </div>
-                  </td>
+                  {INQUIRY_TABLE_COLUMNS.map((column) => (
+                    <td
+                      key={column.key}
+                      className={cn(
+                        INQUIRY_TABLE_CELL_CLASS,
+                        column.key === "kind" && "text-muted-foreground",
+                      )}
+                    >
+                      {cellContent(column.key, row, idx, blocking, status)}
+                    </td>
+                  ))}
                 </tr>
               );
             })}
@@ -2159,11 +2324,21 @@ function InquiryReviewTable({
 
       <div className="space-y-2 pb-20 md:hidden">
         <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-secondary/20 px-3 py-2 text-xs">
-          <Button size="sm" variant="outline" disabled={disabled || visibleRows.every(({ row }) => Boolean(rowBlockingReason(row)))} onClick={() => onToggleAll(!allVisibleSelected)}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled || eligibleVisibleRows.length === 0}
+            onClick={() => onToggleAll(!allVisibleSelected)}
+          >
             {allVisibleSelected ? "取消选择当前筛选" : "选择当前筛选"}
           </Button>
           <span className="text-muted-foreground">已选 {selectedCount} 行</span>
-          <button type="button" className="text-muted-foreground underline" disabled={selectedCount === 0} onClick={onClearSelection}>
+          <button
+            type="button"
+            className="text-muted-foreground underline"
+            disabled={selectedCount === 0}
+            onClick={onClearSelection}
+          >
             清除
           </button>
         </div>
@@ -2182,28 +2357,87 @@ function InquiryReviewTable({
                 />
                 <div className="min-w-0 flex-1">
                   <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-                    <Input className="h-8 min-w-0 px-2 font-mono text-xs" value={row.mpn} onChange={(event) => patchText(idx, "mpn", event.target.value)} />
-                    <span className={cn("whitespace-nowrap rounded-full border px-2 py-1 text-[11px]", status.tone)}>{status.label}</span>
+                    <div className="min-w-0">
+                      <Input
+                        className="h-8 min-w-0 px-2 font-mono text-xs"
+                        value={row.mpn}
+                        onChange={(event) => patchText(idx, "mpn", event.target.value)}
+                      />
+                      {blocking && (
+                        <p className="mt-1 whitespace-normal text-[11px] leading-4 text-destructive">
+                          {blocking}
+                        </p>
+                      )}
+                    </div>
+                    <span
+                      className={cn(
+                        "whitespace-nowrap rounded-full border px-2 py-1 text-[11px]",
+                        status.tone,
+                      )}
+                    >
+                      {status.label}
+                    </span>
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-2">
-                    <label className="min-w-0"><span className="text-[10px] text-muted-foreground">品牌</span><Input className="mt-0.5 h-8 px-2 text-xs" value={row.brand ?? ""} onChange={(event) => patchText(idx, "brand", event.target.value)} /></label>
-                    <label className="min-w-0"><span className="text-[10px] text-muted-foreground">业务类型</span><div className="mt-0.5 flex h-8 items-center text-xs text-muted-foreground">客户询价</div></label>
-                    <label className="min-w-0"><span className="text-[10px] text-muted-foreground">客户</span><Input className="mt-0.5 h-8 px-2 text-xs" value={row.customer ?? ""} onChange={(event) => patchText(idx, "customer", event.target.value)} /></label>
-                    <label className="min-w-0"><span className="text-[10px] text-muted-foreground">数量</span>{qtyCell(row, idx)}</label>
-                    <label className="col-span-2 min-w-0"><span className="text-[10px] text-muted-foreground">TP（接受价）</span>{amountCell(row, idx)}</label>
+                    <label className="min-w-0">
+                      <span className="text-[10px] text-muted-foreground">品牌</span>
+                      <Input
+                        className="mt-0.5 h-8 px-2 text-xs"
+                        value={row.brand ?? ""}
+                        onChange={(event) => patchText(idx, "brand", event.target.value)}
+                      />
+                    </label>
+                    <label className="min-w-0">
+                      <span className="text-[10px] text-muted-foreground">业务类型</span>
+                      <div className="mt-0.5 flex h-8 items-center text-xs text-muted-foreground">
+                        客户询价
+                      </div>
+                    </label>
+                    <label className="min-w-0">
+                      <span className="text-[10px] text-muted-foreground">客户</span>
+                      <Input
+                        className="mt-0.5 h-8 px-2 text-xs"
+                        value={row.customer ?? ""}
+                        onChange={(event) => patchText(idx, "customer", event.target.value)}
+                      />
+                    </label>
+                    <label className="min-w-0">
+                      <span className="text-[10px] text-muted-foreground">数量</span>
+                      {qtyCell(row, idx)}
+                    </label>
+                    <label className="min-w-0">
+                      <span className="text-[10px] text-muted-foreground">TP（接受价）</span>
+                      {amountCell(row, idx)}
+                    </label>
+                    <label className="min-w-0">
+                      <span className="text-[10px] text-muted-foreground">币种</span>
+                      {currencyCell(row, idx)}
+                    </label>
                   </div>
-                  {status.detail && <p className="mt-2 rounded-md bg-secondary/50 px-2 py-1.5 text-[11px] leading-5">{status.detail}</p>}
-                  <Button className="mt-2" size="sm" variant="outline" onClick={() => onEdit(idx)}>编辑更多字段</Button>
+                  {status.detail && !blocking && (
+                    <p className="mt-2 rounded-md bg-secondary/50 px-2 py-1.5 text-[11px] leading-5">
+                      {status.detail}
+                    </p>
+                  )}
+                  <Button className="mt-2" size="sm" variant="outline" onClick={() => onEdit(idx)}>
+                    编辑更多字段
+                  </Button>
                 </div>
               </div>
             </article>
           );
         })}
       </div>
-      {visibleRows.length === 0 && <p className="py-8 text-center text-xs text-muted-foreground">没有符合当前筛选的行。</p>}
+      {visibleRows.length === 0 && (
+        <p className="py-8 text-center text-xs text-muted-foreground">没有符合当前筛选的行。</p>
+      )}
       <div className="mt-2 bg-background/95 py-2 md:hidden">
         <Button className="w-full shadow-lg" disabled={confirmDisabled} onClick={onConfirm}>
-          {importStatus === "success" ? "✓ 已成功导入" : importStatus === "writing" || confirmPending ? `正在写入 ${selectedCount} 行…` : `确认写入 ${selectedCount} 行`}
+          {importStatus === "success"
+            ? "✓ 已成功导入"
+            : importStatus === "writing" || confirmPending
+              ? `正在写入 ${selectedCount} 行…`
+              : `确认写入 ${selectedCount} 行`}
         </Button>
       </div>
     </>
@@ -2319,52 +2553,54 @@ function MobileRowEditor({
               </NativeSelect>
             </label>
           </>
-        ) : row.kind !== "potential" && (
-          <>
-            <Mini
-              label="数量"
-              value={row.qtyRaw ?? (row.qty == null ? "" : String(row.qty))}
-              onChange={(value) =>
-                onPatch({ qtyRaw: value, qty: parseQty(value), selected: false })
-              }
-            />
-            <Mini
-              label="DC"
-              value={row.dateCode ?? ""}
-              onChange={(value) => onPatch({ dateCode: value, selected: false })}
-            />
-            {row.kind === "stock" && (
+        ) : (
+          row.kind !== "potential" && (
+            <>
               <Mini
-                label="标准装量"
-                value={row.standardPack ?? ""}
-                onChange={(value) => onPatch({ standardPack: value || null, selected: false })}
+                label="数量"
+                value={row.qtyRaw ?? (row.qty == null ? "" : String(row.qty))}
+                onChange={(value) =>
+                  onPatch({ qtyRaw: value, qty: parseQty(value), selected: false })
+                }
               />
-            )}
-            <Mini
-              label="供应商 / 渠道"
-              value={row.channel ?? ""}
-              onChange={(value) => onPatch({ channel: value, selected: false })}
-            />
-            {row.kind === "stock" && (
-              <label className="block">
-                <span className="text-[10px] text-muted-foreground">仓库</span>
-                <NativeSelect
-                  className="mt-0.5 h-8 w-full text-xs"
-                  value={row.warehouse ?? ""}
-                  onChange={(event) =>
-                    onPatch({ warehouse: event.target.value || null, selected: false })
-                  }
-                >
-                  <option value="">默认仓库</option>
-                  {warehouses.map((warehouse) => (
-                    <option key={warehouse.id} value={warehouse.code}>
-                      {warehouse.code}
-                    </option>
-                  ))}
-                </NativeSelect>
-              </label>
-            )}
-          </>
+              <Mini
+                label="DC"
+                value={row.dateCode ?? ""}
+                onChange={(value) => onPatch({ dateCode: value, selected: false })}
+              />
+              {row.kind === "stock" && (
+                <Mini
+                  label="标准装量"
+                  value={row.standardPack ?? ""}
+                  onChange={(value) => onPatch({ standardPack: value || null, selected: false })}
+                />
+              )}
+              <Mini
+                label="供应商 / 渠道"
+                value={row.channel ?? ""}
+                onChange={(value) => onPatch({ channel: value, selected: false })}
+              />
+              {row.kind === "stock" && (
+                <label className="block">
+                  <span className="text-[10px] text-muted-foreground">仓库</span>
+                  <NativeSelect
+                    className="mt-0.5 h-8 w-full text-xs"
+                    value={row.warehouse ?? ""}
+                    onChange={(event) =>
+                      onPatch({ warehouse: event.target.value || null, selected: false })
+                    }
+                  >
+                    <option value="">默认仓库</option>
+                    {warehouses.map((warehouse) => (
+                      <option key={warehouse.id} value={warehouse.code}>
+                        {warehouse.code}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                </label>
+              )}
+            </>
+          )
         )}
       </div>
       <p className="text-[11px] text-muted-foreground">

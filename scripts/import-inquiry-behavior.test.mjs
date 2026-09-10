@@ -45,7 +45,7 @@ test("inquiry import keeps the selected kind and writes multiple exact customers
     if (envelope?.error) throw envelope.error;
     return envelope?.result ?? envelope;
   };
-  const row = (mpn, kind, customer, qty = 1) => ({
+  const row = (mpn, kind, customer, qty = 1, extra = {}) => ({
     id: crypto.randomUUID(),
     kind,
     mpn,
@@ -73,12 +73,16 @@ test("inquiry import keeps the selected kind and writes multiple exact customers
     duplicateReason: null,
     selected: true,
     warning: null,
+    ...extra,
   });
 
   try {
     const auth = await vite.ssrLoadModule("/src/lib/auth/server.ts?inquiry-import-behavior");
     const imports = await vite.ssrLoadModule(
       "/src/lib/server/import.ts?tss-serverfn-split&inquiry-import-behavior",
+    );
+    const market = await vite.ssrLoadModule(
+      "/src/lib/server/market.ts?tss-serverfn-split&inquiry-import-behavior",
     );
     const settings = await vite.ssrLoadModule(
       "/src/lib/server/settings.ts?tss-serverfn-split&inquiry-import-behavior",
@@ -106,10 +110,11 @@ test("inquiry import keeps the selected kind and writes multiple exact customers
 
     const selectedPreview = await invoke(imports.prepareImportReview_createServerFn_handler, {
       kind: "inquiry",
+      defaultCustomer: "默认客户",
       rows: [neutralPreview.rows[0]],
     });
     assert.equal(selectedPreview.rows[0].kind, "inquiry");
-    assert.equal(selectedPreview.rows[0].selected, true);
+    assert.equal(selectedPreview.rows[0].selected, false);
 
     const inquiryImport = await invoke(imports.confirmImport_createServerFn_handler, {
       kind: "inquiry",
@@ -158,6 +163,50 @@ test("inquiry import keeps the selected kind and writes multiple exact customers
     const listedInquiry = batches.find((batch) => batch.id === inquiryImport.batchId);
     assert.equal(listedInquiry.writtenRows, 2);
     assert.match(listedInquiry.context, /^客户：精确客户[甲乙]等2个$/);
+
+    const tpRows = [
+      ["INQUIRY-TP-108", "客户TP-1", 1.08],
+      ["INQUIRY-TP-105", "客户TP-2", 1.05],
+      ["INQUIRY-TP-106", "客户TP-3", 1.06],
+      ["INQUIRY-TP-06", "客户TP-4", 0.6],
+      ["INQUIRY-TP-079", "客户TP-5", 0.79],
+      ["INQUIRY-TP-15", "客户TP-6", 15],
+      ["INQUIRY-TP-02", "客户TP-7", 0.2],
+    ].map(([mpn, customer, priceAmount], index) =>
+      row(String(mpn), "inquiry", String(customer), index + 1, {
+        priceAmount: Number(priceAmount),
+        priceCurrency: "USD",
+      }),
+    );
+    const tpImport = await invoke(imports.confirmImport_createServerFn_handler, {
+      kind: "inquiry",
+      sourceType: "image",
+      rows: tpRows,
+      submissionId: "inquiry-tp-persistence-test",
+    });
+    assert.equal(tpImport.writtenCount, 7);
+    const persistedTp = await sql.query(
+      "select tp_amount, tp_currency from customer_inquiries where import_batch_id = $1 order by tp_amount",
+      [tpImport.batchId],
+    );
+    assert.deepEqual(
+      persistedTp.map((item) => [Number(item.tp_amount), item.tp_currency]),
+      [
+        [0.2, "USD"],
+        [0.6, "USD"],
+        [0.79, "USD"],
+        [1.05, "USD"],
+        [1.06, "USD"],
+        [1.08, "USD"],
+        [15, "USD"],
+      ],
+    );
+    const listedTp = await invoke(market.listInquiries_createServerFn_handler, {
+      scope: "all",
+      q: "INQUIRY-TP-108",
+    });
+    assert.equal(listedTp.items[0].tpAmount, 1.08);
+    assert.equal(listedTp.items[0].tpCurrency, "USD");
 
     const offerImport = await invoke(imports.confirmImport_createServerFn_handler, {
       kind: "offer",

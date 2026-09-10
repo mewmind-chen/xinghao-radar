@@ -1,6 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { getCurrentPrincipal, potentialScopeFor, requirePotential, requireRole } from "@/lib/auth/authorization.server";
+import {
+  getCurrentPrincipal,
+  potentialScopeFor,
+  requirePotential,
+  requireRole,
+} from "@/lib/auth/authorization.server";
 import { formatStockLine, iso } from "@/lib/domain";
 import type { CostTax, Currency, MatchFlags } from "@/lib/types";
 import type { ImportSource, ImportRow } from "@/lib/types";
@@ -22,23 +27,27 @@ import {
 } from "./helpers";
 import { ensureSeed } from "./seed";
 
-export const listChannels = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
-  const principal = await getCurrentPrincipal(context.bearerToken);
-  requireRole(principal, "market.read");
-  const sql = await sqlClient();
-  await ensureSeed(sql);
-  const rows = await sql`select * from channels order by is_active desc, name`;
-  return rows.map(mapChannel);
-});
+export const listChannels = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    requireRole(principal, "market.read");
+    const sql = await sqlClient();
+    await ensureSeed(sql);
+    const rows = await sql`select * from channels order by is_active desc, name`;
+    return rows.map(mapChannel);
+  });
 
-export const listCustomers = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
-  const principal = await getCurrentPrincipal(context.bearerToken);
-  requireRole(principal, "market.read");
-  const sql = await sqlClient();
-  await ensureSeed(sql);
-  const rows = await sql`select * from customers order by is_active desc, name`;
-  return rows.map(mapCustomer);
-});
+export const listCustomers = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    const principal = await getCurrentPrincipal(context.bearerToken);
+    requireRole(principal, "market.read");
+    const sql = await sqlClient();
+    await ensureSeed(sql);
+    const rows = await sql`select * from customers order by is_active desc, name`;
+    return rows.map(mapCustomer);
+  });
 
 export const upsertChannel = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -58,7 +67,10 @@ export const upsertCustomer = createServerFn({ method: "POST" })
     const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     const customer = await ensureCustomer(sql, data.name);
-    await logOp(sql, "upsert", "customer", customer.id, { principal, after: { name: customer.name } });
+    await logOp(sql, "upsert", "customer", customer.id, {
+      principal,
+      after: { name: customer.name },
+    });
     return customer;
   });
 
@@ -69,9 +81,14 @@ export const setChannelActive = createServerFn({ method: "POST" })
     const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     const before = await sql`select * from channels where id = ${data.id} limit 1`;
-    const after = await sql`update channels set is_active = ${data.isActive} where id = ${data.id} returning *`;
+    const after =
+      await sql`update channels set is_active = ${data.isActive} where id = ${data.id} returning *`;
     if (!after[0]) throw new Error("渠道不存在");
-    await logOp(sql, data.isActive ? "enable" : "disable", "channel", data.id, { principal, before: before[0], after: after[0] });
+    await logOp(sql, data.isActive ? "enable" : "disable", "channel", data.id, {
+      principal,
+      before: before[0],
+      after: after[0],
+    });
     return { ok: true as const };
   });
 
@@ -82,9 +99,14 @@ export const setCustomerActive = createServerFn({ method: "POST" })
     const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
     const before = await sql`select * from customers where id = ${data.id} limit 1`;
-    const after = await sql`update customers set is_active = ${data.isActive} where id = ${data.id} returning *`;
+    const after =
+      await sql`update customers set is_active = ${data.isActive} where id = ${data.id} returning *`;
     if (!after[0]) throw new Error("客户不存在");
-    await logOp(sql, data.isActive ? "enable" : "disable", "customer", data.id, { principal, before: before[0], after: after[0] });
+    await logOp(sql, data.isActive ? "enable" : "disable", "customer", data.id, {
+      principal,
+      before: before[0],
+      after: after[0],
+    });
     return { ok: true as const };
   });
 
@@ -118,8 +140,17 @@ function pageValue(value: unknown, fallback: number, min: number, max: number): 
 export const listOffers = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .validator(
-    (input: { scope?: "valid" | "history" | "all"; q?: string; channelId?: string; limit?: number; offset?: number } | undefined) =>
-      input ?? {},
+    (
+      input:
+        | {
+            scope?: "valid" | "history" | "all";
+            q?: string;
+            channelId?: string;
+            limit?: number;
+            offset?: number;
+          }
+        | undefined,
+    ) => input ?? {},
   )
   .handler(async ({ data, context }) => {
     const principal = await getCurrentPrincipal(context.bearerToken);
@@ -140,7 +171,9 @@ export const listOffers = createServerFn({ method: "GET" })
     if (data.q?.trim()) {
       params.push(`%${data.q.trim()}%`);
       const qParam = `$${params.length}`;
-      where.push(`(p.mpn ilike ${qParam} or coalesce(p.brand_code, '') ilike ${qParam} or ch.name ilike ${qParam})`);
+      where.push(
+        `(p.mpn ilike ${qParam} or coalesce(p.brand_code, '') ilike ${qParam} or ch.name ilike ${qParam})`,
+      );
     }
     const whereSql = where.join(" and ");
     const countRows = await sql.query<{ n: number }>(
@@ -181,11 +214,8 @@ export const listOffers = createServerFn({ method: "GET" })
         isValid: r.is_valid === true,
         flags: f,
         stockLine: f ? formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel) : "",
-        historyReason: r.is_valid !== true
-          ? "记录已停用"
-          : r.channel_active !== true
-            ? "渠道已停用"
-            : null,
+        historyReason:
+          r.is_valid !== true ? "记录已停用" : r.channel_active !== true ? "渠道已停用" : null,
       };
     });
     const channels = (await sql`select * from channels order by name`).map(mapChannel);
@@ -211,6 +241,8 @@ export type InquiryListItem = {
   mpn: string;
   brandCode: string | null;
   qty: number | null;
+  tpAmount: number | null;
+  tpCurrency: Currency | null;
   inquiredAt: string;
   isValid: boolean;
   flags: MatchFlags | null;
@@ -221,8 +253,17 @@ export type InquiryListItem = {
 export const listInquiries = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .validator(
-    (input: { scope?: "valid" | "history" | "all"; q?: string; customerId?: string; limit?: number; offset?: number } | undefined) =>
-      input ?? {},
+    (
+      input:
+        | {
+            scope?: "valid" | "history" | "all";
+            q?: string;
+            customerId?: string;
+            limit?: number;
+            offset?: number;
+          }
+        | undefined,
+    ) => input ?? {},
   )
   .handler(async ({ data, context }) => {
     const principal = await getCurrentPrincipal(context.bearerToken);
@@ -243,7 +284,9 @@ export const listInquiries = createServerFn({ method: "GET" })
     if (data.q?.trim()) {
       params.push(`%${data.q.trim()}%`);
       const qParam = `$${params.length}`;
-      where.push(`(p.mpn ilike ${qParam} or coalesce(p.brand_code, '') ilike ${qParam} or c.name ilike ${qParam})`);
+      where.push(
+        `(p.mpn ilike ${qParam} or coalesce(p.brand_code, '') ilike ${qParam} or c.name ilike ${qParam})`,
+      );
     }
     const whereSql = where.join(" and ");
     const countRows = await sql.query<{ n: number }>(
@@ -274,20 +317,27 @@ export const listInquiries = createServerFn({ method: "GET" })
         mpn: String(r.mpn),
         brandCode: r.brand_code ? String(r.brand_code) : null,
         qty: r.qty != null ? Number(r.qty) : null,
+        tpAmount: r.tp_amount != null ? Number(r.tp_amount) : null,
+        tpCurrency: asCurrency(r.tp_currency),
         inquiredAt: iso(r.inquired_at),
         isValid: r.is_valid === true,
         flags: f,
         stockLine: f ? formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel) : "",
-        historyReason: r.is_valid !== true
-          ? "记录已停用"
-          : r.customer_active !== true
-            ? "客户已停用"
-            : null,
+        historyReason:
+          r.is_valid !== true ? "记录已停用" : r.customer_active !== true ? "客户已停用" : null,
       };
     });
     const customers = (await sql`select * from customers order by name`).map(mapCustomer);
     const total = Number(countRows[0]?.n ?? 0);
-    return { items, customers, settings, total, limit, offset, hasMore: offset + items.length < total };
+    return {
+      items,
+      customers,
+      settings,
+      total,
+      limit,
+      offset,
+      hasMore: offset + items.length < total,
+    };
   });
 
 export const createOffer = createServerFn({ method: "POST" })
@@ -322,17 +372,34 @@ export const createOffer = createServerFn({ method: "POST" })
         )
       `;
       await tx`update parts set updated_at = now() where id = ${part.id}`;
-      await logOp(tx, "create", "offer", id, { principal, after: { partId: part.id, channelId: ch.id, qty: data.qty ?? null } });
+      await logOp(tx, "create", "offer", id, {
+        principal,
+        after: { partId: part.id, channelId: ch.id, qty: data.qty ?? null },
+      });
       return { part, ch };
     });
     const part = partAndChannel.part;
-    const flags = await matchFlagsForParts(sql, [part.id], undefined, principal.userId, potentialScopeFor(principal));
+    const flags = await matchFlagsForParts(
+      sql,
+      [part.id],
+      undefined,
+      principal.userId,
+      potentialScopeFor(principal),
+    );
     return { id, partId: part.id, flags: flags.get(part.id)! };
   });
 
 export const createInquiry = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((input: { customer: string; mpn: string; qty?: number | null }) => input)
+  .validator(
+    (input: {
+      customer: string;
+      mpn: string;
+      qty?: number | null;
+      tpAmount?: number | null;
+      tpCurrency?: Currency | null;
+    }) => input,
+  )
   .handler(async ({ data, context }) => {
     const principal = requireRole(await getCurrentPrincipal(context.bearerToken), "market.write");
     const sql = await sqlClient();
@@ -341,15 +408,24 @@ export const createInquiry = createServerFn({ method: "POST" })
       const part = await ensurePart(tx, data.mpn, { source: "询价" });
       const cu = await ensureCustomer(tx, data.customer);
       await tx`
-        insert into customer_inquiries (id, customer_id, part_id, qty)
-        values (${id}, ${cu.id}, ${part.id}, ${data.qty ?? null})
+        insert into customer_inquiries (id, customer_id, part_id, qty, tp_amount, tp_currency)
+        values (${id}, ${cu.id}, ${part.id}, ${data.qty ?? null}, ${data.tpAmount ?? null}, ${data.tpCurrency ?? null})
       `;
       await tx`update parts set updated_at = now() where id = ${part.id}`;
-      await logOp(tx, "create", "inquiry", id, { principal, after: { partId: part.id, customerId: cu.id, qty: data.qty ?? null } });
+      await logOp(tx, "create", "inquiry", id, {
+        principal,
+        after: { partId: part.id, customerId: cu.id, qty: data.qty ?? null },
+      });
       return { part, cu };
     });
     const part = partAndCustomer.part;
-    const flags = await matchFlagsForParts(sql, [part.id], undefined, principal.userId, potentialScopeFor(principal));
+    const flags = await matchFlagsForParts(
+      sql,
+      [part.id],
+      undefined,
+      principal.userId,
+      potentialScopeFor(principal),
+    );
     return { id, partId: part.id, flags: flags.get(part.id)! };
   });
 
@@ -363,13 +439,18 @@ export const setOfferValid = createServerFn({ method: "POST" })
     if (!ids.length) throw new Error("没有选择记录");
     await withTransaction(sql, async (tx) => {
       for (const id of ids) {
-        const before = await tx`select * from channel_offers where id = ${id} and deleted_at is null for update`;
+        const before =
+          await tx`select * from channel_offers where id = ${id} and deleted_at is null for update`;
         if (!before[0]) throw new Error("存在不可操作的渠道记录");
         const after = await tx`
           update channel_offers set is_valid = ${data.isValid}, invalidated_at = ${data.isValid ? null : new Date().toISOString()}
           where id = ${id} and deleted_at is null returning *
         `;
-        await logOp(tx, data.isValid ? "restore" : "invalidate", "offer", id, { principal, before: before[0], after: after[0] });
+        await logOp(tx, data.isValid ? "restore" : "invalidate", "offer", id, {
+          principal,
+          before: before[0],
+          after: after[0],
+        });
       }
     });
     return { ok: true as const };
@@ -385,13 +466,18 @@ export const setInquiryValid = createServerFn({ method: "POST" })
     if (!ids.length) throw new Error("没有选择记录");
     await withTransaction(sql, async (tx) => {
       for (const id of ids) {
-        const before = await tx`select * from customer_inquiries where id = ${id} and deleted_at is null for update`;
+        const before =
+          await tx`select * from customer_inquiries where id = ${id} and deleted_at is null for update`;
         if (!before[0]) throw new Error("存在不可操作的询价记录");
         const after = await tx`
           update customer_inquiries set is_valid = ${data.isValid}, invalidated_at = ${data.isValid ? null : new Date().toISOString()}
           where id = ${id} and deleted_at is null returning *
         `;
-        await logOp(tx, data.isValid ? "restore" : "invalidate", "inquiry", id, { principal, before: before[0], after: after[0] });
+        await logOp(tx, data.isValid ? "restore" : "invalidate", "inquiry", id, {
+          principal,
+          before: before[0],
+          after: after[0],
+        });
       }
     });
     return { ok: true as const };
@@ -407,9 +493,11 @@ export const softDeleteOffers = createServerFn({ method: "POST" })
     if (!ids.length) throw new Error("没有选择记录");
     await withTransaction(sql, async (tx) => {
       for (const id of ids) {
-        const before = await tx`select * from channel_offers where id = ${id} and deleted_at is null for update`;
+        const before =
+          await tx`select * from channel_offers where id = ${id} and deleted_at is null for update`;
         if (!before[0]) throw new Error("存在不可删除的渠道记录");
-        const after = await tx`update channel_offers set deleted_at = now() where id = ${id} returning *`;
+        const after =
+          await tx`update channel_offers set deleted_at = now() where id = ${id} returning *`;
         await logOp(tx, "delete", "offer", id, { principal, before: before[0], after: after[0] });
       }
     });
@@ -426,9 +514,11 @@ export const softDeleteInquiries = createServerFn({ method: "POST" })
     if (!ids.length) throw new Error("没有选择记录");
     await withTransaction(sql, async (tx) => {
       for (const id of ids) {
-        const before = await tx`select * from customer_inquiries where id = ${id} and deleted_at is null for update`;
+        const before =
+          await tx`select * from customer_inquiries where id = ${id} and deleted_at is null for update`;
         if (!before[0]) throw new Error("存在不可删除的询价记录");
-        const after = await tx`update customer_inquiries set deleted_at = now() where id = ${id} returning *`;
+        const after =
+          await tx`update customer_inquiries set deleted_at = now() where id = ${id} returning *`;
         await logOp(tx, "delete", "inquiry", id, { principal, before: before[0], after: after[0] });
       }
     });
@@ -438,49 +528,56 @@ export const softDeleteInquiries = createServerFn({ method: "POST" })
 export const listWatchlist = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
-  const principal = requirePotential(await getCurrentPrincipal(context.bearerToken), "potential.read");
-  const sql = await sqlClient();
-  await ensureSeed(sql);
-  const rows = potentialScopeFor(principal) === "own"
-    ? await sql`
+    const principal = requirePotential(
+      await getCurrentPrincipal(context.bearerToken),
+      "potential.read",
+    );
+    const sql = await sqlClient();
+    await ensureSeed(sql);
+    const rows =
+      potentialScopeFor(principal) === "own"
+        ? await sql`
         select w.part_id, w.note, w.created_at as added_at, p.*
         from potential_models w join parts p on p.id = w.part_id
         where w.user_id = ${principal.userId}
         order by w.created_at desc
       `
-    : await sql`
+        : await sql`
         select w.part_id, max(w.note) as note, max(w.created_at) as added_at, p.*
         from potential_models w join parts p on p.id = w.part_id
         group by w.part_id, p.id
         order by max(w.created_at) desc
       `;
-  const flags = await matchFlagsForParts(
-    sql,
-    rows.map((r) => String(r.part_id)),
-    undefined,
-    principal.userId,
-    potentialScopeFor(principal),
-  );
-  return rows.map((r) => {
-    const f = flags.get(String(r.part_id))!;
-    return {
-      partId: String(r.part_id),
-      note: r.note ? String(r.note) : null,
-      addedAt: iso(r.added_at),
-      mpn: String(r.mpn),
-      brandCode: r.brand_code ? String(r.brand_code) : null,
-      category: r.category ? String(r.category) : null,
-      flags: f,
-      stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
-    };
+    const flags = await matchFlagsForParts(
+      sql,
+      rows.map((r) => String(r.part_id)),
+      undefined,
+      principal.userId,
+      potentialScopeFor(principal),
+    );
+    return rows.map((r) => {
+      const f = flags.get(String(r.part_id))!;
+      return {
+        partId: String(r.part_id),
+        note: r.note ? String(r.note) : null,
+        addedAt: iso(r.added_at),
+        mpn: String(r.mpn),
+        brandCode: r.brand_code ? String(r.brand_code) : null,
+        category: r.category ? String(r.category) : null,
+        flags: f,
+        stockLine: formatStockLine(f.byWarehouse, f.inTransit, f.transitEtaLabel),
+      };
+    });
   });
-});
 
 export const toggleWatch = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { partId: string; on: boolean; note?: string }) => input)
   .handler(async ({ data, context }) => {
-    const principal = requirePotential(await getCurrentPrincipal(context.bearerToken), "potential.write");
+    const principal = requirePotential(
+      await getCurrentPrincipal(context.bearerToken),
+      "potential.write",
+    );
     const sql = await sqlClient();
     if (data.on) {
       await sql`
@@ -505,15 +602,20 @@ export type PotentialCandidate = {
 
 export const parsePotentialImport = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((input: {
-    sourceType: ImportSource;
-    text?: string;
-    filename?: string;
-    fileBase64?: string;
-    mime?: string;
-  }) => input)
+  .validator(
+    (input: {
+      sourceType: ImportSource;
+      text?: string;
+      filename?: string;
+      fileBase64?: string;
+      mime?: string;
+    }) => input,
+  )
   .handler(async ({ data, context }) => {
-    const principal = requirePotential(await getCurrentPrincipal(context.bearerToken), "potential.write");
+    const principal = requirePotential(
+      await getCurrentPrincipal(context.bearerToken),
+      "potential.write",
+    );
     const sql = await sqlClient();
     await ensureSeed(sql);
     const resolved = await resolveImportWithEngine({
@@ -569,7 +671,10 @@ export const batchAddPotential = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { rows: { mpn: string; selected: boolean; note?: string }[] }) => input)
   .handler(async ({ data, context }) => {
-    const principal = requirePotential(await getCurrentPrincipal(context.bearerToken), "potential.write");
+    const principal = requirePotential(
+      await getCurrentPrincipal(context.bearerToken),
+      "potential.write",
+    );
     if (!Array.isArray(data.rows) || data.rows.length > 5000) throw new Error("潜力型号行数无效");
     const sql = await sqlClient();
     const result = await sql.transaction!(async (tx) => {

@@ -18,12 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { useAppAccess } from "@/lib/auth/use-app-access";
 
@@ -51,18 +46,29 @@ function InquiriesPage() {
           <h1 className="text-xl font-medium">客户询价</h1>
           <p className="text-sm text-muted-foreground">同一客户重复询同一型号，必须新记一条。</p>
         </div>
-        {canWrite && <Button onClick={() => setOpen(true)}>
-          <Plus className="size-4" />
-          记一笔
-        </Button>}
+        {canWrite && (
+          <Button onClick={() => setOpen(true)}>
+            <Plus className="size-4" />
+            记一笔
+          </Button>
+        )}
       </div>
       <div className="flex flex-wrap gap-2">
-        <NativeSelect className="w-32" value={scope} onChange={(e) => setScope(e.target.value as typeof scope)}>
+        <NativeSelect
+          className="w-32"
+          value={scope}
+          onChange={(e) => setScope(e.target.value as typeof scope)}
+        >
           <option value="valid">当前有效</option>
           <option value="history">历史无效</option>
           <option value="all">全部</option>
         </NativeSelect>
-        <Input className="max-w-xs" value={q} onChange={(e) => setQ(e.target.value)} placeholder="型号 / 客户" />
+        <Input
+          className="max-w-xs"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="型号 / 客户"
+        />
       </div>
       {canWrite && sel.length > 0 && (
         <div className="flex flex-wrap gap-2 rounded-lg bg-secondary px-3 py-2 text-sm">
@@ -116,15 +122,28 @@ function InquiriesPage() {
               }
               className="mt-1"
             />
-            <Link to="/parts/$partId" params={{ partId: it.partId }} search={{ from: "parts" }} className="min-w-0 flex-1">
+            <Link
+              to="/parts/$partId"
+              params={{ partId: it.partId }}
+              search={{ from: "parts" }}
+              className="min-w-0 flex-1"
+            >
               <div className="flex flex-wrap items-center gap-2">
                 <Mpn value={it.mpn} />
-                {it.brandCode && <span className="text-xs text-muted-foreground">{it.brandCode}</span>}
+                {it.brandCode && (
+                  <span className="text-xs text-muted-foreground">{it.brandCode}</span>
+                )}
                 <HitBadges flags={it.flags} />
                 {!it.isValid && <span className="text-[11px] text-muted-foreground">无效</span>}
               </div>
               <div className="mt-1 text-sm">
                 {it.customerName} · {it.qty != null ? formatQty(it.qty) : "—"}
+                {it.tpAmount != null && (
+                  <span className="ml-2 text-muted-foreground">
+                    · TP {it.tpAmount}
+                    {it.tpCurrency ? ` ${it.tpCurrency}` : ""}
+                  </span>
+                )}
               </div>
               <div className="text-xs text-muted-foreground">
                 {formatWhen(it.inquiredAt)}
@@ -142,20 +161,28 @@ function InquiriesPage() {
               <span className="text-sm">{c.name}</span>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 {c.isActive ? "启用" : "停用"}
-                {canWrite && <Switch
-                  checked={c.isActive}
-                  onCheckedChange={(v) =>
-                    setCustomerActive({ data: { id: c.id, isActive: v } }).then(() =>
-                      qc.invalidateQueries(),
-                    )
-                  }
-                />}
+                {canWrite && (
+                  <Switch
+                    checked={c.isActive}
+                    onCheckedChange={(v) =>
+                      setCustomerActive({ data: { id: c.id, isActive: v } }).then(() =>
+                        qc.invalidateQueries(),
+                      )
+                    }
+                  />
+                )}
               </div>
             </li>
           ))}
         </ul>
       </section>
-      {canWrite && <InquiryDialog open={open} onOpenChange={setOpen} customers={customers.map((c) => c.name)} />}
+      {canWrite && (
+        <InquiryDialog
+          open={open}
+          onOpenChange={setOpen}
+          customers={customers.map((c) => c.name)}
+        />
+      )}
     </div>
   );
 }

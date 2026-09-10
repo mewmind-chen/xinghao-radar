@@ -120,6 +120,8 @@ export type CustomerInquiry = {
   mpn: string;
   brandCode: string | null;
   qty: number | null;
+  tpAmount: number | null;
+  tpCurrency: Currency | null;
   inquiredAt: string;
   isValid: boolean;
   invalidatedAt: string | null;

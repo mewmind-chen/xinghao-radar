@@ -5,9 +5,20 @@ import { ArrowLeft, PenLine, Star } from "lucide-react";
 import { getPartDetail, searchParts } from "@/lib/server/parts";
 import { updatePartIdentity } from "@/lib/server/parts";
 import { listStock } from "@/lib/server/stock";
-import { receiveTransit, stockAdjust, stockMeta, stockOutbound, stockTransfer } from "@/lib/server/stock";
+import {
+  receiveTransit,
+  stockAdjust,
+  stockMeta,
+  stockOutbound,
+  stockTransfer,
+} from "@/lib/server/stock";
 import { setOfferValid, setInquiryValid, toggleWatch } from "@/lib/server/market";
-import { analyzePartMpn, getPartAnalysis, getPartReview, submitPartReview } from "@/lib/server/knowledge";
+import {
+  analyzePartMpn,
+  getPartAnalysis,
+  getPartReview,
+  submitPartReview,
+} from "@/lib/server/knowledge";
 import type { PartKnowledgeAnalysis } from "@/lib/server/knowledge";
 import {
   formatCost,
@@ -28,12 +39,7 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -72,7 +78,11 @@ function PartDetail() {
     queryKey: ["part", partId],
     queryFn: () => getPartDetail({ data: { id: partId } }),
   });
-  const meta = useQuery({ queryKey: ["stock-meta"], queryFn: () => stockMeta(), enabled: canStockWrite });
+  const meta = useQuery({
+    queryKey: ["stock-meta"],
+    queryFn: () => stockMeta(),
+    enabled: canStockWrite,
+  });
   const d = q.data;
   const [op, setOp] = useState<null | "out" | "move" | "adj" | "recv">(null);
   const [lotId, setLotId] = useState<string | null>(null);
@@ -184,9 +194,20 @@ function PartDetail() {
   const [reviewNote, setReviewNote] = useState("");
   const [correctedJson, setCorrectedJson] = useState("");
   const reviewMut = useMutation({
-    mutationFn: () => submitPartReview({ data: { mpn: d?.part.mpn ?? "", decision: reviewDecision, note: reviewNote || undefined, correctedJson: reviewDecision === "corrected" ? correctedJson : undefined } }),
+    mutationFn: () =>
+      submitPartReview({
+        data: {
+          mpn: d?.part.mpn ?? "",
+          decision: reviewDecision,
+          note: reviewNote || undefined,
+          correctedJson: reviewDecision === "corrected" ? correctedJson : undefined,
+        },
+      }),
     onSuccess: (result) => {
-      if (!result.ok) { toast.error(result.error || "保存决定失败"); return; }
+      if (!result.ok) {
+        toast.error(result.error || "保存决定失败");
+        return;
+      }
       void qc.invalidateQueries({ queryKey: ["part-review"] });
       toast.success("人工校准已保存");
     },
@@ -230,7 +251,9 @@ function PartDetail() {
             ← 上一个
           </Link>
         ) : (
-          <span className="shrink-0 rounded-md border border-border px-2 py-1 opacity-40">← 上一个</span>
+          <span className="shrink-0 rounded-md border border-border px-2 py-1 opacity-40">
+            ← 上一个
+          </span>
         )}
         <span className="tabular">
           {ctxList.data ? (ctxIdx >= 0 ? `${ctxIdx + 1} / ${ctxList.data.length}` : "—") : "…"}
@@ -246,7 +269,9 @@ function PartDetail() {
             下一个 →
           </Link>
         ) : (
-          <span className="shrink-0 rounded-md border border-border px-2 py-1 opacity-40">下一个 →</span>
+          <span className="shrink-0 rounded-md border border-border px-2 py-1 opacity-40">
+            下一个 →
+          </span>
         )}
       </div>
       <header className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
@@ -257,7 +282,9 @@ function PartDetail() {
                 {d.part.mpn}
               </h1>
               {d.part.brandCode && <Badge variant="outline">{d.part.brandCode}</Badge>}
-              {d.part.category && <span className="text-sm text-muted-foreground">{d.part.category}</span>}
+              {d.part.category && (
+                <span className="text-sm text-muted-foreground">{d.part.category}</span>
+              )}
               <HitBadges flags={d.flags} />
             </div>
             <p className="mt-2 font-mono text-sm tabular text-foreground">{d.stockLine}</p>
@@ -266,23 +293,27 @@ function PartDetail() {
             </p>
           </div>
           <div className="flex items-center gap-1.5">
-            {canModelWrite && <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setFixOpen(true)}
-              title="修正完整型号/品牌（录入错误时）"
-            >
-              <PenLine className="size-3.5" />
-              型号修正
-            </Button>}
-            {canPotentialWrite && <Button
-              variant={d.watched ? "hit" : "outline"}
-              className="w-full sm:w-auto"
-              onClick={() => watchMut.mutate(!d.watched)}
-            >
-              <Star className={cn("size-4", d.watched && "fill-current")} />
-              {d.watched ? "已关注" : "潜力"}
-            </Button>}
+            {canModelWrite && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setFixOpen(true)}
+                title="修正完整型号/品牌（录入错误时）"
+              >
+                <PenLine className="size-3.5" />
+                型号修正
+              </Button>
+            )}
+            {canPotentialWrite && (
+              <Button
+                variant={d.watched ? "hit" : "outline"}
+                className="w-full sm:w-auto"
+                onClick={() => watchMut.mutate(!d.watched)}
+              >
+                <Star className={cn("size-4", d.watched && "fill-current")} />
+                {d.watched ? "已关注" : "潜力"}
+              </Button>
+            )}
           </div>
         </div>
       </header>
@@ -300,11 +331,40 @@ function PartDetail() {
                 <span className="font-medium">{l.warehouseCode}</span>
                 <div className="flex items-center gap-2">
                   <span className="font-mono tabular">{formatInventoryQty(l.qtyRemaining)}</span>
-                  {canStockWrite && <>
-                    <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("out"); }}>出库</Button>
-                    <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("move"); }}>调拨</Button>
-                    <Button size="sm" variant="ghost" onClick={() => { setLotId(l.id); setOp("adj"); }}>修正</Button>
-                  </>}
+                  {canStockWrite && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setLotId(l.id);
+                          setOp("out");
+                        }}
+                      >
+                        出库
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setLotId(l.id);
+                          setOp("move");
+                        }}
+                      >
+                        调拨
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setLotId(l.id);
+                          setOp("adj");
+                        }}
+                      >
+                        修正
+                      </Button>
+                    </>
+                  )}
                 </div>
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
@@ -335,16 +395,18 @@ function PartDetail() {
                         ? ` · ${formatEtaLabel({ etaDate: l.etaDate, etaText: l.etaText, precision: l.etaPrecision })}`
                         : ""}
                     </span>
-                    {canStockWrite && <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        setLotId(l.id);
-                        setOp("recv");
-                      }}
-                    >
-                      转入库
-                    </Button>}
+                    {canStockWrite && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setLotId(l.id);
+                          setOp("recv");
+                        }}
+                      >
+                        转入库
+                      </Button>
+                    )}
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     {[
@@ -364,7 +426,9 @@ function PartDetail() {
 
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <h2 className="mb-3 text-sm font-medium">渠道</h2>
-        {validOffers.length === 0 && <p className="text-sm text-muted-foreground">当前无有效货源。</p>}
+        {validOffers.length === 0 && (
+          <p className="text-sm text-muted-foreground">当前无有效货源。</p>
+        )}
         <ul className="space-y-2">
           {validOffers.map((o) => (
             <li key={o.id} className="flex items-start justify-between gap-2">
@@ -374,18 +438,20 @@ function PartDetail() {
                 </div>
                 <div className="text-xs text-muted-foreground">{formatWhen(o.offeredAt)}</div>
               </div>
-              {canMarketWrite && <Button
-                size="sm"
-                variant="ghost"
-                onClick={() =>
-                  setOfferValid({ data: { ids: [o.id], isValid: false } }).then(() => {
-                    qc.invalidateQueries();
-                    toast.success("已设为无效");
-                  })
-                }
-              >
-                无效
-              </Button>}
+              {canMarketWrite && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() =>
+                    setOfferValid({ data: { ids: [o.id], isValid: false } }).then(() => {
+                      qc.invalidateQueries();
+                      toast.success("已设为无效");
+                    })
+                  }
+                >
+                  无效
+                </Button>
+              )}
             </li>
           ))}
         </ul>
@@ -398,16 +464,18 @@ function PartDetail() {
               {histOffers.map((o) => (
                 <li key={o.id}>
                   {o.channelName} · {formatOfferLine(o)} · {formatWhen(o.offeredAt)}
-                  {canMarketWrite && <button
-                    className="ml-2 text-xs underline"
-                    onClick={() =>
-                      setOfferValid({ data: { ids: [o.id], isValid: true } }).then(() =>
-                        qc.invalidateQueries(),
-                      )
-                    }
-                  >
-                    恢复
-                  </button>}
+                  {canMarketWrite && (
+                    <button
+                      className="ml-2 text-xs underline"
+                      onClick={() =>
+                        setOfferValid({ data: { ids: [o.id], isValid: true } }).then(() =>
+                          qc.invalidateQueries(),
+                        )
+                      }
+                    >
+                      恢复
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -424,21 +492,29 @@ function PartDetail() {
               <div>
                 <div className="text-sm">
                   {i.customerName} · {i.qty != null ? formatQty(i.qty) : "—"}
+                  {i.tpAmount != null && (
+                    <span className="ml-2 text-muted-foreground">
+                      · TP {i.tpAmount}
+                      {i.tpCurrency ? ` ${i.tpCurrency}` : ""}
+                    </span>
+                  )}
                 </div>
                 <div className="text-xs text-muted-foreground">{formatWhen(i.inquiredAt)}</div>
               </div>
-              {canMarketWrite && <Button
-                size="sm"
-                variant="ghost"
-                onClick={() =>
-                  setInquiryValid({ data: { ids: [i.id], isValid: false } }).then(() => {
-                    qc.invalidateQueries();
-                    toast.success("已设为无效");
-                  })
-                }
-              >
-                无效
-              </Button>}
+              {canMarketWrite && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() =>
+                    setInquiryValid({ data: { ids: [i.id], isValid: false } }).then(() => {
+                      qc.invalidateQueries();
+                      toast.success("已设为无效");
+                    })
+                  }
+                >
+                  无效
+                </Button>
+              )}
             </li>
           ))}
         </ul>
@@ -450,17 +526,22 @@ function PartDetail() {
             <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
               {histInq.map((i) => (
                 <li key={i.id}>
-                  {i.customerName} · {i.qty != null ? formatQty(i.qty) : "—"} · {formatWhen(i.inquiredAt)}
-                  {canMarketWrite && <button
-                    className="ml-2 text-xs underline"
-                    onClick={() =>
-                      setInquiryValid({ data: { ids: [i.id], isValid: true } }).then(() =>
-                        qc.invalidateQueries(),
-                      )
-                    }
-                  >
-                    恢复
-                  </button>}
+                  {i.customerName} · {i.qty != null ? formatQty(i.qty) : "—"}
+                  {i.tpAmount != null &&
+                    ` · TP ${i.tpAmount}${i.tpCurrency ? ` ${i.tpCurrency}` : ""}`}
+                  {` · ${formatWhen(i.inquiredAt)}`}
+                  {canMarketWrite && (
+                    <button
+                      className="ml-2 text-xs underline"
+                      onClick={() =>
+                        setInquiryValid({ data: { ids: [i.id], isValid: true } }).then(() =>
+                          qc.invalidateQueries(),
+                        )
+                      }
+                    >
+                      恢复
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -482,18 +563,16 @@ function PartDetail() {
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
         <div className="mb-2 flex items-center justify-between gap-2">
           <h2 className="text-sm font-medium">产品知识</h2>
-          {access.can("analysis.write") && <Button
-            size="sm"
-            variant="outline"
-            onClick={() => analyzeMut.mutate()}
-            disabled={analyzeMut.isPending}
-          >
-            {analyzeMut.isPending
-              ? "分析中…"
-              : stored.data
-                ? "重新分析"
-                : "型号分析"}
-          </Button>}
+          {access.can("analysis.write") && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => analyzeMut.mutate()}
+              disabled={analyzeMut.isPending}
+            >
+              {analyzeMut.isPending ? "分析中…" : stored.data ? "重新分析" : "型号分析"}
+            </Button>
+          )}
         </div>
         {(d.part.description || d.part.params) && (
           <div className="mb-2">
@@ -503,76 +582,108 @@ function PartDetail() {
             )}
           </div>
         )}
-        <p className="mt-1 text-[11px] text-muted-foreground">仅基于已录入资料，不猜测车规/军工等级。</p>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          仅基于已录入资料，不猜测车规/军工等级。
+        </p>
         {!analyzeMut.data && !analyzeMut.isPending && stored.data?.analysis ? (
           <>
             <PartKnowledgePanel analysis={stored.data.analysis} loading={false} />
             {stored.data.analyzedAt && (
               <p className="mt-1 text-[10px] text-muted-foreground">
-                已保存 · 上次分析 {new Date(stored.data.analyzedAt).toLocaleString("zh-CN", { hour12: false })}
+                已保存 · 上次分析{" "}
+                {new Date(stored.data.analyzedAt).toLocaleString("zh-CN", { hour12: false })}
               </p>
             )}
           </>
         ) : null}
         {/* 本次分析结果（或进行中骨架）优先于缓存 */}
-        <PartKnowledgePanel
-          analysis={analyzeMut.data}
-          loading={analyzeMut.isPending}
-        />
+        <PartKnowledgePanel analysis={analyzeMut.data} loading={analyzeMut.isPending} />
         {access.can("analysis.write") && (
           <div className="mt-4 rounded-lg border border-border bg-secondary/30 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-xs font-medium">人工校准</h3>
-                <p className="mt-1 text-[11px] text-muted-foreground">分析只是建议；最终决定由人工确认并保存在本地。</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  分析只是建议；最终决定由人工确认并保存在本地。
+                </p>
               </div>
               <div className="flex items-center gap-2">
-                <NativeSelect value={reviewDecision} onChange={(e) => setReviewDecision(e.target.value as typeof reviewDecision)} className="h-8 text-xs">
+                <NativeSelect
+                  value={reviewDecision}
+                  onChange={(e) => setReviewDecision(e.target.value as typeof reviewDecision)}
+                  className="h-8 text-xs"
+                >
                   <option value="accept">接受</option>
                   <option value="reject">拒绝</option>
                   <option value="corrected">修正</option>
                 </NativeSelect>
-                <Button size="sm" disabled={reviewMut.isPending || (reviewDecision === "corrected" && !correctedJson.trim())} onClick={() => reviewMut.mutate()}>
+                <Button
+                  size="sm"
+                  disabled={
+                    reviewMut.isPending || (reviewDecision === "corrected" && !correctedJson.trim())
+                  }
+                  onClick={() => reviewMut.mutate()}
+                >
                   {reviewMut.isPending ? "保存中…" : "保存决定"}
                 </Button>
               </div>
             </div>
             {reviewDecision === "corrected" && (
-              <Textarea className="mt-2 min-h-20 font-mono text-xs" value={correctedJson} onChange={(e) => setCorrectedJson(e.target.value)} placeholder="提交修正：填写已人工确认的 JSON" aria-label="提交修正 JSON" />
+              <Textarea
+                className="mt-2 min-h-20 font-mono text-xs"
+                value={correctedJson}
+                onChange={(e) => setCorrectedJson(e.target.value)}
+                placeholder="提交修正：填写已人工确认的 JSON"
+                aria-label="提交修正 JSON"
+              />
             )}
-            <Input className="mt-2 h-8 text-xs" value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} placeholder="备注（可选）" aria-label="人工校准备注" />
-            {review.data?.decision && <p className="mt-2 text-[11px] text-muted-foreground">上次决定：{review.data.decision} · {review.data.reviewer || "—"}</p>}
+            <Input
+              className="mt-2 h-8 text-xs"
+              value={reviewNote}
+              onChange={(e) => setReviewNote(e.target.value)}
+              placeholder="备注（可选）"
+              aria-label="人工校准备注"
+            />
+            {review.data?.decision && (
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                上次决定：{review.data.decision} · {review.data.reviewer || "—"}
+              </p>
+            )}
           </div>
         )}
       </section>
 
-      {canModelWrite && <CorrectPartDialog
-        open={fixOpen}
-        onClose={() => setFixOpen(false)}
-        partId={partId}
-        current={{ mpn: d.part.mpn, brand: d.part.brandCode ?? "" }}
-        onDone={() => {
-          qc.invalidateQueries();
-          setFixOpen(false);
-        }}
-      />}
+      {canModelWrite && (
+        <CorrectPartDialog
+          open={fixOpen}
+          onClose={() => setFixOpen(false)}
+          partId={partId}
+          current={{ mpn: d.part.mpn, brand: d.part.brandCode ?? "" }}
+          onDone={() => {
+            qc.invalidateQueries();
+            setFixOpen(false);
+          }}
+        />
+      )}
 
-      {canStockWrite && <StockOpDialog
-        open={op}
-        onClose={() => {
-          setOp(null);
-          setLotId(null);
-        }}
-        warehouses={meta.data?.warehouses ?? []}
-        lotId={lotId}
-        onHandQty={onHandLots.find((l) => l.id === lotId)?.qtyRemaining}
-        transitQty={transitLots.find((l) => l.id === lotId)?.qtyRemaining}
-        onDone={() => {
-          qc.invalidateQueries();
-          setOp(null);
-          setLotId(null);
-        }}
-      />}
+      {canStockWrite && (
+        <StockOpDialog
+          open={op}
+          onClose={() => {
+            setOp(null);
+            setLotId(null);
+          }}
+          warehouses={meta.data?.warehouses ?? []}
+          lotId={lotId}
+          onHandQty={onHandLots.find((l) => l.id === lotId)?.qtyRemaining}
+          transitQty={transitLots.find((l) => l.id === lotId)?.qtyRemaining}
+          onDone={() => {
+            qc.invalidateQueries();
+            setOp(null);
+            setLotId(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -601,17 +712,30 @@ function PartKnowledgePanel({
     );
   }
 
-  const { positioning, headline, specs, applications, replacements, lcsc, hqew, internalBusinessAdvice } = analysis;
+  const {
+    positioning,
+    headline,
+    specs,
+    applications,
+    replacements,
+    lcsc,
+    hqew,
+    internalBusinessAdvice,
+  } = analysis;
   const money = (n: number | null | undefined) =>
     n == null || !Number.isFinite(n) ? "—" : `¥${n.toLocaleString("zh-CN")}`;
 
   return (
     <div className="mt-3 space-y-3">
       {analysis.analysisSource === "local_fallback" && (
-        <div role="status" className="rounded-lg border border-amber-300/70 bg-amber-50 px-3 py-2 text-amber-950 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-100">
+        <div
+          role="status"
+          className="rounded-lg border border-amber-300/70 bg-amber-50 px-3 py-2 text-amber-950 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-100"
+        >
           <p className="text-sm font-medium">本地降级结果</p>
           <p className="mt-1 text-xs leading-5">
-            这是降级信息，不是 Platform Intelligence。已使用本地数据。事实、写库和最终决定仍由工作台与人工负责。
+            这是降级信息，不是 Platform
+            Intelligence。已使用本地数据。事实、写库和最终决定仍由工作台与人工负责。
           </p>
         </div>
       )}
@@ -640,8 +764,7 @@ function PartKnowledgePanel({
             )}
             {hqew && hqew.count > 0 && (
               <Badge variant="outline" className="text-[11px]">
-                华强 {hqew.count} 家 · {formatQty(hqew.totalStock)} · 最低{" "}
-                {money(hqew.minPrice)}
+                华强 {hqew.count} 家 · {formatQty(hqew.totalStock)} · 最低 {money(hqew.minPrice)}
               </Badge>
             )}
           </div>
@@ -798,7 +921,8 @@ function CorrectPartDialog({
         <div className="grid gap-3">
           <p className="text-xs text-muted-foreground">
             当前：<span className="font-mono">{current.mpn}</span>
-            {current.brand ? ` · ${current.brand}` : ""}。修正后库存、渠道、询价、流水等历史全部保留。
+            {current.brand ? ` · ${current.brand}` : ""}
+            。修正后库存、渠道、询价、流水等历史全部保留。
           </p>
           <div>
             <Label>完整型号</Label>
@@ -833,7 +957,11 @@ function CorrectPartDialog({
           <div className="grid grid-cols-2 gap-2">
             <div>
               <Label>类目</Label>
-              <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="如 运算放大器" />
+              <Input
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                placeholder="如 运算放大器"
+              />
             </div>
             <div>
               <Label>封装</Label>
@@ -871,14 +999,23 @@ function StockOpDialog({
   const [qty, setQty] = useState("");
   const [countedQty, setCountedQty] = useState("");
   const title =
-    open === "out" ? "出库" : open === "move" ? "调拨" : open === "adj" ? "修正" : open === "recv" ? "在途转入库" : "";
+    open === "out"
+      ? "出库"
+      : open === "move"
+        ? "调拨"
+        : open === "adj"
+          ? "修正"
+          : open === "recv"
+            ? "在途转入库"
+            : "";
 
   async function submit() {
     try {
       const n = parseQty(qty) ?? Number(qty);
       if (open === "adj") {
         const actual = Number(countedQty);
-        if (!Number.isInteger(actual) || actual < 0) throw new Error("盘点数量必须是大于等于 0 的整数");
+        if (!Number.isInteger(actual) || actual < 0)
+          throw new Error("盘点数量必须是大于等于 0 的整数");
         await stockAdjust({ data: { lotId: lotId ?? "", countedQty: actual } });
       }
       if (open !== "adj" && (!Number.isFinite(n) || n <= 0)) throw new Error("数量无效");
@@ -898,7 +1035,10 @@ function StockOpDialog({
 
   return (
     <Sheet open={Boolean(open)} onOpenChange={(v) => !v && onClose()}>
-      <SheetContent side="bottom" className="max-h-[86vh] overflow-y-auto md:inset-y-0 md:right-0 md:left-auto md:bottom-auto md:h-full md:max-h-none md:w-[440px] md:rounded-none md:p-6">
+      <SheetContent
+        side="bottom"
+        className="max-h-[86vh] overflow-y-auto md:inset-y-0 md:right-0 md:left-auto md:bottom-auto md:h-full md:max-h-none md:w-[440px] md:rounded-none md:p-6"
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
@@ -907,11 +1047,13 @@ function StockOpDialog({
             <div>
               <Label>{open === "move" ? "从" : "仓库"}</Label>
               <NativeSelect value={wh} onChange={(e) => setWh(e.target.value)}>
-                {warehouses.filter((w) => w.isActive).map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.code}
-                  </option>
-                ))}
+                {warehouses
+                  .filter((w) => w.isActive)
+                  .map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.code}
+                    </option>
+                  ))}
               </NativeSelect>
             </div>
           )}
@@ -919,11 +1061,13 @@ function StockOpDialog({
             <div>
               <Label>到</Label>
               <NativeSelect value={wh2} onChange={(e) => setWh2(e.target.value)}>
-                {warehouses.filter((w) => w.isActive).map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.code}
-                  </option>
-                ))}
+                {warehouses
+                  .filter((w) => w.isActive)
+                  .map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.code}
+                    </option>
+                  ))}
               </NativeSelect>
             </div>
           )}
@@ -931,21 +1075,34 @@ function StockOpDialog({
             <div>
               <Label>入到仓库</Label>
               <NativeSelect value={wh} onChange={(e) => setWh(e.target.value)}>
-                {warehouses.filter((w) => w.isActive).map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.code}
-                  </option>
-                ))}
+                {warehouses
+                  .filter((w) => w.isActive)
+                  .map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.code}
+                    </option>
+                  ))}
               </NativeSelect>
               <p className="mt-1 text-xs text-muted-foreground">
-                剩余在途 {transitQty != null ? formatInventoryQty(transitQty) : "—"} · 途→仓不增加总敞口
+                剩余在途 {transitQty != null ? formatInventoryQty(transitQty) : "—"} ·
+                途→仓不增加总敞口
               </p>
             </div>
           )}
           <div>
             <Label>{open === "adj" ? "盘点数量" : "数量"}</Label>
-            <Input value={open === "adj" ? countedQty : qty} onChange={(e) => open === "adj" ? setCountedQty(e.target.value) : setQty(e.target.value)} placeholder={open === "adj" ? String(onHandQty ?? 0) : "1000 或 1K"} />
-            {open === "adj" && <p className="mt-1 text-xs text-muted-foreground">当前 {formatInventoryQty(onHandQty ?? 0)}，输入盘点后的实际数量。</p>}
+            <Input
+              value={open === "adj" ? countedQty : qty}
+              onChange={(e) =>
+                open === "adj" ? setCountedQty(e.target.value) : setQty(e.target.value)
+              }
+              placeholder={open === "adj" ? String(onHandQty ?? 0) : "1000 或 1K"}
+            />
+            {open === "adj" && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                当前 {formatInventoryQty(onHandQty ?? 0)}，输入盘点后的实际数量。
+              </p>
+            )}
           </div>
           <Button onClick={submit}>确认</Button>
         </div>
