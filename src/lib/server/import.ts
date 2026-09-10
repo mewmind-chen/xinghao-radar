@@ -44,7 +44,7 @@ import {
 import { ensureSeed } from "./seed";
 import { resolveDateCode } from "@/lib/inventory/date-code";
 import { sameNullableNumber } from "@/lib/import-duplicate";
-import { inquiryTpPersistenceIssue } from "@/lib/import-review";
+import { inquiryReviewBlockingReason, isCompositeMpn } from "@/lib/import-review";
 
 const IMPORT_KINDS = ["offer", "inquiry", "stock", "transit", "potential", "mixed"] as const;
 const IMPORT_PARSE_KINDS = [...IMPORT_KINDS, "neutral"] as const;
@@ -263,10 +263,6 @@ function appendWarning(row: ImportRow, warning: string) {
   row.selected = false;
 }
 
-function isCompositeMpn(mpn: string): boolean {
-  return /\s+(?:\/|\||或)\s+/.test(mpn.trim()) || /[／｜]/.test(mpn.trim());
-}
-
 async function annotateImportReviewRows(
   sql: Awaited<ReturnType<typeof sqlClient>>,
   rows: ImportRow[],
@@ -334,7 +330,10 @@ function stripKindSelectionWarning(warning: string | null): string | null {
   return (
     warning
       ?.split("；")
-      .filter((message) => !message.includes("业务类型无法确定") && !message.includes("业务类型已人工修改"))
+      .filter(
+        (message) =>
+          !message.includes("业务类型无法确定") && !message.includes("业务类型已人工修改"),
+      )
       .join("；") || null
   );
 }
@@ -342,22 +341,26 @@ function stripKindSelectionWarning(warning: string | null): string | null {
 function rowsForImportReview(
   rows: ImportRow[],
   selectedKind: ImportKind,
+  defaultCustomer?: string,
 ): ImportRow[] {
   return rows.map((row) => {
     const warning = stripKindSelectionWarning(row.warning);
     const wasNeutral = row.kind === "mixed";
     const targetKind = selectedKind === "mixed" ? row.kind : selectedKind;
-    const eligible = targetKind !== "mixed" && Boolean(row.mpn.trim()) && !warning && !row.brandConflict;
+    const eligible =
+      targetKind === "inquiry"
+        ? !inquiryReviewBlockingReason({ ...row, warning }, defaultCustomer)
+        : targetKind !== "mixed" && Boolean(row.mpn.trim()) && !warning && !row.brandConflict;
     return {
       ...row,
-      ...(targetKind === "inquiry"
-        ? { costAmount: null, costCurrency: null, costTax: null }
-        : {}),
+      ...(targetKind === "inquiry" ? { costAmount: null, costCurrency: null, costTax: null } : {}),
       kind: targetKind,
       warning,
       duplicate: false,
       duplicateReason: null,
-      selected: selectedKind === "mixed" ? false : wasNeutral ? eligible : row.selected && eligible,
+      // A fresh extraction is only “待确认”; a checkbox is an explicit user
+      // confirmation and must never be inferred from the extractor output.
+      selected: selectedKind === "mixed" ? false : wasNeutral ? false : row.selected && eligible,
     };
   });
 }
@@ -388,8 +391,10 @@ function flagIntraFileDuplicates(
       normalizeMpn(row.mpn),
       row.qty ?? "",
       row.dateCode ?? "",
-      rowKind === "stock" ? row.channel ?? defaults?.supplier ?? "" : row.channel ?? defaults?.channel ?? "",
-      rowKind === "inquiry" ? row.customer ?? defaults?.customer ?? "" : row.customer ?? "",
+      rowKind === "stock"
+        ? (row.channel ?? defaults?.supplier ?? "")
+        : (row.channel ?? defaults?.channel ?? ""),
+      rowKind === "inquiry" ? (row.customer ?? defaults?.customer ?? "") : (row.customer ?? ""),
       row.warehouse ?? defaults?.warehouseId ?? "",
       row.isTp ? "tp" : (row.priceAmount ?? ""),
     ].join("|");
@@ -459,14 +464,21 @@ async function markDuplicates(
         partIds,
       )
     : [];
-  const followed = potentialUserId && partIds.length
-    ? await sql.query<{ part_id: string }>(
-        `select part_id from potential_models where user_id = $${partIds.length + 1} and part_id in (${placeholders})`,
-        [...partIds, potentialUserId],
-      )
-    : [];
+  const followed =
+    potentialUserId && partIds.length
+      ? await sql.query<{ part_id: string }>(
+          `select part_id from potential_models where user_id = $${partIds.length + 1} and part_id in (${placeholders})`,
+          [...partIds, potentialUserId],
+        )
+      : [];
   const followedSet = new Set(followed.map((row) => String(row.part_id)));
-  const sameName = (a: unknown, b: unknown) => String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+  const sameName = (a: unknown, b: unknown) =>
+    String(a ?? "")
+      .trim()
+      .toLowerCase() ===
+    String(b ?? "")
+      .trim()
+      .toLowerCase();
   for (const row of rows) {
     if (row.duplicate) continue;
     const partId = partByKey.get(normalizeMpn(row.mpn));
@@ -478,12 +490,18 @@ async function markDuplicates(
       const cost = row.costAmount;
       const currency = cost == null ? null : (row.costCurrency ?? defaultCurrency ?? null);
       const tax = cost == null ? null : (row.costTax ?? defaultTax ?? null);
-      const hit = existingLots.some((lot) =>
-        String(lot.part_id) === partId && sameNullableNumber(lot.qty_in ?? 0, row.qty ?? 0) &&
-        String(lot.date_code ?? "") === String(row.dateCode ?? "") && sameNullableNumber(lot.cost_amount ?? -1, cost ?? -1) &&
-        String(lot.cost_currency ?? "") === String(currency ?? "") && String(lot.cost_tax ?? "") === String(tax ?? "") &&
-        (!warehouse || String(lot.warehouse_id ?? "") === warehouse || String(lot.warehouse_code ?? "") === warehouse) &&
-        (!supplierName || sameName(lot.supplier_name, supplierName)),
+      const hit = existingLots.some(
+        (lot) =>
+          String(lot.part_id) === partId &&
+          sameNullableNumber(lot.qty_in ?? 0, row.qty ?? 0) &&
+          String(lot.date_code ?? "") === String(row.dateCode ?? "") &&
+          sameNullableNumber(lot.cost_amount ?? -1, cost ?? -1) &&
+          String(lot.cost_currency ?? "") === String(currency ?? "") &&
+          String(lot.cost_tax ?? "") === String(tax ?? "") &&
+          (!warehouse ||
+            String(lot.warehouse_id ?? "") === warehouse ||
+            String(lot.warehouse_code ?? "") === warehouse) &&
+          (!supplierName || sameName(lot.supplier_name, supplierName)),
       );
       if (hit) {
         row.duplicate = true;
@@ -494,10 +512,14 @@ async function markDuplicates(
     }
     if (kind === "offer") {
       const chName = row.channel ?? defaultChannel ?? "";
-      const hit = existingOffers.some((offer) =>
-        String(offer.part_id) === partId && sameNullableNumber(offer.qty ?? -1, row.qty ?? -1) &&
-        String(offer.date_code ?? "") === String(row.dateCode ?? "") && Boolean(offer.is_tp) === Boolean(row.isTp) &&
-        sameNullableNumber(offer.price_amount ?? -1, row.priceAmount ?? -1) && (!chName || sameName(offer.channel_name, chName)),
+      const hit = existingOffers.some(
+        (offer) =>
+          String(offer.part_id) === partId &&
+          sameNullableNumber(offer.qty ?? -1, row.qty ?? -1) &&
+          String(offer.date_code ?? "") === String(row.dateCode ?? "") &&
+          Boolean(offer.is_tp) === Boolean(row.isTp) &&
+          sameNullableNumber(offer.price_amount ?? -1, row.priceAmount ?? -1) &&
+          (!chName || sameName(offer.channel_name, chName)),
       );
       if (hit) {
         row.duplicate = true;
@@ -507,9 +529,11 @@ async function markDuplicates(
     }
     if (kind === "inquiry") {
       const cuName = row.customer ?? defaultCustomer ?? "";
-      const hit = existingInquiries.some((inquiry) =>
-        String(inquiry.part_id) === partId && sameNullableNumber(inquiry.qty ?? -1, row.qty ?? -1) &&
-        (!cuName || sameName(inquiry.customer_name, cuName)),
+      const hit = existingInquiries.some(
+        (inquiry) =>
+          String(inquiry.part_id) === partId &&
+          sameNullableNumber(inquiry.qty ?? -1, row.qty ?? -1) &&
+          (!cuName || sameName(inquiry.customer_name, cuName)),
       );
       if (hit) {
         row.duplicate = true;
@@ -610,7 +634,13 @@ export const parseImport = createServerFn({ method: "POST" })
     const normalizedRows = normalizeImportDateCodes(resolved.rows);
     const rows = normalizedRows.map((row) =>
       data.kind === "neutral"
-        ? { ...row, kind: "mixed" as const, selected: false, duplicate: false, duplicateReason: null }
+        ? {
+            ...row,
+            kind: "mixed" as const,
+            selected: false,
+            duplicate: false,
+            duplicateReason: null,
+          }
         : data.kind === "mixed"
           ? row
           : { ...row, kind: data.kind },
@@ -665,7 +695,7 @@ export const prepareImportReview = createServerFn({ method: "POST" })
     requireImportKind(principal, data.kind);
     const sql = await sqlClient();
     await ensureSeed(sql);
-    const rows = rowsForImportReview(data.rows, data.kind);
+    const rows = rowsForImportReview(data.rows, data.kind, data.defaultCustomer);
     await markDuplicates(
       sql,
       rows,
@@ -679,7 +709,7 @@ export const prepareImportReview = createServerFn({ method: "POST" })
       data.defaultTax,
     );
     await annotateImportReviewRows(sql, rows);
-    return { rows, ...await importLookups(sql) };
+    return { rows, ...(await importLookups(sql)) };
   });
 
 export const confirmImport = createServerFn({ method: "POST" })
@@ -694,9 +724,12 @@ export const confirmImport = createServerFn({ method: "POST" })
     if (existing[0]) {
       if (existing[0].status === "success" && existing[0].result_json)
         return JSON.parse(String(existing[0].result_json));
-      const startedAt = existing[0].writing_started_at ? new Date(String(existing[0].writing_started_at)).getTime() : 0;
+      const startedAt = existing[0].writing_started_at
+        ? new Date(String(existing[0].writing_started_at)).getTime()
+        : 0;
       const stale = !startedAt || Date.now() - startedAt > 10 * 60 * 1000;
-      if (existing[0].status === "writing" && !stale) throw new Error("这份导入正在写入，请勿重复提交");
+      if (existing[0].status === "writing" && !stale)
+        throw new Error("这份导入正在写入，请勿重复提交");
       if (existing[0].status === "writing" || existing[0].status === "failed") {
         await sql`
           update import_batches set status = 'writing', error_message = null, result_json = null,
@@ -704,7 +737,9 @@ export const confirmImport = createServerFn({ method: "POST" })
           where id = ${existing[0].id}
         `;
       } else {
-        throw new Error(String(existing[0].error_message || "这份导入状态不可重试，请重新生成预览"));
+        throw new Error(
+          String(existing[0].error_message || "这份导入状态不可重试，请重新生成预览"),
+        );
       }
     }
     const selected = data.rows.filter((r) => r.selected && r.mpn);
@@ -716,8 +751,11 @@ export const confirmImport = createServerFn({ method: "POST" })
       if (row.warning?.includes("多个型号候选"))
         throw new Error(`${row.mpn} 原始输入包含多个型号候选，请拆分为一行一个型号`);
       if (row.brandConflict) throw new Error(`${row.mpn} 存在品牌冲突，请人工修改并重新勾选`);
-      const tpIssue = inquiryTpPersistenceIssue(row, data.kind);
-      if (tpIssue) throw new Error(`${row.mpn}：${tpIssue}`);
+      const targetKind = effectiveImportKind(row, data.kind);
+      if (targetKind === "inquiry") {
+        const inquiryIssue = inquiryReviewBlockingReason(row, data.defaultCustomer);
+        if (inquiryIssue) throw new Error(`${row.mpn}：${inquiryIssue}`);
+      }
     }
     for (const row of selected) {
       const effectiveKind = effectiveImportKind(row, data.kind);
@@ -853,8 +891,11 @@ export const confirmImport = createServerFn({ method: "POST" })
             const cu = await ensureCustomer(tx, cuName);
             inquiryCustomers.add(cu.name);
             await tx`
-          insert into customer_inquiries (id, customer_id, part_id, qty, import_batch_id)
-          values (${nid()}, ${cu.id}, ${partId}, ${row.qty}, ${batchId})
+          insert into customer_inquiries (
+            id, customer_id, part_id, qty, tp_amount, tp_currency, import_batch_id
+          ) values (
+            ${nid()}, ${cu.id}, ${partId}, ${row.qty}, ${row.priceAmount}, ${row.priceCurrency}, ${batchId}
+          )
         `;
             writtenByKind.inquiry += 1;
           } else if (kind === "potential") {
@@ -974,7 +1015,12 @@ export const confirmImport = createServerFn({ method: "POST" })
           principal,
           requestId: submissionId,
           importBatchId: batchId,
-          after: { kind: data.kind, writtenCount, writtenByKind, customerCount: inquiryCustomers.size },
+          after: {
+            kind: data.kind,
+            writtenCount,
+            writtenByKind,
+            customerCount: inquiryCustomers.size,
+          },
         });
         return result;
       });

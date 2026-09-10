@@ -1,14 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { getCurrentPrincipal, potentialScopeFor, requireRole } from "@/lib/auth/authorization.server";
-import { ensureSeed } from "./seed";
 import {
-  ensurePart,
-  getSettings,
-  mapPart,
-  matchFlagsForParts,
-  sqlClient,
-} from "./helpers";
+  getCurrentPrincipal,
+  potentialScopeFor,
+  requireRole,
+} from "@/lib/auth/authorization.server";
+import { ensureSeed } from "./seed";
+import { ensurePart, getSettings, mapPart, matchFlagsForParts, sqlClient } from "./helpers";
 import { displayMpn, formatInventoryQty, formatStockLine, iso, normalizeMpn } from "@/lib/domain";
 import { cleanBrand } from "./part-identity";
 import { listAnalysisTimes, moveAnalysisKeyWithSql } from "./analysis-db";
@@ -23,12 +21,14 @@ export type PartListItem = Part & {
   analysisAt: string | null;
 };
 
-export const bootstrap = createServerFn({ method: "GET" }).middleware([authMiddleware]).handler(async ({ context }) => {
-  requireRole(await getCurrentPrincipal(context.bearerToken), "model.read");
-  const sql = await sqlClient();
-  await ensureSeed(sql);
-  return { ok: true as const };
-});
+export const bootstrap = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "model.read");
+    const sql = await sqlClient();
+    await ensureSeed(sql);
+    return { ok: true as const };
+  });
 
 export const searchParts = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -67,11 +67,12 @@ export const searchParts = createServerFn({ method: "GET" })
       return {
         ...p,
         flags: f,
-        onHandLabel: f.onHand > 0
-          ? formatInventoryQty(f.onHand)
-          : f.inTransit > 0
-            ? `途 ${formatInventoryQty(f.inTransit)}`
-            : "",
+        onHandLabel:
+          f.onHand > 0
+            ? formatInventoryQty(f.onHand)
+            : f.inTransit > 0
+              ? `途 ${formatInventoryQty(f.inTransit)}`
+              : "",
         analysisAt: analysisAt[p.mpnKey] ?? null,
       };
     });
@@ -93,11 +94,19 @@ export const getPartDetail = createServerFn({ method: "GET" })
     if (!partRows[0]) throw new Error("型号不存在");
     const part = mapPart(partRows[0]);
     const settings = await getSettings(sql);
-    const flagsMap = await matchFlagsForParts(sql, [part.id], settings, principal.userId, potentialScopeFor(principal));
+    const flagsMap = await matchFlagsForParts(
+      sql,
+      [part.id],
+      settings,
+      principal.userId,
+      potentialScopeFor(principal),
+    );
     const flags = flagsMap.get(part.id)!;
 
     const canReadStock = principal.permissions.includes("stock.read");
-    const lots = !canReadStock ? [] : await sql`
+    const lots = !canReadStock
+      ? []
+      : await sql`
       select l.*, w.code as wh_code, ch.name as supplier_name
       from stock_lots l
       left join warehouses w on w.id = l.warehouse_id
@@ -106,7 +115,9 @@ export const getPartDetail = createServerFn({ method: "GET" })
         and (l.qty_remaining > 0 or l.status = 'in_transit')
       order by l.status asc, l.inbound_at desc
     `;
-    const movements = !canReadStock ? [] : await sql`
+    const movements = !canReadStock
+      ? []
+      : await sql`
       select m.*, wf.code as from_code, wt.code as to_code
       from stock_movements m
       left join warehouses wf on wf.id = m.from_warehouse_id
@@ -115,14 +126,18 @@ export const getPartDetail = createServerFn({ method: "GET" })
       order by m.happened_at desc
       limit 80
     `;
-    const offers = !principal.permissions.includes("market.read") ? [] : await sql`
+    const offers = !principal.permissions.includes("market.read")
+      ? []
+      : await sql`
       select o.*, ch.name as channel_name, ch.is_active as channel_active
       from channel_offers o
       join channels ch on ch.id = o.channel_id
       where o.part_id = ${part.id} and o.deleted_at is null
       order by o.is_valid desc, o.offered_at desc
     `;
-    const inquiries = !principal.permissions.includes("market.read") ? [] : await sql`
+    const inquiries = !principal.permissions.includes("market.read")
+      ? []
+      : await sql`
       select i.*, c.name as customer_name, c.is_active as customer_active
       from customer_inquiries i
       join customers c on c.id = i.customer_id
@@ -133,19 +148,23 @@ export const getPartDetail = createServerFn({ method: "GET" })
       ? await sql`select 1 from potential_models where user_id = ${principal.userId} and part_id = ${part.id} limit 1`
       : [];
 
-    const publicFlags = canReadStock ? flags : {
-      ...flags,
-      onHand: 0,
-      byWarehouse: [],
-      inTransit: 0,
-      transitEtaLabel: null,
-      stock: false,
-      transit: false,
-    };
+    const publicFlags = canReadStock
+      ? flags
+      : {
+          ...flags,
+          onHand: 0,
+          byWarehouse: [],
+          inTransit: 0,
+          transitEtaLabel: null,
+          stock: false,
+          transit: false,
+        };
     return {
       part,
       flags: publicFlags,
-      stockLine: canReadStock ? formatStockLine(flags.byWarehouse, flags.inTransit, flags.transitEtaLabel) : "",
+      stockLine: canReadStock
+        ? formatStockLine(flags.byWarehouse, flags.inTransit, flags.transitEtaLabel)
+        : "",
       watched: watched.length > 0,
       settings,
       lots: lots.map((r) => ({
@@ -176,12 +195,7 @@ export const getPartDetail = createServerFn({ method: "GET" })
         partId: String(r.part_id),
         lotId: r.lot_id ? String(r.lot_id) : null,
         type: String(r.type) as
-          | "in"
-          | "out"
-          | "transfer"
-          | "adjust"
-          | "transit_open"
-          | "transit_in",
+          "in" | "out" | "transfer" | "adjust" | "transit_open" | "transit_in",
         qty: Number(r.qty),
         fromWarehouseId: r.from_warehouse_id ? String(r.from_warehouse_id) : null,
         fromWarehouseCode: r.from_code ? String(r.from_code) : null,
@@ -218,6 +232,8 @@ export const getPartDetail = createServerFn({ method: "GET" })
         mpn: part.mpn,
         brandCode: part.brandCode,
         qty: r.qty != null ? Number(r.qty) : null,
+        tpAmount: r.tp_amount != null ? Number(r.tp_amount) : null,
+        tpCurrency: (r.tp_currency as "USD" | "CNY") ?? null,
         inquiredAt: iso(r.inquired_at),
         isValid: Boolean(r.is_valid),
         invalidatedAt: r.invalidated_at ? iso(r.invalidated_at) : null,
@@ -295,7 +311,11 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
         where id = ${id}
       `;
       await moveAnalysisKeyWithSql(tx, oldKey, mpn);
-      await logOp(tx, "correct", "part", id, { principal, before: before[0], after: { id, mpn, mpnKey: key } });
+      await logOp(tx, "correct", "part", id, {
+        principal,
+        before: before[0],
+        after: { id, mpn, mpnKey: key },
+      });
     });
     return { ok: true as const };
   });
