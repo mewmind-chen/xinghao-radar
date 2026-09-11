@@ -49,6 +49,22 @@ import {
   withSelectedIds,
 } from "@/lib/import-review";
 
+/**
+ * 展示用的 AI 通道名。这里是「展示文案」而非业务枚举：
+ * 未登记的通道名会原样显示（而不是被吞掉），便于新增通道时立刻可见。
+ */
+const AI_CHANNEL_LABEL: Record<string, string> = {
+  "command-code": "Command Code",
+  "opencode-go": "OpenCode Go",
+  "deepseek-api": "DeepSeek",
+  openrouter: "OpenRouter",
+};
+
+function aiChannelLabel(channel: string | null): string {
+  if (!channel) return "AI";
+  return AI_CHANNEL_LABEL[channel] ?? channel;
+}
+
 const INQUIRY_TABLE_COLUMNS = [
   { key: "select", label: "", width: "4%" },
   { key: "mpn", label: "型号", width: "21%" },
@@ -154,6 +170,7 @@ function ImportPage() {
   >("draft");
   const [usedAi, setUsedAi] = useState(false);
   const [extractOrigin, setExtractOrigin] = useState<string | null>(null);
+  const [extractChannel, setExtractChannel] = useState<string | null>(null);
   const [extractState, setExtractState] = useState<string | null>(null);
   const [extractMessage, setExtractMessage] = useState<string | null>(null);
   const [aiAvailable, setAiAvailable] = useState(true);
@@ -311,6 +328,7 @@ function ImportPage() {
       setRows(r.rows);
       setUsedAi(r.usedAi);
       setExtractOrigin(r.extractOrigin ?? null);
+      setExtractChannel(r.extractChannel ?? null);
       setExtractState(r.extractState ?? null);
       setExtractMessage(r.extractMessage ?? null);
       setAiAvailable(r.aiAvailable);
@@ -1279,7 +1297,7 @@ function ImportPage() {
                 {extractOrigin === "engine_deterministic"
                   ? " · 本地确定性识别"
                   : extractOrigin === "engine_ai"
-                    ? " · OpenRouter AI 识别"
+                    ? ` · ${aiChannelLabel(extractChannel)} AI 识别`
                     : extractOrigin === "trusted_template"
                       ? " · 固定模板"
                       : extractOrigin === "controlled_text"
