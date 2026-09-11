@@ -44,6 +44,12 @@ export type ImportExtractResult = {
   extractMessage: string | null;
   calledPlatform: boolean;
   aiAvailable?: boolean;
+  /**
+   * 本次真正命中的 AI 通道名（如 command-code / opencode-go / deepseek-api / openrouter）。
+   * 未调用 AI 时为 null。降级发生时它代表最终成功的那条通道，不是链首。
+   * 仅用于展示，判定「是否用了 AI」请用 usedAi / extractOrigin。
+   */
+  extractChannel?: string | null;
 };
 
 export type ImportExtractInput = {
@@ -391,5 +397,6 @@ export const EXTRACT_ORIGIN_LABEL: Record<ExtractOrigin, string> = {
   controlled_text: "受控格式",
   local_fallback: "本地降级",
   engine_deterministic: "本地确定性识别",
-  engine_ai: "OpenRouter AI 识别",
+  // 不再是 OpenRouter 专用：实际通道由 ImportExtractResult.extractChannel 给出。
+  engine_ai: "AI 识别",
 };

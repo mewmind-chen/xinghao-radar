@@ -12,6 +12,7 @@ import {
   type SourceType,
 } from "../../../packages/import-engine/src/index.ts";
 import type { ImportExtractInput, ImportExtractResult } from "./import-contract";
+import { deriveExtractChannel, deriveExtractOrigin, deriveUsedAi } from "./import-origin";
 import type { ImportRow } from "@/lib/types";
 
 function sourceTypeFor(value: ImportExtractInput["sourceType"]): SourceType {
@@ -93,11 +94,13 @@ export async function resolveImportWithEngine(input: ImportExtractInput): Promis
   const provider = defaultImportProvider();
   const result = await extractImport(request, provider);
   const rows = result.rows.map((row) => candidateToRadarRow(row, input.kind === "neutral"));
+  // 判定逻辑见 import-origin.ts（纯函数，有单测）；这里只做装配。
   return {
     rows,
-    usedAi: result.runs.some((run) => run.status === "completed"),
+    usedAi: deriveUsedAi(result.runs),
     aiAvailable: provider.available(),
-    extractOrigin: result.runs.length > 0 ? "engine_ai" : "engine_deterministic",
+    extractOrigin: deriveExtractOrigin(result.route),
+    extractChannel: deriveExtractChannel(result.runs),
     extractState: result.status,
     extractMessage: modelMessage(result, input.kind === "neutral"),
     calledPlatform: false,
