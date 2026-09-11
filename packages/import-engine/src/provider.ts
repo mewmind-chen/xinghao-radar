@@ -221,7 +221,15 @@ export function defaultImportProvider(): ExtractionProvider {
     openrouter: () => new OpenRouterProvider(),
   };
   const chain = order
-    .map((name) => factories[name]?.())
+    .map((name) => {
+      const factory = factories[name];
+      if (!factory) {
+        // 不静默丢弃：写错通道名时如果不报，会一路静默回落到 OpenRouter 而没人发现。
+        console.warn(`[import-engine] IMPORT_CHAIN 含未知通道 "${name}"，已跳过；可用通道：${Object.keys(factories).join(" / ")}`);
+        return undefined;
+      }
+      return factory();
+    })
     .filter((x): x is ExtractionProvider => Boolean(x));
   if (!chain.length) return new OpenRouterProvider();
   return chain.length === 1 ? chain[0]! : new FallbackProvider(chain);
