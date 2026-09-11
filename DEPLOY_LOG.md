@@ -36,6 +36,24 @@
 
 ---
 
+## 2026-09-11 PR25
+
+| 字段 | 值 |
+| --- | --- |
+| 部署时间 | 2026-09-11 11:59（本地 CST） |
+| PR | [PR25](https://github.com/mewmind-chen/xinghao-radar/pull/25)：AI 导入通道可见性（`/healthz` + 部署巡检）与 key 配置脚本加固 |
+| 合并时间 | 2026-09-11 11:54 |
+| 部署前 SHA | `0e1cc8d5ce860a9d5842dfef34794c90d8d3d769` |
+| 部署后 SHA（= `main`） | `5e3b8f4074b56e0fcb5d8f16f3c6e3956cf052cc` |
+| 生产 release | `20260911-035846-main-5e3b8f4074b5` |
+| 操作者 | 自动部署（`scripts/auto-deploy.mjs`，launchd 每 300s 轮询 `main`） |
+| 数据库 migration | 无 |
+| 构建 | 成功（隔离环境 typecheck + build；changed=10） |
+| 服务重启 | 是（PID 18595 → 31836） |
+| 验证结果 | 本地与公网 `/healthz` 均返回新字段：`importChain=command-code,deepseek-api,openrouter`、`importReady=3`、逐通道明细与 `importSummary`；启动日志输出 `import_chain=` / `import_status=`；CI 6/6 通过；本地验收 `npm test` 334 项 / 332 pass / 0 fail / 2 skipped，引擎 30/30，lint 与 typecheck 0 error |
+| 回滚点 | 上一 release `20260911-030851-main-0c889fc2dbd3`；plist 备份 `backups/launchd-2026-09-11T03-59-34-879Z.plist` |
+| 备注 | **可见性缺口已闭合**：`/healthz` 现透出通道就绪状态，`auto-deploy` 每次巡检记录 `import_status=` 并在零可用时打 WARN。`auto-deploy.out.log` 的 `import_status=` 行自下一个巡检周期起出现（本轮激活执行的是切换前的旧脚本）。本 PR 同时把 11:36/11:37 实际用于生产激活的 `set-import-keys.sh` 加固版本入库（含 6 条测试） |
+
 ## 2026-09-11 PR23
 
 | 字段 | 值 |
