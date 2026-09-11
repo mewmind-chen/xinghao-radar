@@ -372,6 +372,47 @@ async function waitForHealth(config, expectedRelease) {
   throw new Error(`health check did not reach release ${expectedRelease}`);
 }
 
+/**
+ * Surface the AI import channel readiness of the running service.
+ *
+ * The service holds its channel credentials in its own launchd environment;
+ * this deployer cannot read them. The honest source is therefore the service's
+ * /healthz, which exposes importChain / importChannels / importReady /
+ * importSummary. Before that existed, a chain with no usable credentials was
+ * invisible here: deploys reported success while AI imports silently fell
+ * through to the last configured channel.
+ */
+async function reportImportStatus(config, healthBody = null) {
+  let body = healthBody;
+  if (!body) {
+    let response;
+    try {
+      response = await fetch(`http://127.0.0.1:${config.port}/healthz`, {
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch {
+      warn("healthz 无响应，无法读取 AI 导入通道状态");
+      return;
+    }
+    if (!response.ok) {
+      warn(`healthz 返回 HTTP ${response.status}，无法读取 AI 导入通道状态`);
+      return;
+    }
+    body = await response.json().catch(() => null);
+  }
+  if (typeof body?.importSummary !== "string") {
+    log("healthz 未提供 AI 导入通道信息（该 release 的 serve-production.mjs 版本较旧）");
+    return;
+  }
+  log(`import_status=${body.importSummary}`);
+  if (body.importReady === 0) {
+    warn(
+      "AI 导入链路没有任何可用通道（凭据缺失或链路为空）：导入会退化为纯本地识别。" +
+        "请检查生产 plist 的通道凭据（scripts/set-import-keys.sh）",
+    );
+  }
+}
+
 export function sanitizeBuildEnv(inputEnv = process.env) {
   const env = { ...inputEnv, NODE_ENV: "production", DATABASE_URL: "" };
   // A build must never receive production credentials or runtime pointers.
@@ -533,8 +574,9 @@ async function activateRelease(config, details) {
     );
     await replacePlistValue(config, "EnvironmentVariables.RADAR_RELEASE", releaseId);
     await startService(config);
-    await waitForHealth(config, releaseId);
+    const health = await waitForHealth(config, releaseId);
     log(`activated ${releaseId}; source=${target.slice(0, 12)}`);
+    await reportImportStatus(config, health);
   } catch (error) {
     warn(`activation failed: ${error.message}`);
     warn("rolling back the service configuration and source checkout");
@@ -647,6 +689,8 @@ async function deployOnce(config) {
       } else {
         log("already synchronized; no runtime deploy needed");
       }
+      // 每次巡检都读一次通道就绪状态：凭据是运行时配置，可能在两次部署之间失效。
+      await reportImportStatus(config);
       return { status: "synchronized", targetCommit };
     }
 
