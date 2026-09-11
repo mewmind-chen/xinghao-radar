@@ -675,6 +675,7 @@ export const parseImport = createServerFn({ method: "POST" })
       usedAi,
       aiAvailable: resolved.aiAvailable ?? providers.some((p) => p.available()),
       extractOrigin: resolved.extractOrigin,
+      extractChannel: resolved.extractChannel ?? null,
       extractState: resolved.extractState,
       extractMessage: resolved.extractMessage,
       ...lookups,
