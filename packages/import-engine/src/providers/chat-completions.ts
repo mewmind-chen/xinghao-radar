@@ -66,7 +66,10 @@ export class ChatCompletionsProvider implements ExtractionProvider {
     const payload: Record<string, unknown> = {
       model: this.config.model,
       temperature: 0,
-      max_tokens: request.responseKind === "mapping" ? 2500 : 16000,
+      // 不设 max_tokens：直连通道由上游决定输出上限。
+      // 这里曾按 responseKind 收紧到 2500 —— 对推理模型是致命的：思考 token
+      // 也算在额度内，实测列映射任务需要约 1.2 万 token 推理，2500 会被
+      // finish_reason=length 截断、content 为空，于是白白失败并降级到兜底通道。
       messages: [
         { role: "system", content: IMPORT_SYSTEM_PROMPT },
         { role: "user", content },

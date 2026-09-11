@@ -69,7 +69,8 @@ export class OpenAICompatibleProvider implements ImportModelProvider {
         body: JSON.stringify({
           model,
           temperature: 0,
-          max_tokens: 3500,
+          // 不设 max_tokens：同 import-engine，推理模型的思考 token 也计入额度，
+          // 硬上限会把答案截断成空内容。
           response_format: { type: "json_object" },
           messages: [
             { role: "system", content: req.systemPrompt },
