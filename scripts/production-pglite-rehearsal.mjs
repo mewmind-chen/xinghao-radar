@@ -106,7 +106,14 @@ try {
 
   const first = startServer(baseEnv);
   const health = await waitForHealth(first);
-  assert.deepEqual(await health.json(), { ok: true, release: "pr14-pglite-rehearsal" });
+  const healthBody = await health.json();
+  assert.equal(healthBody.ok, true);
+  assert.equal(healthBody.release, "pr14-pglite-rehearsal");
+  // 通道可见性字段（增量）：演练环境不配凭据，但响应必须是结构化的。
+  assert.equal(typeof healthBody.importChain, "string");
+  assert.equal(typeof healthBody.importReady, "number");
+  assert.equal(typeof healthBody.importChannels, "object");
+  assert.equal(typeof healthBody.importSummary, "string");
   const session = await fetch(`${baseEnv.BETTER_AUTH_URL}/api/auth/get-session`, {
     headers: { accept: "application/json" },
   });

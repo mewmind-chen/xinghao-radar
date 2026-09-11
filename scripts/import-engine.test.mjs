@@ -11,6 +11,7 @@ import {
   headerKey,
   parseCsv,
 } from "../packages/import-engine/src/index.ts";
+import { DEFAULT_IMPORT_CHAIN, IMPORT_CHANNEL_SPECS } from "./import-channel-status.mjs";
 
 function fakeProvider(responses) {
   return {
@@ -448,4 +449,80 @@ test("provider: IMPORT_CHAIN=openrouter 完全回到改动前形态（回滚路�
 test("provider: IMPORT_SYSTEM_PROMPT 与 import-lab 模板保持逐字一致", async () => {
   const template = await readFile(new URL("../tools/import-lab/prompt-v2.template.txt", import.meta.url), "utf8");
   assert.equal(IMPORT_SYSTEM_PROMPT.trim(), template.trim(), "改 prompt 时两处必须同步，否则双跑脚本测的就不是生产 prompt");
+});
+
+// ---------------------------------------------------------------------------
+// 与 scripts/import-channel-status.mjs 的防漂移断言
+// （/healthz 与 auto-deploy 的就绪报告都依赖这份通道表）
+// ---------------------------------------------------------------------------
+
+function snapshotChannelEnv() {
+  return {
+    chain: process.env.IMPORT_CHAIN,
+    keys: Object.fromEntries(
+      IMPORT_CHANNEL_SPECS.map((spec) => [spec.apiKeyEnv, process.env[spec.apiKeyEnv]]),
+    ),
+  };
+}
+
+function restoreChannelEnv(snapshot) {
+  if (snapshot.chain === undefined) delete process.env.IMPORT_CHAIN;
+  else process.env.IMPORT_CHAIN = snapshot.chain;
+  for (const [name, value] of Object.entries(snapshot.keys)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
+
+test("provider: 引擎默认链的顺序与 import-channel-status 的通道表逐一对齐", async () => {
+  const snapshot = snapshotChannelEnv();
+  try {
+    delete process.env.IMPORT_CHAIN;
+    for (const spec of IMPORT_CHANNEL_SPECS) delete process.env[spec.apiKeyEnv];
+    const provider = defaultImportProvider();
+    // 所有通道都判不可用 → 不触网，但会逐条记 attempts，正好用来读出链的顺序。
+    const response = await provider.extract({
+      kindHint: "offer",
+      userText: "x",
+      sourceType: "text",
+      responseKind: "rows",
+    });
+    assert.equal(response, null);
+    assert.deepEqual(
+      provider.attempts.map((run) => run.provider),
+      IMPORT_CHANNEL_SPECS.map((spec) => spec.id),
+      "引擎默认链顺序必须与 import-channel-status 的通道表一致",
+    );
+    assert.deepEqual(
+      IMPORT_CHANNEL_SPECS.map((spec) => spec.id),
+      DEFAULT_IMPORT_CHAIN.split(","),
+      "通道表顺序必须与 DEFAULT_IMPORT_CHAIN 一致",
+    );
+  } finally {
+    restoreChannelEnv(snapshot);
+  }
+});
+
+test("provider: 每个通道读的 apiKeyEnv 与 import-channel-status 的声明一致", () => {
+  const snapshot = snapshotChannelEnv();
+  try {
+    for (const spec of IMPORT_CHANNEL_SPECS) {
+      for (const other of IMPORT_CHANNEL_SPECS) delete process.env[other.apiKeyEnv];
+      process.env.IMPORT_CHAIN = spec.id;
+      assert.equal(defaultImportProvider().name, spec.id, `${spec.id} 无法按单通道装配`);
+      assert.equal(
+        defaultImportProvider().available(),
+        false,
+        `${spec.id} 在缺 ${spec.apiKeyEnv} 时不应判可用`,
+      );
+      process.env[spec.apiKeyEnv] = "probe-key";
+      assert.equal(
+        defaultImportProvider().available(),
+        true,
+        `${spec.id} 未读取 ${spec.apiKeyEnv}`,
+      );
+    }
+  } finally {
+    restoreChannelEnv(snapshot);
+  }
 });

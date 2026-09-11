@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { serve } from "srvx/node";
 import { serveStatic } from "srvx/static";
 import { readDatabaseConfig } from "../src/lib/db-config.mjs";
+import { describeImportChannels, formatImportChannels } from "./import-channel-status.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 // Never let a deployed process silently fall back to private local PGlite.
@@ -29,6 +30,9 @@ if (!app || typeof app.fetch !== "function") {
 const port = Number(process.env.RADAR_PORT || process.env.PORT || 8082);
 const hostname = process.env.RADAR_HOST || "0.0.0.0";
 const release = process.env.RADAR_RELEASE || "unversioned";
+// AI 导入通道就绪状态：env 在进程生命周期内不变，启动时算一次，日志与 /healthz 共用。
+const importStatus = describeImportChannels(process.env);
+const importSummary = formatImportChannels(importStatus);
 const HASHED_ASSET_PATH = /^\/assets\/.+-[A-Za-z0-9_-]{8,}\.(?:css|js|mjs|map|woff2?|ttf|otf|png|jpe?g|gif|svg|webp|avif)$/;
 const HASHED_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -56,13 +60,26 @@ const server = serve({
   middleware: [
     async (request, next) => {
       if (new URL(request.url).pathname === "/healthz") {
-        return new Response(JSON.stringify({ ok: true, release }), {
-          headers: {
-            "cache-control": "no-store",
-            "content-type": "application/json; charset=utf-8",
-            "x-radar-version": release,
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            release,
+            // 部署管线与运维靠这几个字段判断「AI 导入通道是否真的启用」：
+            // 此前 /healthz 只有 { ok, release }，链路凭据全缺也照样全绿。
+            importChain: importStatus.source,
+            importReady: importStatus.ready,
+            importChannels: importStatus.channels,
+            importWarnings: importStatus.warnings,
+            importSummary,
+          }),
+          {
+            headers: {
+              "cache-control": "no-store",
+              "content-type": "application/json; charset=utf-8",
+              "x-radar-version": release,
+            },
           },
-        });
+        );
       }
       const pathname = new URL(request.url).pathname;
       const response = await next();
@@ -86,6 +103,11 @@ await server.ready();
 console.log(`[radar] production server listening on http://${hostname}:${port}`);
 console.log(`[radar] output=${outputDir}`);
 console.log(`[radar] release=${release}`);
+console.log(`[radar] import_chain=${importStatus.source}`);
+console.log(`[radar] import_status=${importSummary}`);
+for (const warning of importStatus.warnings) {
+  console.warn(`[radar] import_warning=${warning}`);
+}
 console.log(`[radar] database_mode=${databaseConfig.mode}`);
 if (databaseConfig.mode === "pglite") {
   console.log(`[radar] data_dir=${resolve(process.env.DATA_DIR || "")}`);
