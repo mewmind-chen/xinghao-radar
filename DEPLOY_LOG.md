@@ -4,28 +4,35 @@
 
 ---
 
-## ⚠️ AI 导入通道当前状态（读这一节，最重要）
+## AI 导入通道当前状态（2026-09-11 11:38 CST 核验）
 
-**结论：降级链代码已上线，但新通道一个都没启用 —— AI 导入实际仍走 OpenRouter。**
+生产链路已配置为 `command-code,deepseek-api,openrouter`，服务已重载。使用生产进程配置执行合成报价提取，主链命中 `command-code`；独立验证进程移除主通道凭据后，备用命中 `deepseek-api`。验证未写入业务数据，不代表每个上游持续可用。
 
 | 通道 | 所需环境变量 | 生产现状 |
 | --- | --- | --- |
-| `command-code`（主力） | `COMMAND_CODE_API_KEY` | ❌ 未配置 |
-| `opencode-go`（备用） | `OPENCODE_GO_API_KEY`、`OPENCODE_SESSION_ID` | ❌ 未配置 |
-| `deepseek-api`（三备） | `DEEPSEEK_API_KEY` | ❌ 未配置 |
+| `command-code`（主力） | `COMMAND_CODE_API_KEY` | 已写入 plist；真实提取成功 |
+| `opencode-go` | `OPENCODE_GO_API_KEY`、`OPENCODE_SESSION_ID` | 本次显式排除（此前验证月额度用尽） |
+| `deepseek-api`（备用） | `DEEPSEEK_API_KEY` | 已写入 plist；独立降级验证成功 |
 | `openrouter`（观察位） | `OPENROUTER_API_KEY` | ✅ 已配置（**在 launchd GUI 域，plist 内没有**） |
-| 链路顺序 | `IMPORT_CHAIN` | ❌ 未配置（代码回落到内置默认链） |
+| 链路顺序 | `IMPORT_CHAIN` | `command-code,deepseek-api,openrouter`；预算 180000ms |
 
 机制说明（避免再次误判）：
 
 - 引擎按 `IMPORT_CHAIN` 逐通道尝试（未配置时用内置默认链 `command-code,opencode-go,deepseek-api,openrouter`）；每个通道的 `available()` **只认 `process.env[<apiKeyEnv>]`**，取不到即判不可用并**静默跳过**，不打日志、不报错。
 - **生产进程读 env 的唯一来源是 launchd**：plist 的 `EnvironmentVariables` + 继承 GUI 域。`scripts/serve-production.mjs` 不加载 dotenv；生产目录只有 `.env.example`（无 `.env`）。代码**不会**去读 `~/.commandcode/auth.json` / `~/.dsh/.credentials.yaml` / `~/.deepseek/config.toml`。
 - 因此 **任何代码 PR 都不可能让生产自动获得 key**（密钥又受规范 §9 禁止入库）。必须执行一次
-  `./scripts/set-import-keys.sh --apply --reload`（该脚本会写 plist 并 `launchctl unload/load`，**生产服务会中断数秒**）。写进 plist 的键**不会被后续自动部署冲掉**（`activateRelease()` 只 `plutil -replace` `RADAR_OUTPUT_DIR` / `RADAR_RELEASE` 两个键，失败时整份 plist 备份回滚）。
-- ⚠️ `OPENROUTER_API_KEY` 目前**只在 GUI 域、plist 里没有 → 机器重启即丢**，AI 导入会静默退化到「无可用通道」。
+  `./scripts/set-import-keys.sh --apply --reload --chain=command-code,deepseek-api,openrouter`（该脚本会写 plist 并 `launchctl unload/load`，**生产服务会中断数秒**）。写进 plist 的键**不会被后续自动部署冲掉**（`activateRelease()` 只 `plutil -replace` `RADAR_OUTPUT_DIR` / `RADAR_RELEASE` 两个键，失败时整份 plist 备份回滚）。
+- `OPENROUTER_API_KEY` 仍只在 GUI 域、plist 里没有；机器重启后该兜底可能缺失。两个已持久化的直连通道不受此影响。
 - ⚠️ `IMPORT_MODEL` 仍是 `google/gemini-3.8-flash`；prompt v2 只在 DeepSeek 系做过回归，gemini 上未单独验证。
 - **如何验证链路真的切过去了**：导入一次后查服务端 `runs[].channel`，或看预览标题 `· <通道名> AI 识别`。⚠️ 该标题在 PR23 之前的线上版本里是**写死的「OpenRouter AI 识别」**，不能当作判据。
-- **可见性缺口（待解决）**：`/healthz` 只返回 `{ ok, release }`，不含任何通道信息；`auto-deploy` 的健康检查因此**在 AI 通道空转时仍会报「部署成功」**。生产日志里也没有「某通道 key 缺失」的记录。
+- 当前运行 release 仍是 PR23 的 `20260911-030851-main-0c889fc2dbd3`；健康接口的通道可见性修复随本分支的代码 PR 发布 —— `/healthz` 将新增 `importChain` / `importChannels` / `importReady` / `importSummary` / `importWarnings`，部署完成前它仍只返回 `{ ok, release }`，不要据此判断通道状态。
+
+### 配置变更记录
+
+- 脚本预演通过；显式链路排除了 OpenCode Go，因此不读取其凭据文件。
+- 生产配置备份：`~/Library/LaunchAgents/com.xinghao-radar.vite-dev.plist.bak-20260911-113636-17890`（启用前）和 `*.bak-20260911-113737-18526`（重跑前），权限 600。
+- 两次执行间修复了一处成功提示的 shell 变量边界问题；最终脚本完整执行退出 0，健康检查通过。
+- 公网 `/healthz` 正常；定时自动部署任务已恢复。
 
 ---
 
@@ -114,7 +121,7 @@
 - 环境变量保留：`activateRelease()` 只 `plutil -replace` 以下两个键，**其余环境变量（含手写进 plist 的 key）保持不动**：
   - `EnvironmentVariables.RADAR_OUTPUT_DIR`
   - `EnvironmentVariables.RADAR_RELEASE`
-- 健康检查范围：仅 `GET /healthz` 比对 `ok: true` 与 `release` 标识。**不检查导入通道可用性** → AI 通道空转时仍报成功（见顶部「可见性缺口」）。
+- 健康检查范围：`GET /healthz` 比对 `ok: true` 与 `release` 标识；**并透出 AI 导入通道就绪状态** —— `importChain` / `importChannels` / `importReady` / `importSummary` / `importWarnings`。`auto-deploy` 每次巡检记录一行 `import_status=`，通道零可用时打 WARN；激活新 release 后同样报告（随本分支代码 PR 发布，部署后生效）。
 - release 命名：`<UTC yyyyMMdd-HHmmss>-<branch>-<sha12>`；BRANCH 为 `main`。旧的 PR12/PR15 release 用的是手工本地时间命名。
 
 详细目录边界、核验命令和发布规则见 [生产运营说明](docs/PRODUCTION_OPERATIONS.md)。
