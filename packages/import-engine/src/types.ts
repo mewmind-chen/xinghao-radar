@@ -96,6 +96,10 @@ export type ModelRun = {
   completionTokens: number | null;
   costUsd: number | null;
   error?: string;
+  /** 真实命中的通道名（降级链下与 provider 不同） */
+  channel?: string;
+  /** 成功前依次失败的通道名 */
+  fallbackFrom?: string[];
 };
 
 export type ExtractionStatus =
@@ -148,11 +152,17 @@ export type ProviderResponse = {
   promptTokens: number | null;
   completionTokens: number | null;
   costUsd: number | null;
+  /** 真实命中的通道名；降级链会回填为具体通道 */
+  channel?: string;
+  /** 成功前依次失败的通道名（降级链回填） */
+  fallbackFrom?: string[];
 };
 
 export interface ExtractionProvider {
   readonly name: string;
   readonly model: string;
+  /** 降级链实现会回填本次调用的逐通道尝试记录 */
+  readonly attempts?: ModelRun[];
   available(): boolean;
   extract(request: ProviderRequest): Promise<ProviderResponse | null>;
 }

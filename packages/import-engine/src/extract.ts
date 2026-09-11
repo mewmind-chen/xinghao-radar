@@ -3,7 +3,7 @@ import { base64Of, bytesOf, extractDocx, extractPdfText, looksLikeDoc, looksLike
 import { exactSourceEvidence, normalizeRows, validateCandidateRows } from "./normalize.ts";
 import { defaultImportProvider, parseJsonEnvelope } from "./provider.ts";
 import { applyMapping, inferMapping, tableSummary } from "./table.ts";
-import type { CandidateRow, ExtractRequest, ExtractionIssue, ExtractionProvider, ExtractionResult, ImportKindHint, TableDocument, TableMapping } from "./types.ts";
+import type { CandidateRow, ExtractRequest, ExtractionIssue, ExtractionProvider, ExtractionResult, ImportKindHint, ProviderResponse, TableDocument, TableMapping } from "./types.ts";
 
 function digest(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -15,6 +15,30 @@ function resultBase(requestId: string, sourceDigest: string, route: ExtractionRe
 
 function issue(code: ExtractionIssue["code"], message: string): ExtractionIssue {
   return { code, message };
+}
+
+/**
+ * 记录本次调用的通道尝试：
+ * - 降级链（provider.attempts 非空）→ 落盘逐通道记录，保留真实的失败顺序与命中通道；
+ * - 单通道 → 成功记 completed，失败记 failed。
+ */
+function recordRun(result: ExtractionResult, provider: ExtractionProvider, response: ProviderResponse | null, started: number): void {
+  const attempts = provider.attempts ?? [];
+  if (attempts.length) {
+    result.runs.push(...attempts.map((run) => ({ ...run })));
+    return;
+  }
+  result.runs.push(response
+    ? {
+        provider: response.channel ?? provider.name, model: response.model, upstreamProvider: response.upstreamProvider,
+        status: "completed", latencyMs: Date.now() - started,
+        promptTokens: response.promptTokens, completionTokens: response.completionTokens, costUsd: response.costUsd,
+      }
+    : {
+        provider: provider.name, model: provider.model, upstreamProvider: null,
+        status: "failed", latencyMs: Date.now() - started,
+        promptTokens: null, completionTokens: null, costUsd: null,
+      });
 }
 
 function looksLikeTextMpn(value: string): boolean {
@@ -190,16 +214,16 @@ async function tableResult(
     kindHint: request.kindHint,
     sourceType: request.source.type,
     filename: request.source.filename,
-    userText: `业务类型提示: ${request.kindHint}\n请只返回每个工作表的列映射。headerRow、dataStartRow、columns中的所有数字索引都必须是从0开始的 zero-based 索引：第一行是0，第一列是0；严禁使用Excel/人类习惯的从1开始编号。columns只能使用这些规范字段：mpn, brand, qty, dateCode, priceAmount, leadTimeText, warehouse, channel, customer, package, standardPack, costAmount, note；没有对应列就返回null。不要返回行数据。\n${tableSummary(table)}`,
+    userText: `业务类型提示: ${request.kindHint}\n请只返回每个工作表的列映射。headerRow、dataStartRow、columns中的所有数字索引都必须是从0开始的 zero-based 索引：第一行是0，第一列是0；严禁使用Excel/人类习惯的从1开始编号。columns只能使用这些规范字段：mpn, brand, qty, dateCode, priceAmount, leadTimeText, warehouse, channel, customer, package, standardPack, costAmount, note；没有对应列就返回null。不要返回行数据。\n\n输出要求：只输出一个 JSON 对象，第一个字符是 {，最后一个字符是 }；不要 Markdown 代码块、不要前后语。\nJSON 结构（顶层只有 mappings）：\n{"mappings":[{"sheet":"工作表名","headerRow":0,"dataStartRow":1,"columns":{"mpn":0,"brand":null,"qty":1,"dateCode":null,"priceAmount":2,"leadTimeText":null,"warehouse":null,"channel":null,"customer":null,"package":null,"standardPack":null,"costAmount":null,"note":null},"needsReview":false,"reason":null}]}\nheaderRow / dataStartRow / columns 的值必须是整数或 null；columns 的 13 个字段一个不少。\n\n${tableSummary(table)}`,
     responseKind: "mapping",
   });
   if (!response) {
     result.status = "provider_error";
     result.issues.push(issue("provider_error", "智能列映射失败"));
-    result.runs.push({ provider: provider.name, model: provider.model, upstreamProvider: null, status: "failed", latencyMs: Date.now() - started, promptTokens: null, completionTokens: null, costUsd: null });
+    recordRun(result, provider, null, started);
     return result;
   }
-  result.runs.push({ provider: provider.name, model: response.model, upstreamProvider: response.upstreamProvider, status: "completed", latencyMs: Date.now() - started, promptTokens: response.promptTokens, completionTokens: response.completionTokens, costUsd: response.costUsd });
+  recordRun(result, provider, response, started);
   const mappings = mappingFromEnvelope(parseJsonEnvelope(response.raw) ?? {});
   const checkedMappings = mappings.map((mapping) => {
     const sheet = table.sheets.find((candidate) => candidate.name === mapping.sheet);
@@ -255,11 +279,11 @@ async function modelRows(request: ExtractRequest, provider: ExtractionProvider |
   if (!response) {
     result.status = "provider_error";
     result.issues.push(issue("provider_error", "模型提取失败"));
-    result.runs.push({ provider: provider.name, model: provider.model, upstreamProvider: null, status: "failed", latencyMs: Date.now() - started, promptTokens: null, completionTokens: null, costUsd: null });
+    recordRun(result, provider, null, started);
     return result;
   }
   result.route = "model_rows";
-  result.runs.push({ provider: provider.name, model: response.model, upstreamProvider: response.upstreamProvider, status: "completed", latencyMs: Date.now() - started, promptTokens: response.promptTokens, completionTokens: response.completionTokens, costUsd: response.costUsd });
+  recordRun(result, provider, response, started);
   const envelope = parseJsonEnvelope(response.raw);
   const raws = Array.isArray(envelope?.rows) ? envelope.rows.filter((x): x is Record<string, unknown> => Boolean(x && typeof x === "object")) : [];
   return safeRows(result, normalizeRows(raws, { kindHint: request.kindHint, sourceText: text, visualOnly }), request.kindHint === "neutral");

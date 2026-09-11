@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import {
+  ChatCompletionsProvider,
+  FallbackProvider,
+  IMPORT_SYSTEM_PROMPT,
+  defaultImportProvider,
   extractImport,
   headerKey,
   parseCsv,
@@ -188,4 +192,260 @@ test("import-engine: unknown legacy .doc is explicitly unsupported", async () =>
   }, fakeProvider({}));
   assert.equal(result.status, "unsupported");
   assert.match(result.issues[0].message, /docx|PDF/);
+});
+
+// ---------------------------------------------------------------------------
+// 降级链：FallbackProvider
+// ---------------------------------------------------------------------------
+
+/** 造一个可控通道：available 由 env 决定，extract 由 impl 决定。 */
+function chainProvider(name, impl, available = true) {
+  return {
+    name,
+    model: `${name}-model`,
+    available: () => available,
+    extract: impl,
+  };
+}
+
+function okResponse(model, extra = {}) {
+  return {
+    raw: JSON.stringify({ rows: [] }),
+    model,
+    upstreamProvider: null,
+    promptTokens: 1,
+    completionTokens: 1,
+    costUsd: 0,
+    ...extra,
+  };
+}
+
+test("fallback: 全部通道不可用时不调用任何上游，逐条记为 unavailable", async () => {
+  let calls = 0;
+  const chain = new FallbackProvider([
+    chainProvider("a", async () => { calls++; return okResponse("m"); }, false),
+    chainProvider("b", async () => { calls++; return okResponse("m"); }, false),
+  ]);
+  assert.equal(chain.available(), false);
+  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  assert.equal(response, null);
+  assert.equal(calls, 0);
+  assert.deepEqual(chain.attempts.map((run) => [run.provider, run.status, run.error]), [
+    ["a", "failed", "unavailable"],
+    ["b", "failed", "unavailable"],
+  ]);
+});
+
+test("fallback: 首个通道失败后降级成功，记录命中通道与 fallbackFrom 顺序", async () => {
+  const chain = new FallbackProvider([
+    chainProvider("a", async () => null),
+    chainProvider("b", async () => null),
+    chainProvider("c", async () => okResponse("c-model")),
+  ]);
+  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  assert.equal(response.channel, "c");
+  assert.deepEqual(response.fallbackFrom, ["a", "b"]);
+  assert.deepEqual(chain.attempts.map((run) => [run.provider, run.status]), [
+    ["a", "failed"],
+    ["b", "failed"],
+    ["c", "completed"],
+  ]);
+  assert.equal(chain.attempts[2].channel, "c");
+});
+
+test("fallback: 通道抛异常被吞掉并记为失败，不会冒泡到调用方", async () => {
+  const chain = new FallbackProvider([
+    chainProvider("a", async () => { throw new Error("boom"); }),
+    chainProvider("b", async () => okResponse("b-model")),
+  ]);
+  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  assert.equal(response.channel, "b");
+  assert.deepEqual(response.fallbackFrom, ["a"]);
+});
+
+test("fallback: 全链失败返回 null，attempts 覆盖每个通道", async () => {
+  const chain = new FallbackProvider([
+    chainProvider("a", async () => null),
+    chainProvider("b", async () => null),
+  ]);
+  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  assert.equal(response, null);
+  assert.equal(chain.attempts.length, 2);
+  assert.ok(chain.attempts.every((run) => run.status === "failed"));
+});
+
+test("fallback: 整链总预算生效——慢通道超时后不再尝试后续通道", async () => {
+  const chain = new FallbackProvider([
+    chainProvider("slow", () => new Promise((resolve) => setTimeout(() => resolve(okResponse("slow-model")), 200))),
+    chainProvider("fast", async () => okResponse("fast-model")),
+  ], { budgetMs: 40 });
+  const started = Date.now();
+  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  const elapsed = Date.now() - started;
+  assert.equal(response, null, "预算耗尽应返回 null 而不是拿到慢通道的迟到结果");
+  assert.ok(elapsed < 150, `应在预算附近返回，实际 ${elapsed}ms`);
+  assert.deepEqual(chain.attempts.map((run) => [run.provider, run.error]), [
+    ["slow", "timeout_budget"],
+    ["fast", "budget_exhausted"],
+  ]);
+});
+
+test("fallback: 单通道链在默认预算下不额外引入超时（回归保护）", async () => {
+  const chain = new FallbackProvider([chainProvider("a", async () => okResponse("a-model"))]);
+  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  assert.equal(response.channel, "a");
+  assert.equal(response.fallbackFrom, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// 直连通道：ChatCompletionsProvider（全部走 stub fetch，不触网）
+// ---------------------------------------------------------------------------
+
+function stubFetch(handler) {
+  const calls = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init, body: JSON.parse(init.body) });
+    return handler(calls.length, url, init);
+  };
+  return { calls, restore: () => { globalThis.fetch = original; } };
+}
+
+function completion(content, extra = {}) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({ model: "stub-model", choices: [{ message: { content } }], usage: { prompt_tokens: 1, completion_tokens: 2 }, ...extra }),
+  };
+}
+
+test("chat-completions: key 缺失时 available=false 且不发请求", async () => {
+  const provider = new ChatCompletionsProvider({
+    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_MISSING_KEY", model: "m",
+  });
+  const stub = stubFetch(() => completion('{"rows":[]}'));
+  try {
+    assert.equal(provider.available(), false);
+    const response = await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+    assert.equal(response, null);
+    assert.equal(stub.calls.length, 0);
+  } finally { stub.restore(); }
+});
+
+test("chat-completions: 默认用 json_object 且不外发 OpenRouter 专有 provider 字段", async () => {
+  process.env.IMPORT_TEST_KEY_A = "test-key";
+  const provider = new ChatCompletionsProvider({
+    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
+  });
+  const stub = stubFetch(() => completion('{"rows":[]}'));
+  try {
+    const response = await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+    assert.equal(response.raw, '{"rows":[]}');
+    const { body, init, url } = stub.calls[0];
+    assert.equal(url, "https://example.invalid/v1/chat/completions");
+    assert.equal(init.headers.Authorization, "Bearer test-key");
+    assert.deepEqual(body.response_format, { type: "json_object" });
+    assert.equal("provider" in body, false, "非 OpenRouter 上游不能带 provider 字段");
+    assert.equal(body.max_tokens, 16000);
+    assert.equal(body.temperature, 0);
+  } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
+});
+
+test("chat-completions: mapping 模式收紧 max_tokens 为 2500", async () => {
+  process.env.IMPORT_TEST_KEY_A = "test-key";
+  const provider = new ChatCompletionsProvider({
+    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
+  });
+  const stub = stubFetch(() => completion('{"mappings":[]}'));
+  try {
+    await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "mapping" });
+    assert.equal(stub.calls[0].body.max_tokens, 2500);
+  } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
+});
+
+test("chat-completions: 401 属致命错误，不重试直接判通道失败", async () => {
+  process.env.IMPORT_TEST_KEY_A = "test-key";
+  const provider = new ChatCompletionsProvider({
+    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
+  });
+  const stub = stubFetch(() => ({ ok: false, status: 401, json: async () => ({ error: "unauthorized" }) }));
+  try {
+    const response = await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+    assert.equal(response, null);
+    assert.equal(stub.calls.length, 1, "401 不该重试");
+  } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
+});
+
+test("chat-completions: 429 可重试，第二次成功即返回", async () => {
+  process.env.IMPORT_TEST_KEY_A = "test-key";
+  const provider = new ChatCompletionsProvider({
+    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
+  });
+  const stub = stubFetch((n) => (n === 1 ? { ok: false, status: 429, json: async () => ({}) } : completion('{"rows":[]}')));
+  try {
+    const response = await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+    assert.equal(response.raw, '{"rows":[]}');
+    assert.equal(stub.calls.length, 2);
+  } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
+});
+
+test("chat-completions: 空 content 视为失败（不静默产出 0 行）", async () => {
+  process.env.IMPORT_TEST_KEY_A = "test-key";
+  const provider = new ChatCompletionsProvider({
+    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
+  });
+  const stub = stubFetch(() => completion(""));
+  try {
+    const response = await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+    assert.equal(response, null);
+  } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
+});
+
+// ---------------------------------------------------------------------------
+// 链路装配与 prompt 同源
+// ---------------------------------------------------------------------------
+
+test("provider: IMPORT_CHAIN 拼错通道名时告警而不是静默丢弃", () => {
+  const originalChain = process.env.IMPORT_CHAIN;
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    process.env.IMPORT_CHAIN = "commandcode,openrouter";
+    const provider = defaultImportProvider();
+    assert.equal(provider.name, "openrouter", "未知名字被丢弃后只剩 openrouter 单通道");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /commandcode/);
+  } finally {
+    console.warn = originalWarn;
+    if (originalChain === undefined) delete process.env.IMPORT_CHAIN; else process.env.IMPORT_CHAIN = originalChain;
+  }
+});
+
+test("provider: 未配置 IMPORT_CHAIN 时默认链与文档一致", () => {
+  const originalChain = process.env.IMPORT_CHAIN;
+  try {
+    delete process.env.IMPORT_CHAIN;
+    const provider = defaultImportProvider();
+    assert.equal(provider.name, "fallback-chain");
+  } finally {
+    if (originalChain !== undefined) process.env.IMPORT_CHAIN = originalChain;
+  }
+});
+
+test("provider: IMPORT_CHAIN=openrouter 完全回到改动前形态（回滚路径）", () => {
+  const originalChain = process.env.IMPORT_CHAIN;
+  try {
+    process.env.IMPORT_CHAIN = "openrouter";
+    const provider = defaultImportProvider();
+    assert.equal(provider.name, "openrouter");
+    assert.equal(provider.attempts, undefined, "单通道不应有降级链的 attempts");
+  } finally {
+    if (originalChain === undefined) delete process.env.IMPORT_CHAIN; else process.env.IMPORT_CHAIN = originalChain;
+  }
+});
+
+test("provider: IMPORT_SYSTEM_PROMPT 与 import-lab 模板保持逐字一致", async () => {
+  const template = await readFile(new URL("../tools/import-lab/prompt-v2.template.txt", import.meta.url), "utf8");
+  assert.equal(IMPORT_SYSTEM_PROMPT.trim(), template.trim(), "改 prompt 时两处必须同步，否则双跑脚本测的就不是生产 prompt");
 });
