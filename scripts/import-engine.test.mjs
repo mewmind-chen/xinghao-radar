@@ -347,12 +347,12 @@ test("chat-completions: 默认用 json_object 且不外发 OpenRouter 专有 pro
     assert.equal(init.headers.Authorization, "Bearer test-key");
     assert.deepEqual(body.response_format, { type: "json_object" });
     assert.equal("provider" in body, false, "非 OpenRouter 上游不能带 provider 字段");
-    assert.equal(body.max_tokens, 16000);
+    assert.equal("max_tokens" in body, false, "直连不设输出上限：推理模型的思考 token 也计入额度，收紧会把答案截断成空");
     assert.equal(body.temperature, 0);
   } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
 });
 
-test("chat-completions: mapping 模式收紧 max_tokens 为 2500", async () => {
+test("chat-completions: mapping 模式同样不设 max_tokens（回归保护）", async () => {
   process.env.IMPORT_TEST_KEY_A = "test-key";
   const provider = new ChatCompletionsProvider({
     name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
@@ -360,7 +360,11 @@ test("chat-completions: mapping 模式收紧 max_tokens 为 2500", async () => {
   const stub = stubFetch(() => completion('{"mappings":[]}'));
   try {
     await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "mapping" });
-    assert.equal(stub.calls[0].body.max_tokens, 2500);
+    assert.equal(
+      "max_tokens" in stub.calls[0].body,
+      false,
+      "曾按 responseKind 收紧到 2500，导致推理模型把额度耗在思考上、content 为空；不得再引入该限制",
+    );
   } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
 });
 

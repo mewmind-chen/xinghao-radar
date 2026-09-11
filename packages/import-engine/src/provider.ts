@@ -161,7 +161,7 @@ export class OpenRouterProvider implements ExtractionProvider {
     const payload = {
       model: process.env[this.modelEnv] || this.model,
       temperature: 0,
-      max_tokens: request.responseKind === "mapping" ? 2500 : 6000,
+      // 不设 max_tokens：与直连通道一致，输出上限交给上游。
       reasoning_effort: "low",
       response_format: { type: "json_schema", json_schema: { name: request.responseKind === "rows" ? "import_rows" : "import_mappings", strict: true, schema } },
       provider: { require_parameters: true, allow_fallbacks: true },
