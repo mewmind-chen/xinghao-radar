@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { extractImport, OpenRouterProvider, type ExtractRequest, type SourceType } from "../../packages/import-engine/src/index.ts";
+import { defaultImportProvider, extractImport, OpenRouterProvider, type ExtractRequest, type SourceType } from "../../packages/import-engine/src/index.ts";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.IMPORT_LAB_PORT || 8090);
@@ -109,7 +109,9 @@ async function runExtract(req: IncomingMessage): Promise<unknown> {
   if (request.modelMode === "compare" && !process.env.IMPORT_LAB_COMPARE_MODEL?.trim()) {
     return { status: 400, body: { error: "compare_model_unconfigured", message: "尚未配置 IMPORT_LAB_COMPARE_MODEL" } };
   }
-  const primary = await extractImport(request, new OpenRouterProvider());
+  // primary 走与生产同一套 IMPORT_CHAIN 降级链，否则这个手测入口验证不了生产链路；
+  // compare 仍固定在 OpenRouter + IMPORT_LAB_COMPARE_MODEL，用于同上游跨模型对比。
+  const primary = await extractImport(request, defaultImportProvider());
   if (request.modelMode !== "compare") return { status: 200, body: { primary } };
   const compareModel = process.env.IMPORT_LAB_COMPARE_MODEL?.trim();
   if (!compareModel) return { status: 400, body: { error: "compare_model_unconfigured", message: "尚未配置 IMPORT_LAB_COMPARE_MODEL" } };

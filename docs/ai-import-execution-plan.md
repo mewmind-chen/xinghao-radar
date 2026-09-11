@@ -61,8 +61,8 @@ Header: Authorization: Bearer <COMMAND_CODE_API_KEY>
 | 0.1 | **Provider 注入点唯一** | `src/lib/server/import-engine-adapter.ts:93` `const provider = defaultImportProvider();` | 换通道只需改这一处 + provider 层 |
 | 0.2 | 生产 V2 开关**已是 true** | `~/Library/LaunchAgents/com.xinghao-radar.vite-dev.plist` → `IMPORT_ENGINE_V2_ENABLED = "true"` | 不需要额外开开关 |
 | 0.3 | `extractImport(request, provider)` 只接受**单 provider** | `packages/import-engine/src/extract.ts:268` | 降级链要做在 provider 内部（合成 provider），不改 extract 签名 |
-| 0.4 | **12 个引擎测试全部注入 `fakeProvider`**，不触网、不碰 provider 内部 | `scripts/import-engine.test.mjs:11` | 改 prompt 常量、新增 provider 类 → **零回归风险** |
-| 0.5 | 基线实测 **12/12 通过，1.2s** | `npm run import:engine:test` | 每阶段跑一次作回归门 |
+| 0.4 | **引擎测试注入 `fakeProvider`**，不触网；复审后新增 `FallbackProvider` / `ChatCompletionsProvider` 的 stub-fetch 单测 | `scripts/import-engine.test.mjs:11` | 改 prompt 常量、新增 provider 类 → 单测可覆盖，不再只靠手工实测 |
+| 0.5 | 基线实测 **12/12 通过，1.2s**；2026-09-11 复审补充 16 条后为 **28/28 通过，1.7s** | `npm run import:engine:test` | 每阶段跑一次作回归门 |
 | 0.6 | **空输出已被拦截** | `provider.ts:115` `if (!raw.trim()) return null;` → 上层 `provider_error` | 缺的是"降级"，不是"拦截"。不用新写拦截逻辑 |
 | 0.7 | `provider:{require_parameters,allow_fallbacks}` 是 **OpenRouter 专有** | `provider.ts:161` | ⚠️ 发给 DeepSeek/OpenCode Go 会 400，必须按上游裁剪 |
 | 0.8 | 生产 env 在 **plist** 的 `EnvironmentVariables`；`PATH` 含 `/opt/homebrew/bin` | plist 实测 | 新 key 加在 plist；`dsh` 对生产进程可直接调用 |
@@ -79,7 +79,7 @@ Header: Authorization: Bearer <COMMAND_CODE_API_KEY>
 | **P2** | CLI 兜底（`opencode run` / `dsh`）——**根因未定位前不上** | 1 新文件 + 1 处 | 中 | ⏸ 暂缓 |
 | **P3** | 额度守卫 + 观测 | 1 脚本 + 1 定时任务 | 低 | ✅ |
 
-> 每个阶段结束都跑 `npm run import:engine:test`，**必须 12/12**。
+> 每个阶段结束都跑 `npm run import:engine:test`，**必须全绿（当前 28/28）**。
 
 ---
 
@@ -131,7 +131,7 @@ ${tableSummary(table)}`,
 
 ```bash
 cd xinghao-radar
-npm run import:engine:test          # 期望 12/12 pass
+npm run import:engine:test          # 期望全绿（当前 28/28 pass）
 IMPORT_ENGINE_V2_ENABLED=true npm run import:lab   # :8090，导入 sample.txt
 ```
 **期望**：3 行候选（STM32F103C8T6 / LM2596S-ADJ → offer；TPS5430DDAR → inquiry，isTp=true）；`runs[0].status=completed`。
@@ -404,8 +404,8 @@ function recordRun(result: ExtractionResult, provider: ExtractionProvider, respo
 ### P1-6b 返回类型变更（注意）
 
 `defaultImportProvider()` 返回类型从 `OpenRouterProvider` 变为 `ExtractionProvider`。
-已核查全部调用点（`import-engine-adapter.ts:93`、`extract.ts:268` 默认参数）**只使用 `available()` / `extract()`**，不受影响；
-`tools/import-lab/server.ts:112` 用的是 `new OpenRouterProvider()`，也不受影响。
+已核查全部调用点（`import-engine-adapter.ts:93`、`extract.ts:292` 默认参数）**只使用 `available()` / `extract()`**，不受影响；
+`tools/import-lab/server.ts` 的 primary 于 2026-09-11 复审时改为 `defaultImportProvider()`（原来硬编码 `new OpenRouterProvider()`，导致手测入口验证不了新链），`compare` 仍固定 OpenRouter + `IMPORT_LAB_COMPARE_MODEL`。
 
 ### P1-7 生产 env
 
@@ -443,6 +443,13 @@ launchctl load  ~/Library/LaunchAgents/com.xinghao-radar.vite-dev.plist
 | 次备也失效 | 再把 `OPENCODE_GO_API_KEY` 改无效 | 切到 `deepseek-api`；runs 3 条 |
 | 主力空输出 | mock 返回空 content | `parseResponse` → null → 降级（**不产生静默 0 行**） |
 | 全链失效 | 清空所有 key | `status=provider_unavailable` |
+| 整链超预算 | `IMPORT_CHAIN_BUDGET_MS=1000` 后导入大文件 | 约 1s 内返回 `provider_error`，runs 中后续通道记为 `error="budget_exhausted"` |
+
+> **时间边界（2026-09-11 复审新增）**：`FallbackProvider` 给整链一个共享 deadline，默认
+> `IMPORT_CHAIN_BUDGET_MS=180000`。刻意取 180s 是因为它 == 「单通道 2 次尝试 × 90s」的历史最坏值：
+> 单通道场景**不会**因为引入降级链而变慢，多通道场景把最坏值从 `N×180s`（默认链 4 通道 = 12 分钟）
+> 收敛回 180s。代价是：若首个可用通道把预算耗光，后续通道会被记为 `budget_exhausted` 而不再尝试——
+> 这是「有界延迟」换「极限可用性」的显式取舍，可用该 env 上调。
 
 ---
 
@@ -576,7 +583,7 @@ RADAR_CLI_FALLBACK=true IMPORT_CHAIN=opencode-cli npm run import:lab   # 导入 
 
 | # | 检查 | 命令 / 操作 | 通过标准 |
 |---|---|---|---|
-| 1 | 引擎单测 | `npm run import:engine:test` | 12/12 |
+| 1 | 引擎单测 | `npm run import:engine:test` | 28/28（含 16 条链/通道/预算用例） |
 | 2 | 全量单测 | `npm run test` | 与改动前一致 |
 | 3 | 真实样本（每通道） | Import Lab 导入 sample.txt | 3 行，字段名合规，evidence 有 quote |
 | 4 | 降级链 | 主力 key 置无效 | 自动切备用，runs ≥2 |

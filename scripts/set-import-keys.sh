@@ -117,7 +117,13 @@ fi
 
 cat <<'EOF'
 
-注意：环境变量只是「把 key 备好」。真正生效还需 P1 代码落地
-（providers/chat-completions.ts 的 commandCodeProvider + defaultImportProvider 读 IMPORT_CHAIN），
-否则生产仍走旧的 OpenRouter 通道。见 docs/ai-import-execution-plan.md 的 P1。
+生效条件（P1 代码已随 PR #22 落地）：
+  defaultImportProvider() 会读 IMPORT_CHAIN 组装降级链，链上的直连通道见
+  packages/import-engine/src/providers/chat-completions.ts。
+  本脚本只负责「把 key 备好」；部署后仍走旧 OpenRouter 通道的唯一可能原因是
+  生产还没部署到含该代码的 main（按规范 §4.3 部署）。
+  校验是否生效：查生产日志，runs[].channel 应出现 command-code / deepseek-api 等通道名。
+
+可调项：
+  IMPORT_CHAIN_BUDGET_MS  整链总预算，默认 180000（ms）。超预算的通道记为 budget_exhausted。
 EOF

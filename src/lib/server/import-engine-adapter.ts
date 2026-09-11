@@ -62,7 +62,7 @@ function candidateToRadarRow(row: CandidateRow, neutral = false): ImportRow {
 }
 
 function modelMessage(result: Awaited<ReturnType<typeof extractImport>>, neutral = false): string | null {
-  if (result.status === "provider_unavailable") return "当前未配置 OpenRouter，复杂输入无法交给模型识别。";
+  if (result.status === "provider_unavailable") return "当前未配置任何可用的 AI 识别通道，复杂输入无法交给模型识别。";
   if (result.status === "provider_error") return "模型识别失败，请稍后重试或改用文本/标准表格。";
   if (result.status === "needs_mapping") return "表格列名不明确，需要模型映射或人工确认。";
   if (result.status === "needs_review") {
