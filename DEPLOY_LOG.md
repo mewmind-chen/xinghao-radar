@@ -36,6 +36,24 @@
 
 ---
 
+## 2026-09-11 PR27
+
+| 字段 | 值 |
+| --- | --- |
+| 部署时间 | 2026-09-11 12:25（本地 CST） |
+| PR | [PR27](https://github.com/mewmind-chen/xinghao-radar/pull/27)：移除 max_tokens 硬上限（推理模型被截断成空内容，导致链路降级到 OpenRouter） |
+| 合并时间 | 2026-09-11 12:20 |
+| 部署前 SHA | `65b6d7667f5624bbf2883bed27dd63af40f97d61` |
+| 部署后 SHA（= `main`） | `877d6f1aaeedce0cf94674cca2089b6bb582e313` |
+| 生产 release | `20260911-042448-main-877d6f1aaeed` |
+| 操作者 | 自动部署（`scripts/auto-deploy.mjs`） |
+| 数据库 migration | 无 |
+| 构建 | 成功（changed=5） |
+| 服务重启 | 是（PID 31836 → 46465） |
+| 验证结果 | 本地与公网 `/healthz` 均返回新 release；`importReady=3`、链路 `command-code,deepseek-api,openrouter`；**线上产物 `max_tokens` 出现 0 次（上一版 3 次）**；CI 6/6 通过；`npm test` 334 项 / 332 pass / 0 fail / 2 skipped，引擎 30/30，lint 与 typecheck 0 error |
+| 回滚点 | 上一 release `20260911-035846-main-5e3b8f4074b5` |
+| 备注 | **修复「AI 识别实际走 OpenRouter」的真正根因**：mapping 模式的 `max_tokens: 2500` 对推理模型致命 —— 思考 token 也计入额度，2500 全被 reasoning 吃光，`finish_reason=length`、`content=""`，引擎判 `empty_or_error` 后降级到 openrouter 兜底。用真实文件复现确认，删除限制后 `command-code` 命中（35.7s / 314 行 / `route=model_mapping`）。三处硬上限全部移除（含 `harness-import` 图片兜底路径的 3500）。**教训：不得给推理模型设 max_tokens，直连通道的输出上限交给上游。** |
+
 ## 2026-09-11 PR25
 
 | 字段 | 值 |
