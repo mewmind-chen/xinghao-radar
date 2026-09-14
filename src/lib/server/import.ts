@@ -45,6 +45,7 @@ import { ensureSeed } from "./seed";
 import { resolveDateCode } from "@/lib/inventory/date-code";
 import { sameNullableNumber } from "@/lib/import-duplicate";
 import { inquiryReviewBlockingReason, isCompositeMpn } from "@/lib/import-review";
+import { sanitizeImportRowForKind } from "@/lib/import-target";
 
 const IMPORT_KINDS = ["offer", "inquiry", "stock", "transit", "potential", "mixed"] as const;
 const IMPORT_PARSE_KINDS = [...IMPORT_KINDS, "neutral"] as const;
@@ -347,14 +348,16 @@ function rowsForImportReview(
     const warning = stripKindSelectionWarning(row.warning);
     const wasNeutral = row.kind === "mixed";
     const targetKind = selectedKind === "mixed" ? row.kind : selectedKind;
+    const sanitized = sanitizeImportRowForKind(row, targetKind);
     const eligible =
       targetKind === "inquiry"
-        ? !inquiryReviewBlockingReason({ ...row, warning }, defaultCustomer)
-        : targetKind !== "mixed" && Boolean(row.mpn.trim()) && !warning && !row.brandConflict;
+        ? !inquiryReviewBlockingReason({ ...sanitized, warning }, defaultCustomer)
+        : targetKind !== "mixed" &&
+          Boolean(sanitized.mpn.trim()) &&
+          !warning &&
+          !sanitized.brandConflict;
     return {
-      ...row,
-      ...(targetKind === "inquiry" ? { costAmount: null, costCurrency: null, costTax: null } : {}),
-      kind: targetKind,
+      ...sanitized,
       warning,
       duplicate: false,
       duplicateReason: null,
@@ -560,9 +563,8 @@ export const parseImport = createServerFn({ method: "POST" })
     else requireImportKind(principal, data.kind);
     const sql = await sqlClient();
     await ensureSeed(sql);
-    // Extraction is intentionally independent from the eventual write target.
-    // The old targeted modes remain supported for callers outside the new UI,
-    // while the UI uses `neutral` and selects the target after seeing rows.
+    // The user-selected target is a hard constraint for extraction. Potential
+    // only needs MPN/brand, so it reuses offer extraction and is sanitized below.
     const extractKind: ImportKind | "neutral" = data.kind === "potential" ? "offer" : data.kind;
     const legacyExtractKind: ImportKind | "mixed" =
       data.kind === "neutral" ? "mixed" : data.kind === "potential" ? "offer" : data.kind;
@@ -643,7 +645,7 @@ export const parseImport = createServerFn({ method: "POST" })
           }
         : data.kind === "mixed"
           ? row
-          : { ...row, kind: data.kind },
+          : sanitizeImportRowForKind(row, data.kind),
     );
     // Some local/fallback extractors keep only the first token of a line such as
     // "TDA21472 / TDA21472AUMA1". Preserve the human-review gate from the raw

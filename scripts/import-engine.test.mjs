@@ -9,6 +9,7 @@ import {
   defaultImportProvider,
   extractImport,
   headerKey,
+  normalizeModelRow,
   parseCsv,
 } from "../packages/import-engine/src/index.ts";
 import { DEFAULT_IMPORT_CHAIN, IMPORT_CHANNEL_SPECS } from "./import-channel-status.mjs";
@@ -41,10 +42,17 @@ test("import-engine: CSV preserves quoted commas and newlines", () => {
 });
 
 test("import-engine: known table maps deterministically and keeps cell evidence", async () => {
-  const result = await extractImport({
-    source: { type: "csv", filename: "known.csv", content: "MPN,Brand,Quantity,Date Code,Price\nSTM32F103C8T6,ST,10K,2418,$1.15\n" },
-    kindHint: "offer",
-  }, fakeProvider({}));
+  const result = await extractImport(
+    {
+      source: {
+        type: "csv",
+        filename: "known.csv",
+        content: "MPN,Brand,Quantity,Date Code,Price\nSTM32F103C8T6,ST,10K,2418,$1.15\n",
+      },
+      kindHint: "offer",
+    },
+    fakeProvider({}),
+  );
   assert.equal(result.status, "completed");
   assert.equal(result.route, "deterministic");
   assert.equal(result.rows[0].mpn, "STM32F103C8T6");
@@ -56,29 +64,54 @@ test("import-engine: known table maps deterministically and keeps cell evidence"
 
 test("import-engine: text labels and compact quantities are not mistaken for MPNs", async () => {
   let calls = 0;
-  const provider = fakeProvider({ rows: {
-    rows: [{ kind: "offer", mpn: "STM32F103C8T6", qtyRaw: "10K", priceRaw: "$1.15", evidence: [{ field: "mpn", type: "text", quote: "STM32F103C8T6" }] }],
-  } });
+  const provider = fakeProvider({
+    rows: {
+      rows: [
+        {
+          kind: "offer",
+          mpn: "STM32F103C8T6",
+          qtyRaw: "10K",
+          priceRaw: "$1.15",
+          evidence: [{ field: "mpn", type: "text", quote: "STM32F103C8T6" }],
+        },
+      ],
+    },
+  });
   const original = provider.extract;
-  provider.extract = async (request) => { calls++; return original(request); };
-  const result = await extractImport({
-    source: { type: "text", content: "Supplier: Best Components\nItem code: STM32F103C8T6\nAvailable 10K, net $1.15" },
-    kindHint: "offer",
-  }, provider);
+  provider.extract = async (request) => {
+    calls++;
+    return original(request);
+  };
+  const result = await extractImport(
+    {
+      source: {
+        type: "text",
+        content: "Supplier: Best Components\nItem code: STM32F103C8T6\nAvailable 10K, net $1.15",
+      },
+      kindHint: "offer",
+    },
+    provider,
+  );
   assert.equal(calls, 1);
   assert.equal(result.route, "model_rows");
   assert.equal(result.rows[0].mpn, "STM32F103C8T6");
   assert.equal(result.rows[0].qty, 10000);
-  assert.equal(result.rows.some((row) => ["Supplier", "Item", "Available"].includes(row.mpn)), false);
+  assert.equal(
+    result.rows.some((row) => ["Supplier", "Item", "Available"].includes(row.mpn)),
+    false,
+  );
 });
 
 test("import-engine: ordinary model-like text still uses deterministic extraction", async () => {
   const unavailable = fakeProvider({});
   unavailable.available = () => false;
-  const result = await extractImport({
-    source: { type: "text", content: "STM32F103C8T6 10K DC2418 $1.15 USD 现货 HK" },
-    kindHint: "offer",
-  }, unavailable);
+  const result = await extractImport(
+    {
+      source: { type: "text", content: "STM32F103C8T6 10K DC2418 $1.15 USD 现货 HK" },
+      kindHint: "offer",
+    },
+    unavailable,
+  );
   assert.equal(result.status, "completed");
   assert.equal(result.route, "deterministic");
   assert.equal(result.rows[0].mpn, "STM32F103C8T6");
@@ -86,40 +119,123 @@ test("import-engine: ordinary model-like text still uses deterministic extractio
   assert.equal(result.rows[0].priceAmount, 1.15);
 });
 
+test("import-engine: inquiry text keeps the complete customer name and TP", async () => {
+  const unavailable = fakeProvider({});
+  unavailable.available = () => false;
+  const result = await extractImport(
+    {
+      source: {
+        type: "text",
+        content: "客户A TPS7A4700RGWR 20K TP 1.08 USD\n客户B STM32F103C8T6 10K TP 1.05 USD",
+      },
+      kindHint: "inquiry",
+    },
+    unavailable,
+  );
+
+  assert.equal(result.route, "deterministic");
+  assert.deepEqual(
+    result.rows.map((row) => [row.customer, row.qty, row.priceAmount, row.priceCurrency]),
+    [
+      ["客户A", 20000, 1.08, "USD"],
+      ["客户B", 10000, 1.05, "USD"],
+    ],
+  );
+});
+
 test("import-engine: neutral extraction keeps business kind unset", async () => {
   let requestedHint;
-  const provider = fakeProvider({ rows: {
-    rows: [{ kind: "offer", mpn: "STM32F103C8T6", qtyRaw: "10K", evidence: [{ field: "mpn", type: "text", quote: "STM32F103C8T6" }] }],
-  } });
+  const provider = fakeProvider({
+    rows: {
+      rows: [
+        {
+          kind: "offer",
+          mpn: "STM32F103C8T6",
+          qtyRaw: "10K",
+          evidence: [{ field: "mpn", type: "text", quote: "STM32F103C8T6" }],
+        },
+      ],
+    },
+  });
   const original = provider.extract;
   provider.extract = async (request) => {
     requestedHint = request.kindHint;
     return original(request);
   };
-  const result = await extractImport({
-    source: { type: "text", content: "STM32F103C8T6 10K" },
-    kindHint: "neutral",
-  }, provider);
+  const result = await extractImport(
+    {
+      source: { type: "text", content: "STM32F103C8T6 10K" },
+      kindHint: "neutral",
+    },
+    provider,
+  );
   assert.equal(requestedHint, undefined, "确定性文本不应无意义调用模型");
   assert.equal(result.rows[0].kind, null);
-  assert.equal(result.issues.some((item) => item.code === "missing_kind"), false);
+  assert.equal(
+    result.issues.some((item) => item.code === "missing_kind"),
+    false,
+  );
 
-  const modelResult = await extractImport({
-    source: { type: "text", content: "客户：待确认\nItem code: STM32F103C8T6\nAvailable 10K, supplier quote" },
-    kindHint: "neutral",
-  }, provider);
+  const modelResult = await extractImport(
+    {
+      source: {
+        type: "text",
+        content: "客户：待确认\nItem code: STM32F103C8T6\nAvailable 10K, supplier quote",
+      },
+      kindHint: "neutral",
+    },
+    provider,
+  );
   assert.equal(requestedHint, "neutral");
   assert.equal(modelResult.rows[0].kind, null);
-  assert.equal(modelResult.issues.some((item) => item.code === "missing_kind"), false);
+  assert.equal(
+    modelResult.issues.some((item) => item.code === "missing_kind"),
+    false,
+  );
+});
+
+test("import-engine: 用户选择的询价类型覆盖模型误判并清除库存字段", () => {
+  const row = normalizeModelRow(
+    {
+      kind: "stock",
+      mpn: "TPS7A4700RGWR",
+      brand: "TI",
+      qty: "20K",
+      customer: "客户A",
+      priceAmount: 1.08,
+      priceCurrency: "USD",
+      warehouse: "HK",
+      channel: "错误供应商",
+      costAmount: 0.8,
+      costCurrency: "USD",
+      evidence: [{ field: "mpn", type: "text", quote: "TPS7A4700RGWR" }],
+    },
+    { kindHint: "inquiry", sourceText: "TPS7A4700RGWR 客户A 20K TP 1.08 USD" },
+  );
+
+  assert.equal(row?.kind, "inquiry");
+  assert.equal(row?.customer, "客户A");
+  assert.equal(row?.priceAmount, 1.08);
+  assert.equal(row?.warehouse, null);
+  assert.equal(row?.channel, null);
+  assert.equal(row?.costAmount, null);
+  assert.equal(row?.costCurrency, null);
 });
 
 test("import-engine: unknown table asks for mapping when provider is unavailable", async () => {
   const unavailable = fakeProvider({});
   unavailable.available = () => false;
-  const result = await extractImport({
-    source: { type: "csv", filename: "unknown.csv", content: "Item Code,Available Stock,Maker\nTPS54560DDAR,2K,TI\n" },
-    kindHint: "stock",
-  }, unavailable);
+  const result = await extractImport(
+    {
+      source: {
+        type: "csv",
+        filename: "unknown.csv",
+        content: "Item Code,Available Stock,Maker\nTPS54560DDAR,2K,TI\n",
+      },
+      kindHint: "stock",
+    },
+    unavailable,
+  );
   assert.equal(result.status, "provider_unavailable");
   assert.equal(result.rows.length, 0);
   assert.match(result.issues[0].message, /列映射/);
@@ -133,30 +249,76 @@ test("import-engine: supplier-specific fixture headers stay on the model mapping
 
 test("import-engine: model mapping applies to all rows after one bounded mapping call", async () => {
   let calls = 0;
-  const provider = fakeProvider({ mapping: { mappings: [{ sheet: "CSV", headerRow: 0, dataStartRow: 1, columns: { mpn: 0, qty: 1, brand: 2 }, needsReview: false, reason: null }] } });
+  const provider = fakeProvider({
+    mapping: {
+      mappings: [
+        {
+          sheet: "CSV",
+          headerRow: 0,
+          dataStartRow: 1,
+          columns: { mpn: 0, qty: 1, brand: 2 },
+          needsReview: false,
+          reason: null,
+        },
+      ],
+    },
+  });
   const original = provider.extract;
-  provider.extract = async (request) => { calls++; return original(request); };
-  const result = await extractImport({
-    source: { type: "csv", filename: "unknown.csv", content: "Item Code,Available Stock,Maker\nTPS54560DDAR,2K,TI\nSTM32F103C8T6,500,ST\n" },
-    kindHint: "stock",
-  }, provider);
+  provider.extract = async (request) => {
+    calls++;
+    return original(request);
+  };
+  const result = await extractImport(
+    {
+      source: {
+        type: "csv",
+        filename: "unknown.csv",
+        content: "Item Code,Available Stock,Maker\nTPS54560DDAR,2K,TI\nSTM32F103C8T6,500,ST\n",
+      },
+      kindHint: "stock",
+    },
+    provider,
+  );
   assert.equal(calls, 1);
   assert.equal(result.route, "model_mapping");
   assert.equal(result.status, "completed");
-  assert.deepEqual(result.rows.map((row) => [row.mpn, row.qty]), [["TPS54560DDAR", 2000], ["STM32F103C8T6", 500]]);
+  assert.deepEqual(
+    result.rows.map((row) => [row.mpn, row.qty]),
+    [
+      ["TPS54560DDAR", 2000],
+      ["STM32F103C8T6", 500],
+    ],
+  );
 });
 
 test("import-engine: real unknown CSV and Excel fixtures use one semantic mapping pass", async () => {
   const root = new URL("../tests/radar-agent-import-recovery/", import.meta.url);
-  for (const [filename, sheet] of [["unknown-en.csv", "CSV"], ["unknown-en.xlsx", "Offers"]]) {
+  for (const [filename, sheet] of [
+    ["unknown-en.csv", "CSV"],
+    ["unknown-en.xlsx", "Offers"],
+  ]) {
     const content = new Uint8Array(await readFile(new URL(filename, root)));
-    const provider = fakeProvider({ mapping: {
-      mappings: [{ sheet, headerRow: 0, dataStartRow: 1, columns: { mpn: 0, qty: 1, brand: 2, dateCode: 3, note: 4 }, needsReview: false, reason: null }],
-    } });
-    const result = await extractImport({
-      source: { type: filename.endsWith(".csv") ? "csv" : "excel", filename, content },
-      kindHint: "offer",
-    }, provider);
+    const provider = fakeProvider({
+      mapping: {
+        mappings: [
+          {
+            sheet,
+            headerRow: 0,
+            dataStartRow: 1,
+            columns: { mpn: 0, qty: 1, brand: 2, dateCode: 3, note: 4 },
+            needsReview: false,
+            reason: null,
+          },
+        ],
+      },
+    });
+    const result = await extractImport(
+      {
+        source: { type: filename.endsWith(".csv") ? "csv" : "excel", filename, content },
+        kindHint: "offer",
+      },
+      provider,
+    );
     assert.equal(result.route, "model_mapping");
     assert.equal(result.status, "completed");
     assert.equal(result.rows.length, 2);
@@ -165,10 +327,28 @@ test("import-engine: real unknown CSV and Excel fixtures use one semantic mappin
 });
 
 test("import-engine: visual candidates always require human review", async () => {
-  const result = await extractImport({
-    source: { type: "image", filename: "label.png", mime: "image/png", content: new Uint8Array([1, 2, 3]) },
-    kindHint: "offer",
-  }, fakeProvider({ rows: { rows: [{ kind: "offer", mpn: "ABC-123", evidence: [{ field: "mpn", type: "image", region: [0, 0, 1, 1], quote: "ABC-123" }] }] } }));
+  const result = await extractImport(
+    {
+      source: {
+        type: "image",
+        filename: "label.png",
+        mime: "image/png",
+        content: new Uint8Array([1, 2, 3]),
+      },
+      kindHint: "offer",
+    },
+    fakeProvider({
+      rows: {
+        rows: [
+          {
+            kind: "offer",
+            mpn: "ABC-123",
+            evidence: [{ field: "mpn", type: "image", region: [0, 0, 1, 1], quote: "ABC-123" }],
+          },
+        ],
+      },
+    }),
+  );
   assert.equal(result.status, "needs_review");
   assert.equal(result.rows[0].verification, "visual_only");
   assert.ok(result.issues.some((item) => item.code === "missing_evidence"));
@@ -176,10 +356,13 @@ test("import-engine: visual candidates always require human review", async () =>
 
 test("import-engine: missing mixed kind and missing provenance remain review issues", async () => {
   const source = "渠道消息格式无法由规则确定";
-  const result = await extractImport({
-    source: { type: "text", content: source },
-    kindHint: "mixed",
-  }, fakeProvider({ rows: { rows: [{ kind: null, mpn: "ABC-124", qtyRaw: "10K", evidence: {} }] } }));
+  const result = await extractImport(
+    {
+      source: { type: "text", content: source },
+      kindHint: "mixed",
+    },
+    fakeProvider({ rows: { rows: [{ kind: null, mpn: "ABC-124", qtyRaw: "10K", evidence: {} }] } }),
+  );
   assert.equal(result.status, "needs_review");
   assert.equal(result.rows[0].kind, null);
   assert.ok(result.rows[0].issues.length >= 2);
@@ -187,10 +370,17 @@ test("import-engine: missing mixed kind and missing provenance remain review iss
 });
 
 test("import-engine: unknown legacy .doc is explicitly unsupported", async () => {
-  const result = await extractImport({
-    source: { type: "docx", filename: "old.doc", content: new Uint8Array([0xd0, 0xcf, 0x11, 0xe0]) },
-    kindHint: "offer",
-  }, fakeProvider({}));
+  const result = await extractImport(
+    {
+      source: {
+        type: "docx",
+        filename: "old.doc",
+        content: new Uint8Array([0xd0, 0xcf, 0x11, 0xe0]),
+      },
+      kindHint: "offer",
+    },
+    fakeProvider({}),
+  );
   assert.equal(result.status, "unsupported");
   assert.match(result.issues[0].message, /docx|PDF/);
 });
@@ -224,17 +414,39 @@ function okResponse(model, extra = {}) {
 test("fallback: 全部通道不可用时不调用任何上游，逐条记为 unavailable", async () => {
   let calls = 0;
   const chain = new FallbackProvider([
-    chainProvider("a", async () => { calls++; return okResponse("m"); }, false),
-    chainProvider("b", async () => { calls++; return okResponse("m"); }, false),
+    chainProvider(
+      "a",
+      async () => {
+        calls++;
+        return okResponse("m");
+      },
+      false,
+    ),
+    chainProvider(
+      "b",
+      async () => {
+        calls++;
+        return okResponse("m");
+      },
+      false,
+    ),
   ]);
   assert.equal(chain.available(), false);
-  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  const response = await chain.extract({
+    kindHint: "offer",
+    userText: "x",
+    sourceType: "text",
+    responseKind: "rows",
+  });
   assert.equal(response, null);
   assert.equal(calls, 0);
-  assert.deepEqual(chain.attempts.map((run) => [run.provider, run.status, run.error]), [
-    ["a", "failed", "unavailable"],
-    ["b", "failed", "unavailable"],
-  ]);
+  assert.deepEqual(
+    chain.attempts.map((run) => [run.provider, run.status, run.error]),
+    [
+      ["a", "failed", "unavailable"],
+      ["b", "failed", "unavailable"],
+    ],
+  );
 });
 
 test("fallback: 首个通道失败后降级成功，记录命中通道与 fallbackFrom 顺序", async () => {
@@ -243,23 +455,38 @@ test("fallback: 首个通道失败后降级成功，记录命中通道与 fallba
     chainProvider("b", async () => null),
     chainProvider("c", async () => okResponse("c-model")),
   ]);
-  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  const response = await chain.extract({
+    kindHint: "offer",
+    userText: "x",
+    sourceType: "text",
+    responseKind: "rows",
+  });
   assert.equal(response.channel, "c");
   assert.deepEqual(response.fallbackFrom, ["a", "b"]);
-  assert.deepEqual(chain.attempts.map((run) => [run.provider, run.status]), [
-    ["a", "failed"],
-    ["b", "failed"],
-    ["c", "completed"],
-  ]);
+  assert.deepEqual(
+    chain.attempts.map((run) => [run.provider, run.status]),
+    [
+      ["a", "failed"],
+      ["b", "failed"],
+      ["c", "completed"],
+    ],
+  );
   assert.equal(chain.attempts[2].channel, "c");
 });
 
 test("fallback: 通道抛异常被吞掉并记为失败，不会冒泡到调用方", async () => {
   const chain = new FallbackProvider([
-    chainProvider("a", async () => { throw new Error("boom"); }),
+    chainProvider("a", async () => {
+      throw new Error("boom");
+    }),
     chainProvider("b", async () => okResponse("b-model")),
   ]);
-  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  const response = await chain.extract({
+    kindHint: "offer",
+    userText: "x",
+    sourceType: "text",
+    responseKind: "rows",
+  });
   assert.equal(response.channel, "b");
   assert.deepEqual(response.fallbackFrom, ["a"]);
 });
@@ -269,31 +496,55 @@ test("fallback: 全链失败返回 null，attempts 覆盖每个通道", async ()
     chainProvider("a", async () => null),
     chainProvider("b", async () => null),
   ]);
-  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  const response = await chain.extract({
+    kindHint: "offer",
+    userText: "x",
+    sourceType: "text",
+    responseKind: "rows",
+  });
   assert.equal(response, null);
   assert.equal(chain.attempts.length, 2);
   assert.ok(chain.attempts.every((run) => run.status === "failed"));
 });
 
 test("fallback: 整链总预算生效——慢通道超时后不再尝试后续通道", async () => {
-  const chain = new FallbackProvider([
-    chainProvider("slow", () => new Promise((resolve) => setTimeout(() => resolve(okResponse("slow-model")), 200))),
-    chainProvider("fast", async () => okResponse("fast-model")),
-  ], { budgetMs: 40 });
+  const chain = new FallbackProvider(
+    [
+      chainProvider(
+        "slow",
+        () => new Promise((resolve) => setTimeout(() => resolve(okResponse("slow-model")), 200)),
+      ),
+      chainProvider("fast", async () => okResponse("fast-model")),
+    ],
+    { budgetMs: 40 },
+  );
   const started = Date.now();
-  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  const response = await chain.extract({
+    kindHint: "offer",
+    userText: "x",
+    sourceType: "text",
+    responseKind: "rows",
+  });
   const elapsed = Date.now() - started;
   assert.equal(response, null, "预算耗尽应返回 null 而不是拿到慢通道的迟到结果");
   assert.ok(elapsed < 150, `应在预算附近返回，实际 ${elapsed}ms`);
-  assert.deepEqual(chain.attempts.map((run) => [run.provider, run.error]), [
-    ["slow", "timeout_budget"],
-    ["fast", "budget_exhausted"],
-  ]);
+  assert.deepEqual(
+    chain.attempts.map((run) => [run.provider, run.error]),
+    [
+      ["slow", "timeout_budget"],
+      ["fast", "budget_exhausted"],
+    ],
+  );
 });
 
 test("fallback: 单通道链在默认预算下不额外引入超时（回归保护）", async () => {
   const chain = new FallbackProvider([chainProvider("a", async () => okResponse("a-model"))]);
-  const response = await chain.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+  const response = await chain.extract({
+    kindHint: "offer",
+    userText: "x",
+    sourceType: "text",
+    responseKind: "rows",
+  });
   assert.equal(response.channel, "a");
   assert.equal(response.fallbackFrom, undefined);
 });
@@ -309,101 +560,186 @@ function stubFetch(handler) {
     calls.push({ url, init, body: JSON.parse(init.body) });
     return handler(calls.length, url, init);
   };
-  return { calls, restore: () => { globalThis.fetch = original; } };
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = original;
+    },
+  };
 }
 
 function completion(content, extra = {}) {
   return {
     ok: true,
     status: 200,
-    json: async () => ({ model: "stub-model", choices: [{ message: { content } }], usage: { prompt_tokens: 1, completion_tokens: 2 }, ...extra }),
+    json: async () => ({
+      model: "stub-model",
+      choices: [{ message: { content } }],
+      usage: { prompt_tokens: 1, completion_tokens: 2 },
+      ...extra,
+    }),
   };
 }
 
 test("chat-completions: key 缺失时 available=false 且不发请求", async () => {
   const provider = new ChatCompletionsProvider({
-    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_MISSING_KEY", model: "m",
+    name: "probe",
+    baseUrl: "https://example.invalid/v1",
+    apiKeyEnv: "IMPORT_TEST_MISSING_KEY",
+    model: "m",
   });
   const stub = stubFetch(() => completion('{"rows":[]}'));
   try {
     assert.equal(provider.available(), false);
-    const response = await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+    const response = await provider.extract({
+      kindHint: "offer",
+      userText: "x",
+      sourceType: "text",
+      responseKind: "rows",
+    });
     assert.equal(response, null);
     assert.equal(stub.calls.length, 0);
-  } finally { stub.restore(); }
+  } finally {
+    stub.restore();
+  }
 });
 
 test("chat-completions: 默认用 json_object 且不外发 OpenRouter 专有 provider 字段", async () => {
   process.env.IMPORT_TEST_KEY_A = "test-key";
   const provider = new ChatCompletionsProvider({
-    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
+    name: "probe",
+    baseUrl: "https://example.invalid/v1",
+    apiKeyEnv: "IMPORT_TEST_KEY_A",
+    model: "m",
   });
   const stub = stubFetch(() => completion('{"rows":[]}'));
   try {
-    const response = await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+    const response = await provider.extract({
+      kindHint: "offer",
+      userText: "x",
+      sourceType: "text",
+      responseKind: "rows",
+    });
     assert.equal(response.raw, '{"rows":[]}');
     const { body, init, url } = stub.calls[0];
     assert.equal(url, "https://example.invalid/v1/chat/completions");
     assert.equal(init.headers.Authorization, "Bearer test-key");
     assert.deepEqual(body.response_format, { type: "json_object" });
     assert.equal("provider" in body, false, "非 OpenRouter 上游不能带 provider 字段");
-    assert.equal("max_tokens" in body, false, "直连不设输出上限：推理模型的思考 token 也计入额度，收紧会把答案截断成空");
+    assert.equal(
+      "max_tokens" in body,
+      false,
+      "直连不设输出上限：推理模型的思考 token 也计入额度，收紧会把答案截断成空",
+    );
     assert.equal(body.temperature, 0);
-  } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
+  } finally {
+    stub.restore();
+    delete process.env.IMPORT_TEST_KEY_A;
+  }
 });
 
 test("chat-completions: mapping 模式同样不设 max_tokens（回归保护）", async () => {
   process.env.IMPORT_TEST_KEY_A = "test-key";
   const provider = new ChatCompletionsProvider({
-    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
+    name: "probe",
+    baseUrl: "https://example.invalid/v1",
+    apiKeyEnv: "IMPORT_TEST_KEY_A",
+    model: "m",
   });
   const stub = stubFetch(() => completion('{"mappings":[]}'));
   try {
-    await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "mapping" });
+    await provider.extract({
+      kindHint: "offer",
+      userText: "x",
+      sourceType: "text",
+      responseKind: "mapping",
+    });
     assert.equal(
       "max_tokens" in stub.calls[0].body,
       false,
       "曾按 responseKind 收紧到 2500，导致推理模型把额度耗在思考上、content 为空；不得再引入该限制",
     );
-  } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
+  } finally {
+    stub.restore();
+    delete process.env.IMPORT_TEST_KEY_A;
+  }
 });
 
 test("chat-completions: 401 属致命错误，不重试直接判通道失败", async () => {
   process.env.IMPORT_TEST_KEY_A = "test-key";
   const provider = new ChatCompletionsProvider({
-    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
+    name: "probe",
+    baseUrl: "https://example.invalid/v1",
+    apiKeyEnv: "IMPORT_TEST_KEY_A",
+    model: "m",
   });
-  const stub = stubFetch(() => ({ ok: false, status: 401, json: async () => ({ error: "unauthorized" }) }));
+  const stub = stubFetch(() => ({
+    ok: false,
+    status: 401,
+    json: async () => ({ error: "unauthorized" }),
+  }));
   try {
-    const response = await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+    const response = await provider.extract({
+      kindHint: "offer",
+      userText: "x",
+      sourceType: "text",
+      responseKind: "rows",
+    });
     assert.equal(response, null);
     assert.equal(stub.calls.length, 1, "401 不该重试");
-  } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
+  } finally {
+    stub.restore();
+    delete process.env.IMPORT_TEST_KEY_A;
+  }
 });
 
 test("chat-completions: 429 可重试，第二次成功即返回", async () => {
   process.env.IMPORT_TEST_KEY_A = "test-key";
   const provider = new ChatCompletionsProvider({
-    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
+    name: "probe",
+    baseUrl: "https://example.invalid/v1",
+    apiKeyEnv: "IMPORT_TEST_KEY_A",
+    model: "m",
   });
-  const stub = stubFetch((n) => (n === 1 ? { ok: false, status: 429, json: async () => ({}) } : completion('{"rows":[]}')));
+  const stub = stubFetch((n) =>
+    n === 1 ? { ok: false, status: 429, json: async () => ({}) } : completion('{"rows":[]}'),
+  );
   try {
-    const response = await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+    const response = await provider.extract({
+      kindHint: "offer",
+      userText: "x",
+      sourceType: "text",
+      responseKind: "rows",
+    });
     assert.equal(response.raw, '{"rows":[]}');
     assert.equal(stub.calls.length, 2);
-  } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
+  } finally {
+    stub.restore();
+    delete process.env.IMPORT_TEST_KEY_A;
+  }
 });
 
 test("chat-completions: 空 content 视为失败（不静默产出 0 行）", async () => {
   process.env.IMPORT_TEST_KEY_A = "test-key";
   const provider = new ChatCompletionsProvider({
-    name: "probe", baseUrl: "https://example.invalid/v1", apiKeyEnv: "IMPORT_TEST_KEY_A", model: "m",
+    name: "probe",
+    baseUrl: "https://example.invalid/v1",
+    apiKeyEnv: "IMPORT_TEST_KEY_A",
+    model: "m",
   });
   const stub = stubFetch(() => completion(""));
   try {
-    const response = await provider.extract({ kindHint: "offer", userText: "x", sourceType: "text", responseKind: "rows" });
+    const response = await provider.extract({
+      kindHint: "offer",
+      userText: "x",
+      sourceType: "text",
+      responseKind: "rows",
+    });
     assert.equal(response, null);
-  } finally { stub.restore(); delete process.env.IMPORT_TEST_KEY_A; }
+  } finally {
+    stub.restore();
+    delete process.env.IMPORT_TEST_KEY_A;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -423,7 +759,8 @@ test("provider: IMPORT_CHAIN 拼错通道名时告警而不是静默丢弃", () 
     assert.match(warnings[0], /commandcode/);
   } finally {
     console.warn = originalWarn;
-    if (originalChain === undefined) delete process.env.IMPORT_CHAIN; else process.env.IMPORT_CHAIN = originalChain;
+    if (originalChain === undefined) delete process.env.IMPORT_CHAIN;
+    else process.env.IMPORT_CHAIN = originalChain;
   }
 });
 
@@ -446,13 +783,21 @@ test("provider: IMPORT_CHAIN=openrouter 完全回到改动前形态（回滚路�
     assert.equal(provider.name, "openrouter");
     assert.equal(provider.attempts, undefined, "单通道不应有降级链的 attempts");
   } finally {
-    if (originalChain === undefined) delete process.env.IMPORT_CHAIN; else process.env.IMPORT_CHAIN = originalChain;
+    if (originalChain === undefined) delete process.env.IMPORT_CHAIN;
+    else process.env.IMPORT_CHAIN = originalChain;
   }
 });
 
 test("provider: IMPORT_SYSTEM_PROMPT 与 import-lab 模板保持逐字一致", async () => {
-  const template = await readFile(new URL("../tools/import-lab/prompt-v2.template.txt", import.meta.url), "utf8");
-  assert.equal(IMPORT_SYSTEM_PROMPT.trim(), template.trim(), "改 prompt 时两处必须同步，否则双跑脚本测的就不是生产 prompt");
+  const template = await readFile(
+    new URL("../tools/import-lab/prompt-v2.template.txt", import.meta.url),
+    "utf8",
+  );
+  assert.equal(
+    IMPORT_SYSTEM_PROMPT.replace(/\r\n/g, "\n").trim(),
+    template.replace(/\r\n/g, "\n").trim(),
+    "改 prompt 时两处必须同步，否则双跑脚本测的就不是生产 prompt",
+  );
 });
 
 // ---------------------------------------------------------------------------
