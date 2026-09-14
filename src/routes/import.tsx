@@ -48,29 +48,13 @@ import {
   selectionState,
   withSelectedIds,
 } from "@/lib/import-review";
-
-/**
- * 展示用的 AI 通道名。这里是「展示文案」而非业务枚举：
- * 未登记的通道名会原样显示（而不是被吞掉），便于新增通道时立刻可见。
- */
-const AI_CHANNEL_LABEL: Record<string, string> = {
-  "command-code": "Command Code",
-  "opencode-go": "OpenCode Go",
-  "deepseek-api": "DeepSeek",
-  openrouter: "OpenRouter",
-};
-
-function aiChannelLabel(channel: string | null): string {
-  if (!channel) return "AI";
-  return AI_CHANNEL_LABEL[channel] ?? channel;
-}
+import { previewFieldsForKind } from "@/lib/import-target";
 
 const INQUIRY_TABLE_COLUMNS = [
   { key: "select", label: "", width: "4%" },
   { key: "mpn", label: "型号", width: "21%" },
-  { key: "brand", label: "品牌", width: "10%" },
-  { key: "kind", label: "业务类型", width: "10%" },
-  { key: "customer", label: "客户", width: "16%" },
+  { key: "brand", label: "品牌", width: "12%" },
+  { key: "customer", label: "客户", width: "20%" },
   { key: "qty", label: "数量", width: "9%" },
   { key: "tp", label: "TP（接受价）", width: "12%" },
   { key: "currency", label: "币种", width: "8%" },
@@ -155,8 +139,8 @@ function ImportPage() {
   const canStockImport = access.can("inventory.import");
   const canPotentialImport = access.can("potential.write");
   const batches = useQuery({ queryKey: ["import-batches"], queryFn: () => listImportBatches() });
-  // This is a write target, not an extraction hint. A normal import remains
-  // untyped until the neutral candidate preview has been shown.
+  // The user chooses the business target before extraction. It is passed to
+  // every source path and remains the authoritative type for preview/write.
   const [kind, setKind] = useState<ImportKind | null>(null);
   const [text, setText] = useState("");
   const [rows, setRows] = useState<ImportRow[] | null>(null);
@@ -168,12 +152,8 @@ function ImportPage() {
   const [importStatus, setImportStatus] = useState<
     "draft" | "preview" | "writing" | "success" | "failed"
   >("draft");
-  const [usedAi, setUsedAi] = useState(false);
-  const [extractOrigin, setExtractOrigin] = useState<string | null>(null);
-  const [extractChannel, setExtractChannel] = useState<string | null>(null);
-  const [extractState, setExtractState] = useState<string | null>(null);
-  const [extractMessage, setExtractMessage] = useState<string | null>(null);
-  const [aiAvailable, setAiAvailable] = useState(true);
+  const [, setExtractState] = useState<string | null>(null);
+  const [, setExtractMessage] = useState<string | null>(null);
   const [channel, setChannel] = useState("");
   const [customer, setCustomer] = useState("");
   const [supplier, setSupplier] = useState("");
@@ -206,7 +186,6 @@ function ImportPage() {
   const albumRef = useRef<HTMLInputElement>(null);
   const voiceRef = useRef<SpeechRec | null>(null);
   const lastPasteRef = useRef<{ fingerprint: string; at: number } | null>(null);
-  const presetKindRef = useRef<ImportKind | null>(null);
   const parseGenerationRef = useRef(0);
   const reviewGenerationRef = useRef(0);
   const [reviewedKind, setReviewedKind] = useState<ImportKind | null>(null);
@@ -217,10 +196,8 @@ function ImportPage() {
       preset === "transit" ||
       preset === "offer" ||
       preset === "inquiry" ||
-      preset === "potential" ||
-      preset === "mixed"
+      preset === "potential"
     ) {
-      presetKindRef.current = preset;
       setKind(preset);
     }
     const draft = sessionStorage.getItem("import-draft");
@@ -237,14 +214,11 @@ function ImportPage() {
       (kind === "offer" || kind === "inquiry" || kind === "mixed")
     ) {
       setKind("stock");
-      if (presetKindRef.current) presetKindRef.current = "stock";
     } else if (!canStockImport && (kind === "stock" || kind === "transit")) {
       setKind("offer");
-      if (presetKindRef.current) presetKindRef.current = "offer";
     } else if (!canPotentialImport && kind === "potential") {
       const nextKind = canMarketImport ? "offer" : "stock";
       setKind(nextKind);
-      if (presetKindRef.current) presetKindRef.current = nextKind;
     }
   }, [canMarketImport, canStockImport, canPotentialImport, kind]);
 
@@ -317,28 +291,26 @@ function ImportPage() {
     mutationFn: ({ input }: ParseMutationInput) => parseImport({ data: input }),
     onMutate: () => {
       setReviewedKind(null);
-      setActivity((current) => ({ ...current, state: "recognizing", label: "正在中性识别…" }));
+      setActivity((current) => ({ ...current, state: "recognizing", label: "正在识别…" }));
     },
     onSuccess: (r, variables) => {
       if (variables.generation !== parseGenerationRef.current) return;
+      const targetKind = variables.input.kind as ImportKind;
+      const previewRows = r.rows.map((row) => ({ ...row, kind: targetKind, selected: false }));
       setSubmissionId(crypto.randomUUID());
-      setReviewedKind(null);
+      setReviewedKind(targetKind);
       setImportStatus("preview");
       setSelectedIds(new Set());
-      setRows(r.rows);
-      setUsedAi(r.usedAi);
-      setExtractOrigin(r.extractOrigin ?? null);
-      setExtractChannel(r.extractChannel ?? null);
+      setRows(previewRows);
       setExtractState(r.extractState ?? null);
       setExtractMessage(r.extractMessage ?? null);
-      setAiAvailable(r.aiAvailable);
       setChannels(r.channels);
       setCustomers(r.customers);
       setWarehouses(r.warehouses);
       setAttachment((current) => (current ? { ...current, status: "预览完成" } : current));
       setActivity({
         state: "preview",
-        label: r.rows.length ? "中性预览完成，请选择导入类型" : "识别完成，但没有识别到型号",
+        label: r.rows.length ? `${labelKind(targetKind)}预览完成` : "没有识别到型号",
         detail: r.extractMessage ?? undefined,
       });
       if (
@@ -359,14 +331,6 @@ function ImportPage() {
         toast.error(r.extractMessage || "文件无法解析");
       } else if (r.rows.length === 0) {
         toast.error(r.extractMessage || "没有识别到型号");
-      }
-
-      const presetKind = presetKindRef.current;
-      if (presetKind && r.rows.length > 0) {
-        const generation = ++reviewGenerationRef.current;
-        setKind(presetKind);
-        reviewMut.mutate({ kind: presetKind, rows: r.rows, generation });
-        presetKindRef.current = null;
       }
     },
     onError: (e: Error, variables) => {
@@ -433,27 +397,33 @@ function ImportPage() {
     },
   });
 
-  function startNeutralParse(input: Omit<ParseImportInput, "kind">) {
+  function startTargetedParse(input: Omit<ParseImportInput, "kind">) {
+    if (!kind) {
+      toast.error("请先选择导入类型");
+      return;
+    }
     const generation = ++parseGenerationRef.current;
     ++reviewGenerationRef.current;
     setReviewedKind(null);
-    if (!presetKindRef.current) setKind(null);
-    parseMut.mutate({ input: { ...input, kind: "neutral" }, generation });
+    parseMut.mutate({ input: { ...input, kind }, generation });
   }
 
-  function invalidatePreview() {
+  function invalidatePreview(resetKind = false) {
     ++parseGenerationRef.current;
     ++reviewGenerationRef.current;
     setRows(null);
     setSelectedIds(new Set());
-    setKind(null);
+    if (resetKind) setKind(null);
     setReviewedKind(null);
     setSummary(null);
     setImportStatus("draft");
-    presetKindRef.current = null;
   }
 
   async function onFile(file: File, src: ImportSource) {
+    if (!kind) {
+      toast.error("请先选择导入类型");
+      return;
+    }
     const detectedSource = src || fileSource(file);
     if (!detectedSource) {
       const message = "不支持的文件类型。请使用 Excel、CSV、TXT、PDF、DOC/DOCX 或图片";
@@ -504,7 +474,7 @@ function ImportPage() {
         label: "正在识别…",
         detail: `${file.name} · 识别完成前不会写入业务数据`,
       });
-      startNeutralParse({
+      startTargetedParse({
         sourceType: detectedSource,
         defaultWarehouseId: warehouseId || undefined,
         defaultSupplier: supplier || undefined,
@@ -529,9 +499,7 @@ function ImportPage() {
     setFilename(undefined);
     setRows(null);
     setSelectedIds(new Set());
-    setKind(null);
     setReviewedKind(null);
-    presetKindRef.current = null;
     ++parseGenerationRef.current;
     ++reviewGenerationRef.current;
     setActivity({ state: "idle", label: "等待输入" });
@@ -770,9 +738,7 @@ function ImportPage() {
       toast.message("没有需要填充的记录");
       return;
     }
-    const preservedSelectionIds = filled.rows
-      .filter((row) => row.selected)
-      .map((row) => row.id);
+    const preservedSelectionIds = filled.rows.filter((row) => row.selected).map((row) => row.id);
     setCustomerFillDialogOpen(false);
     setRows(filled.rows);
     setSelectedIds(new Set(preservedSelectionIds));
@@ -786,13 +752,14 @@ function ImportPage() {
     });
   }
 
-  function chooseTargetKind(value: string) {
-    if (!rows || !value) return;
-    const nextKind = value as ImportKind;
+  function chooseImportKind(nextKind: ImportKind) {
+    if (nextKind === kind || inputBusy) return;
+    if (rows) invalidatePreview();
     setKind(nextKind);
-    setReviewedKind(null);
-    const generation = ++reviewGenerationRef.current;
-    reviewMut.mutate({ kind: nextKind, rows, generation });
+    setActivity({
+      state: text.trim() || attachment ? "received" : "idle",
+      label: text.trim() || attachment ? "类型已切换，请重新识别" : "等待输入",
+    });
   }
 
   function markTargetReviewStale() {
@@ -829,19 +796,12 @@ function ImportPage() {
         ]
       : []),
     ...(canPotentialImport ? [{ value: "potential" as ImportKind, label: "潜力型号" }] : []),
-    ...(canMarketImport && canStockImport
-      ? [{ value: "mixed" as ImportKind, label: "逐行选择类型" }]
-      : []),
   ];
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-4">
       <div>
         <h1 className="text-xl font-medium">智能导入</h1>
-        <p className="text-sm text-muted-foreground">
-          支持文本、Excel/CSV、图片、PDF 和
-          DOCX。先中性识别并清洗字段，再选择导入类型、校验和查重；模型不会决定写入目标。
-        </p>
       </div>
 
       {summary && (
@@ -868,7 +828,6 @@ function ImportPage() {
                 setSelectedIds(new Set());
                 setKind(null);
                 setReviewedKind(null);
-                presetKindRef.current = null;
                 setImportStatus("draft");
                 setSubmissionId(crypto.randomUUID());
               }}
@@ -943,348 +902,369 @@ function ImportPage() {
       )}
 
       <section className="rounded-xl bg-card p-4 shadow-[var(--shadow-border)]">
-        <div className="grid gap-3 md:grid-cols-2">
-          {(kind === "offer" || kind === "mixed") && (
-            <div>
-              <Label>默认渠道（文本里没有时）</Label>
-              <Input
-                list="imp-ch"
-                value={channel}
-                onChange={(e) => {
-                  setChannel(e.target.value);
-                  markTargetReviewStale();
-                }}
-              />
-              <datalist id="imp-ch">
-                {channels.map((c) => (
-                  <option key={c.id} value={c.name} />
-                ))}
-              </datalist>
-            </div>
-          )}
-          {kind === "mixed" && (
-            <div>
-              <Label>默认客户（仅补空白行）</Label>
-              <Input
-                list="imp-cu"
-                value={customer}
-                placeholder="选择或输入客户名称"
-                onChange={(e) => {
-                  setCustomer(e.target.value);
-                  markTargetReviewStale();
-                }}
-              />
-              <datalist id="imp-cu">
-                {customers.map((c) => (
-                  <option key={c.id} value={c.name} />
-                ))}
-              </datalist>
-            </div>
-          )}
-          {(kind === "stock" || kind === "mixed") && (
+        <div>
+          <Label>导入类型</Label>
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+            {targetKindOptions.map((option) => (
+              <Button
+                key={option.value}
+                type="button"
+                variant={kind === option.value ? "default" : "outline"}
+                disabled={inputBusy}
+                onClick={() => chooseImportKind(option.value)}
+              >
+                {option.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+        {kind && (
+          <>
             <div className="grid gap-3 md:grid-cols-2">
-              <div>
-                <Label>默认仓库</Label>
-                <NativeSelect
-                  value={warehouseId}
-                  onChange={(e) => {
-                    setWarehouseId(e.target.value);
-                    markTargetReviewStale();
-                  }}
-                >
-                  <option value="">请选择</option>
-                  {warehouses.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.code}
-                    </option>
-                  ))}
-                </NativeSelect>
-              </div>
-              <div>
-                <Label>默认供应商</Label>
-                <Input
-                  list="imp-supplier"
-                  value={supplier}
-                  onChange={(e) => {
-                    setSupplier(e.target.value);
-                    markTargetReviewStale();
-                  }}
-                />
-                <datalist id="imp-supplier">
-                  {channels.map((c) => (
-                    <option key={c.id} value={c.name} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <Label>默认币种</Label>
-                <ChoiceButtons
-                  value={currency}
-                  options={[
-                    { value: "USD", label: "USD" },
-                    { value: "CNY", label: "CNY" },
-                  ]}
-                  onChange={(v) => {
-                    const next = v as Currency;
-                    setCurrency(next);
-                    if (next === "USD") setTax("none");
-                    markTargetReviewStale();
-                  }}
-                />
-              </div>
-              <div>
-                <Label>人民币税别</Label>
-                <ChoiceButtons
-                  value={currency === "USD" ? "none" : tax}
-                  options={[
-                    { value: "none", label: "无" },
-                    { value: "exclusive", label: "未" },
-                    { value: "inclusive", label: "含" },
-                  ]}
-                  disabled={currency === "USD"}
-                  onChange={(v) => {
-                    setTax(v as CostTax);
-                    markTargetReviewStale();
-                  }}
-                />
-              </div>
+              {(kind === "offer" || kind === "mixed") && (
+                <div>
+                  <Label>默认渠道（文本里没有时）</Label>
+                  <Input
+                    list="imp-ch"
+                    value={channel}
+                    onChange={(e) => {
+                      setChannel(e.target.value);
+                      markTargetReviewStale();
+                    }}
+                  />
+                  <datalist id="imp-ch">
+                    {channels.map((c) => (
+                      <option key={c.id} value={c.name} />
+                    ))}
+                  </datalist>
+                </div>
+              )}
+              {kind === "mixed" && (
+                <div>
+                  <Label>默认客户（仅补空白行）</Label>
+                  <Input
+                    list="imp-cu"
+                    value={customer}
+                    placeholder="选择或输入客户名称"
+                    onChange={(e) => {
+                      setCustomer(e.target.value);
+                      markTargetReviewStale();
+                    }}
+                  />
+                  <datalist id="imp-cu">
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.name} />
+                    ))}
+                  </datalist>
+                </div>
+              )}
+              {(kind === "stock" || kind === "mixed") && (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <Label>默认仓库</Label>
+                    <NativeSelect
+                      value={warehouseId}
+                      onChange={(e) => {
+                        setWarehouseId(e.target.value);
+                        markTargetReviewStale();
+                      }}
+                    >
+                      <option value="">请选择</option>
+                      {warehouses.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.code}
+                        </option>
+                      ))}
+                    </NativeSelect>
+                  </div>
+                  <div>
+                    <Label>默认供应商</Label>
+                    <Input
+                      list="imp-supplier"
+                      value={supplier}
+                      onChange={(e) => {
+                        setSupplier(e.target.value);
+                        markTargetReviewStale();
+                      }}
+                    />
+                    <datalist id="imp-supplier">
+                      {channels.map((c) => (
+                        <option key={c.id} value={c.name} />
+                      ))}
+                    </datalist>
+                  </div>
+                  <div>
+                    <Label>默认币种</Label>
+                    <ChoiceButtons
+                      value={currency}
+                      options={[
+                        { value: "USD", label: "USD" },
+                        { value: "CNY", label: "CNY" },
+                      ]}
+                      onChange={(v) => {
+                        const next = v as Currency;
+                        setCurrency(next);
+                        if (next === "USD") setTax("none");
+                        markTargetReviewStale();
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <Label>人民币税别</Label>
+                    <ChoiceButtons
+                      value={currency === "USD" ? "none" : tax}
+                      options={[
+                        { value: "none", label: "无" },
+                        { value: "exclusive", label: "未" },
+                        { value: "inclusive", label: "含" },
+                      ]}
+                      disabled={currency === "USD"}
+                      onChange={(v) => {
+                        setTax(v as CostTax);
+                        markTargetReviewStale();
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        <div
-          className={cn(
-            "mt-3 rounded-lg border-2 border-dashed border-transparent p-1 transition-colors",
-            isDragging && "border-primary bg-primary/5",
-          )}
-          onDragOver={(event) => {
-            event.preventDefault();
-            if (!inputBusy) setIsDragging(true);
-          }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={handleDrop}
-        >
-          {isDragging && (
-            <div className="mb-2 flex items-center gap-2 rounded-md bg-primary/10 px-3 py-2 text-xs text-primary">
-              <UploadCloud className="size-4" />
-              松开即可导入
-            </div>
-          )}
-          <Textarea
-            className="min-h-36 font-mono text-sm"
-            placeholder={
-              kind === "potential"
-                ? "粘贴型号清单、聊天记录或截图文字…"
-                : "粘贴聊天记录、货期、型号清单…"
-            }
-            value={text}
-            disabled={inputBusy}
-            onPaste={(event) => {
-              const image = Array.from(event.clipboardData.files).find((file) =>
-                file.type.startsWith("image/"),
-              );
-              if (!image) return;
-              event.preventDefault();
-              if (checkPastedImage(image)) void onFile(image, "image");
-            }}
-            onChange={(e) => {
-              if (rows) invalidatePreview();
-              setText(e.target.value);
-              if (e.target.value.trim())
-                setActivity({
-                  state: "received",
-                  label: "已收到文字，点击识别预览",
-                  detail: `${e.target.value.trim().length} 个字符`,
-                });
-            }}
-          />
-        </div>
-        {attachment && (
-          <div className="mt-3 flex items-center gap-3 rounded-lg border border-border bg-secondary/30 px-3 py-2">
-            {attachment.previewUrl ? (
-              <img
-                src={attachment.previewUrl}
-                alt="待识别图片缩略图"
-                className="size-12 rounded-md object-cover"
+            <div
+              className={cn(
+                "mt-3 rounded-lg border-2 border-dashed border-transparent p-1 transition-colors",
+                isDragging && "border-primary bg-primary/5",
+              )}
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (!inputBusy) setIsDragging(true);
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleDrop}
+            >
+              {isDragging && (
+                <div className="mb-2 flex items-center gap-2 rounded-md bg-primary/10 px-3 py-2 text-xs text-primary">
+                  <UploadCloud className="size-4" />
+                  松开即可导入
+                </div>
+              )}
+              <Textarea
+                className="min-h-36 font-mono text-sm"
+                placeholder={
+                  kind === "potential"
+                    ? "粘贴型号清单、聊天记录或截图文字…"
+                    : "粘贴聊天记录、货期、型号清单…"
+                }
+                value={text}
+                disabled={inputBusy}
+                onPaste={(event) => {
+                  const image = Array.from(event.clipboardData.files).find((file) =>
+                    file.type.startsWith("image/"),
+                  );
+                  if (!image) return;
+                  event.preventDefault();
+                  if (checkPastedImage(image)) void onFile(image, "image");
+                }}
+                onChange={(e) => {
+                  if (rows) invalidatePreview();
+                  setText(e.target.value);
+                  if (e.target.value.trim())
+                    setActivity({
+                      state: "received",
+                      label: "已收到文字，点击识别预览",
+                      detail: `${e.target.value.trim().length} 个字符`,
+                    });
+                }}
               />
-            ) : (
-              <FileSpreadsheet className="size-5 shrink-0 text-muted-foreground" />
-            )}
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">{attachment.file.name}</p>
-              <p className="text-xs text-muted-foreground">
-                {attachment.source.toUpperCase()} · {fileSize(attachment.file.size)} ·{" "}
-                {attachment.status}
-              </p>
             </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={inputBusy}
-              onClick={() => void retryAttachment()}
-              title="重试识别"
-              aria-label="重试识别"
-            >
-              <RefreshCw className="size-4" />
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={inputBusy}
-              onClick={removeAttachment}
-              title="删除文件"
-              aria-label="删除文件"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </div>
-        )}
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Button
-            disabled={inputBusy || !text.trim()}
-            onClick={() => {
-              setSourceType("text");
-              setFilename(undefined);
-              setAttachment(null);
-              setRows(null);
-              setImportStatus("draft");
-              setActivity({
-                state: "recognizing",
-                label: "正在识别…",
-                detail: "文本已收到，正在生成可编辑预览",
-              });
-              startNeutralParse({
-                sourceType: "text",
-                text,
-                defaultWarehouseId: warehouseId || undefined,
-                defaultSupplier: supplier || undefined,
-                defaultCurrency: currency,
-                defaultTax: tax,
-              });
-            }}
-          >
-            <ClipboardPaste className="size-4" />
-            {parseMut.isPending ? "正在识别…" : "识别预览"}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={inputBusy}
-            onClick={() => {
-              const sample = sampleImportText();
-              if (rows) invalidatePreview();
-              setText(sample);
-              setActivity({ state: "received", label: "示例文字已填入，点击识别预览" });
-            }}
-          >
-            填入示例
-          </Button>
-          <Button
-            variant="outline"
-            disabled={inputBusy}
-            onClick={() => {
-              if (fileRef.current) fileRef.current.value = "";
-              fileRef.current?.click();
-            }}
-          >
-            <FileSpreadsheet className="size-4" />
-            导入文件
-          </Button>
-          <Button
-            variant="outline"
-            disabled={inputBusy}
-            onClick={() => {
-              if (camRef.current) camRef.current.value = "";
-              camRef.current?.click();
-            }}
-          >
-            <Camera className="size-4" />
-            拍照
-          </Button>
-          <Button
-            variant="outline"
-            disabled={inputBusy}
-            onClick={() => {
-              if (albumRef.current) albumRef.current.value = "";
-              albumRef.current?.click();
-            }}
-          >
-            <Image className="size-4" />
-            相册
-          </Button>
-          <Button variant="outline" disabled={inputBusy} onClick={() => void pasteClipboardImage()}>
-            <ClipboardPaste className="size-4" />
-            粘贴截图
-          </Button>
-          <Button
-            variant="outline"
-            disabled={parseMut.isPending}
-            onClick={voiceState === "recording" ? stopListening : listen}
-          >
-            <Mic className="size-4" />
-            {voiceState === "recording" ? "停止录音" : "语音"}
-          </Button>
-          <input
-            ref={fileRef}
-            type="file"
-            className="hidden"
-            accept=".xlsx,.xls,.csv,.txt,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain,.pdf,.doc,.docx,image/*"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (!f) return;
-              const src = fileSource(f);
-              if (src) void onFile(f, src);
-              e.currentTarget.value = "";
-            }}
-          />
-          <input
-            ref={camRef}
-            type="file"
-            className="hidden"
-            accept="image/*"
-            capture="environment"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (!f) return;
-              void onFile(f, "image");
-              e.currentTarget.value = "";
-            }}
-          />
-          <input
-            ref={albumRef}
-            type="file"
-            className="hidden"
-            accept="image/*"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (!f) return;
-              void onFile(f, "image");
-              e.currentTarget.value = "";
-            }}
-          />
-        </div>
-        {activity.state !== "idle" && (
-          <div
-            className={cn(
-              "mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs",
-              activity.state === "failed"
-                ? "border-destructive/30 bg-destructive/5 text-destructive"
-                : "border-border bg-secondary/30",
+            {attachment && (
+              <div className="mt-3 flex items-center gap-3 rounded-lg border border-border bg-secondary/30 px-3 py-2">
+                {attachment.previewUrl ? (
+                  <img
+                    src={attachment.previewUrl}
+                    alt="待识别图片缩略图"
+                    className="size-12 rounded-md object-cover"
+                  />
+                ) : (
+                  <FileSpreadsheet className="size-5 shrink-0 text-muted-foreground" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{attachment.file.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {attachment.source.toUpperCase()} · {fileSize(attachment.file.size)} ·{" "}
+                    {attachment.status}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={inputBusy}
+                  onClick={() => void retryAttachment()}
+                  title="重试识别"
+                  aria-label="重试识别"
+                >
+                  <RefreshCw className="size-4" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={inputBusy}
+                  onClick={removeAttachment}
+                  title="删除文件"
+                  aria-label="删除文件"
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
             )}
-          >
-            {activity.state === "reading" || activity.state === "recognizing" ? (
-              <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin" />
-            ) : (
-              <span className="mt-0.5 size-2 shrink-0 rounded-full bg-primary" />
-            )}
-            <div>
-              <p className="font-medium">{activity.label}</p>
-              {activity.detail && <p className="mt-0.5 text-muted-foreground">{activity.detail}</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                disabled={inputBusy || !text.trim()}
+                onClick={() => {
+                  setSourceType("text");
+                  setFilename(undefined);
+                  setAttachment(null);
+                  setRows(null);
+                  setImportStatus("draft");
+                  setActivity({
+                    state: "recognizing",
+                    label: "正在识别…",
+                    detail: "文本已收到，正在生成可编辑预览",
+                  });
+                  startTargetedParse({
+                    sourceType: "text",
+                    text,
+                    defaultWarehouseId: warehouseId || undefined,
+                    defaultSupplier: supplier || undefined,
+                    defaultCurrency: currency,
+                    defaultTax: tax,
+                  });
+                }}
+              >
+                <ClipboardPaste className="size-4" />
+                {parseMut.isPending ? "正在识别…" : "识别预览"}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={inputBusy}
+                onClick={() => {
+                  const sample = sampleImportText();
+                  if (rows) invalidatePreview();
+                  setText(sample);
+                  setActivity({ state: "received", label: "示例文字已填入，点击识别预览" });
+                }}
+              >
+                填入示例
+              </Button>
+              <Button
+                variant="outline"
+                disabled={inputBusy}
+                onClick={() => {
+                  if (fileRef.current) fileRef.current.value = "";
+                  fileRef.current?.click();
+                }}
+              >
+                <FileSpreadsheet className="size-4" />
+                导入文件
+              </Button>
+              <Button
+                variant="outline"
+                disabled={inputBusy}
+                onClick={() => {
+                  if (camRef.current) camRef.current.value = "";
+                  camRef.current?.click();
+                }}
+              >
+                <Camera className="size-4" />
+                拍照
+              </Button>
+              <Button
+                variant="outline"
+                disabled={inputBusy}
+                onClick={() => {
+                  if (albumRef.current) albumRef.current.value = "";
+                  albumRef.current?.click();
+                }}
+              >
+                <Image className="size-4" />
+                相册
+              </Button>
+              <Button
+                variant="outline"
+                disabled={inputBusy}
+                onClick={() => void pasteClipboardImage()}
+              >
+                <ClipboardPaste className="size-4" />
+                粘贴截图
+              </Button>
+              <Button
+                variant="outline"
+                disabled={parseMut.isPending}
+                onClick={voiceState === "recording" ? stopListening : listen}
+              >
+                <Mic className="size-4" />
+                {voiceState === "recording" ? "停止录音" : "语音"}
+              </Button>
+              <input
+                ref={fileRef}
+                type="file"
+                className="hidden"
+                accept=".xlsx,.xls,.csv,.txt,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain,.pdf,.doc,.docx,image/*"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  const src = fileSource(f);
+                  if (src) void onFile(f, src);
+                  e.currentTarget.value = "";
+                }}
+              />
+              <input
+                ref={camRef}
+                type="file"
+                className="hidden"
+                accept="image/*"
+                capture="environment"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  void onFile(f, "image");
+                  e.currentTarget.value = "";
+                }}
+              />
+              <input
+                ref={albumRef}
+                type="file"
+                className="hidden"
+                accept="image/*"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  void onFile(f, "image");
+                  e.currentTarget.value = "";
+                }}
+              />
             </div>
-          </div>
-        )}
-        {!aiAvailable && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            固定内部模板与受控格式仍可本地识别。陌生表格与聊天文本需要智能抽取，不会再用猜测表头冒充成功。
-          </p>
+            {(activity.state === "reading" ||
+              activity.state === "recognizing" ||
+              activity.state === "failed") && (
+              <div
+                className={cn(
+                  "mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs",
+                  activity.state === "failed"
+                    ? "border-destructive/30 bg-destructive/5 text-destructive"
+                    : "border-border bg-secondary/30",
+                )}
+              >
+                {activity.state === "reading" || activity.state === "recognizing" ? (
+                  <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin" />
+                ) : (
+                  <span className="mt-0.5 size-2 shrink-0 rounded-full bg-primary" />
+                )}
+                <p className="font-medium">
+                  {activity.label}
+                  {activity.state === "failed" && activity.detail ? `：${activity.detail}` : ""}
+                </p>
+              </div>
+            )}
+          </>
         )}
       </section>
 
@@ -1293,22 +1273,8 @@ function ImportPage() {
           <div className="sticky top-[57px] z-10 -mx-3 mb-3 border-b border-border bg-card/95 px-3 pb-3 backdrop-blur-sm md:-mx-4 md:px-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-medium">
-                预览 {rows.length} 行
-                {extractOrigin === "engine_deterministic"
-                  ? " · 本地确定性识别"
-                  : extractOrigin === "engine_ai"
-                    ? ` · ${aiChannelLabel(extractChannel)} AI 识别`
-                    : extractOrigin === "trusted_template"
-                      ? " · 固定模板"
-                      : extractOrigin === "controlled_text"
-                        ? " · 受控格式"
-                        : extractOrigin === "local_fallback"
-                          ? extractState === "vision_unavailable"
-                            ? " · 本地视觉降级"
-                            : " · 本地降级"
-                          : extractOrigin === "platform" || usedAi
-                            ? " · AI 识别（Platform）"
-                            : ""}
+                {labelKind(kind ?? "")}预览 · 共 {rows.length} 条 · 可确认 {eligibleIds.size} ·
+                需修改 {blockingCount} · 重复 {rows.filter((row) => row.duplicate).length}
               </h2>
               <div className="flex items-center gap-2">
                 {kind === "inquiry" && (
@@ -1345,27 +1311,6 @@ function ImportPage() {
                 </Button>
               </div>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <ReviewStat label="总行数" value={rows.length} />
-              {kind === "inquiry" ? (
-                <>
-                  <ReviewStat label="可确认" value={eligibleIds.size} />
-                  <ReviewStat label="需修改" value={blockingCount} />
-                  <ReviewStat label="重复" value={rows.filter((row) => row.duplicate).length} />
-                </>
-              ) : (
-                <>
-                  <ReviewStat label="待写入" value={selectedCount} />
-                  <ReviewStat
-                    label="待检查"
-                    value={
-                      rows.filter((row) => Boolean(row.warning || rowBlockingReason(row))).length
-                    }
-                  />
-                  <ReviewStat label="疑似重复" value={rows.filter((row) => row.duplicate).length} />
-                </>
-              )}
-            </div>
             {kind !== "inquiry" && (
               <div className="mt-3 flex flex-wrap gap-2">
                 <Input
@@ -1383,26 +1328,6 @@ function ImportPage() {
                   <option value="selected">待写入</option>
                   <option value="review">待检查</option>
                   <option value="duplicate">疑似重复</option>
-                </NativeSelect>
-              </div>
-            )}
-            {!kind && (
-              <div className="mt-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
-                <p className="text-xs font-medium text-primary">第 2 步：选择导入类型</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  AI 已完成中性识别。现在只确定写入目标，不会重新识别，也不会让 AI 决定业务类型。
-                </p>
-                <NativeSelect
-                  className="mt-2 max-w-xs"
-                  value={kind ?? ""}
-                  onChange={(event) => chooseTargetKind(event.target.value)}
-                >
-                  <option value="">请选择目标类型</option>
-                  {targetKindOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
                 </NativeSelect>
               </div>
             )}
@@ -1437,20 +1362,11 @@ function ImportPage() {
             )}
           </div>
           <details className="mb-3 rounded-lg border border-border px-3 py-2 text-xs">
-            <summary className="cursor-pointer text-muted-foreground">
-              查看原始证据（仅预览，不会自动写入）
-            </summary>
+            <summary className="cursor-pointer text-muted-foreground">原始内容</summary>
             <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px]">
               {text || filename || "当前来源没有可展示的文本摘要"}
             </pre>
           </details>
-          {kind !== "inquiry" && (
-            <p className="mb-3 text-xs text-muted-foreground">
-              型号请人工核对。疑似重复已勾掉，若确为新事件可重新勾选。
-              {extractMessage ? ` ${extractMessage}` : ""}
-              {blockingCount > 0 ? ` 有 ${blockingCount} 行需修改，批量选择会自动排除。` : ""}
-            </p>
-          )}
           <ImportReviewTable
             visibleRows={visibleRows}
             kind={kind}
@@ -1481,7 +1397,8 @@ function ImportPage() {
           <DialogHeader>
             <DialogTitle>统一设置客户</DialogTitle>
             <DialogDescription>
-              将为当前批次 {missingCustomerCount} 条客户为空的询价设置同一客户；已经识别出的客户不会被覆盖。
+              将为当前批次 {missingCustomerCount}{" "}
+              条客户为空的询价设置同一客户；已经识别出的客户不会被覆盖。
             </DialogDescription>
           </DialogHeader>
           <div>
@@ -1534,16 +1451,6 @@ function ImportPage() {
           )}
         </SheetContent>
       </Sheet>
-
-      {extractOrigin === "local_fallback" && (
-        <section className="rounded-xl border border-amber-300/70 bg-amber-50 p-4 text-amber-950 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-100">
-          <p className="text-sm font-medium">本地降级结果</p>
-          <p className="mt-1 text-xs leading-5">
-            这是降级信息，不是 Platform
-            Intelligence。已使用本地数据。事实、写库和最终决定仍由工作台与人工负责。
-          </p>
-        </section>
-      )}
     </div>
   );
 
@@ -1616,7 +1523,6 @@ function ImportReviewTable({
         onToggleAll={onToggleAll}
         onClearSelection={onClearSelection}
         selectedCount={selectedCount}
-        blockingCount={blockingCount}
         importStatus={importStatus}
         confirmPending={confirmPending}
         confirmDisabled={confirmDisabled}
@@ -1625,9 +1531,15 @@ function ImportReviewTable({
     );
   }
 
-  function rowKind(row: ImportRow): ImportKind {
-    return kind === "stock" ? "stock" : row.kind;
-  }
+  const previewFields = new Set(kind ? previewFieldsForKind(kind) : []);
+  const showQty = previewFields.has("qty");
+  const showDc = previewFields.has("dc");
+  const showChannel = previewFields.has("channel") || previewFields.has("supplier");
+  const showWarehouse = previewFields.has("warehouse");
+  const showPrice = previewFields.has("price");
+  const showCost = previewFields.has("cost");
+  const showMoney = showPrice || showCost;
+  const showEta = previewFields.has("eta");
 
   function patchText(idx: number, field: keyof ImportRow, value: string) {
     const partial: Partial<ImportRow> = {
@@ -1642,21 +1554,8 @@ function ImportReviewTable({
     onPatch(idx, partial);
   }
 
-  function patchKind(idx: number, row: ImportRow, value: string) {
-    const warning =
-      row.warning
-        ?.split("；")
-        .filter((message) => !message.includes("业务类型无法确定"))
-        .join("；") || null;
-    onPatch(idx, {
-      kind: value as ImportKind,
-      selected: false,
-      warning: [warning, "业务类型已人工修改，请复核写入"].filter(Boolean).join("；"),
-    });
-  }
-
   function quantityCell(row: ImportRow, idx: number) {
-    if (rowKind(row) === "potential") return <span className="text-muted-foreground">—</span>;
+    if (kind === "potential") return <span className="text-muted-foreground">—</span>;
     return (
       <Input
         className="h-8 min-w-20 text-xs"
@@ -1670,26 +1569,6 @@ function ImportReviewTable({
         }
         aria-label={`${row.mpn} 数量`}
       />
-    );
-  }
-
-  function businessKindCell(row: ImportRow, idx: number) {
-    if (!kind) return <span className="text-xs text-muted-foreground">待选择</span>;
-    if (kind !== "mixed")
-      return <span className="text-xs text-muted-foreground">{labelKind(rowKind(row))}</span>;
-    return (
-      <NativeSelect
-        className="h-8 min-w-24 text-xs"
-        value={row.kind}
-        onChange={(event) => patchKind(idx, row, event.target.value)}
-        aria-label={`${row.mpn} 业务类型`}
-      >
-        <option value="mixed">请选择类型</option>
-        <option value="offer">推货</option>
-        <option value="inquiry">询价</option>
-        <option value="stock">入库</option>
-        <option value="transit">在途</option>
-      </NativeSelect>
     );
   }
 
@@ -1716,18 +1595,17 @@ function ImportReviewTable({
         </Button>
       </div>
       <div className="hidden overflow-x-auto rounded-lg border border-border md:block">
-        <table className="min-w-[1240px] w-full table-fixed border-collapse text-xs">
+        <table className="min-w-[760px] w-full table-fixed border-collapse text-xs">
           <colgroup>
             <col className="w-12" />
-            <col className="w-[205px]" />
-            <col className="w-[110px]" />
-            <col className="w-[100px]" />
-            <col className="w-[100px]" />
-            <col className="w-[110px]" />
-            <col className="w-[140px]" />
-            <col className="w-[125px]" />
-            <col className="w-[100px]" />
-            <col className="w-[150px]" />
+            <col className="w-[220px]" />
+            <col className="w-[120px]" />
+            {showQty && <col className="w-[100px]" />}
+            {showDc && <col className="w-[110px]" />}
+            {showChannel && <col className="w-[150px]" />}
+            {showWarehouse && <col className="w-[110px]" />}
+            {showMoney && <col className="w-[180px]" />}
+            {showEta && <col className="w-[150px]" />}
             <col className="w-[110px]" />
           </colgroup>
           <thead className="bg-secondary/40 text-left text-[11px] text-muted-foreground">
@@ -1745,13 +1623,18 @@ function ImportReviewTable({
                 型号
               </th>
               <th className="border-b border-border px-2 py-2">品牌</th>
-              <th className="border-b border-border px-2 py-2">业务类型</th>
-              <th className="border-b border-border px-2 py-2">数量</th>
-              <th className="border-b border-border px-2 py-2">DC</th>
-              <th className="border-b border-border px-2 py-2">渠道 / 供应商</th>
-              <th className="border-b border-border px-2 py-2">客户</th>
-              <th className="border-b border-border px-2 py-2">仓库</th>
-              <th className="border-b border-border px-2 py-2">价格 / 成本</th>
+              {showQty && <th className="border-b border-border px-2 py-2">数量</th>}
+              {showDc && <th className="border-b border-border px-2 py-2">DC</th>}
+              {showChannel && (
+                <th className="border-b border-border px-2 py-2">
+                  {previewFields.has("supplier") ? "供应商 / 来源" : "渠道"}
+                </th>
+              )}
+              {showWarehouse && <th className="border-b border-border px-2 py-2">仓库</th>}
+              {showMoney && (
+                <th className="border-b border-border px-2 py-2">{showCost ? "成本" : "报价"}</th>
+              )}
+              {showEta && <th className="border-b border-border px-2 py-2">预计到货</th>}
               <th className="border-b border-border px-2 py-2">状态</th>
             </tr>
           </thead>
@@ -1759,7 +1642,6 @@ function ImportReviewTable({
             {visibleRows.map(({ row, idx }) => {
               const blocking = rowBlockingReason(row);
               const status = shortStatus(row, blocking);
-              const isStock = rowKind(row) === "stock";
               return (
                 <tr
                   key={row.id}
@@ -1792,34 +1674,29 @@ function ImportReviewTable({
                       aria-label={`${row.mpn} 品牌`}
                     />
                   </td>
-                  <td className="px-2 py-2 align-top">{businessKindCell(row, idx)}</td>
-                  <td className="px-2 py-2 align-top">{quantityCell(row, idx)}</td>
-                  <td className="px-2 py-2 align-top">
-                    <Input
-                      className="h-8 w-full min-w-0 px-2 text-xs"
-                      value={row.dateCode ?? ""}
-                      onChange={(event) => patchText(idx, "dateCode", event.target.value)}
-                      aria-label={`${row.mpn} DC`}
-                    />
-                  </td>
-                  <td className="px-2 py-2 align-top">
-                    <Input
-                      className="h-8 w-full min-w-0 px-2 text-xs"
-                      value={row.channel ?? ""}
-                      onChange={(event) => patchText(idx, "channel", event.target.value)}
-                      aria-label={`${row.mpn} 渠道或供应商`}
-                    />
-                  </td>
-                  <td className="px-2 py-2 align-top">
-                    <Input
-                      className="h-8 w-full min-w-0 px-2 text-xs"
-                      value={row.customer ?? ""}
-                      onChange={(event) => patchText(idx, "customer", event.target.value)}
-                      aria-label={`${row.mpn} 客户`}
-                    />
-                  </td>
-                  <td className="px-2 py-2 align-top">
-                    {isStock ? (
+                  {showQty && <td className="px-2 py-2 align-top">{quantityCell(row, idx)}</td>}
+                  {showDc && (
+                    <td className="px-2 py-2 align-top">
+                      <Input
+                        className="h-8 w-full min-w-0 px-2 text-xs"
+                        value={row.dateCode ?? ""}
+                        onChange={(event) => patchText(idx, "dateCode", event.target.value)}
+                        aria-label={`${row.mpn} DC`}
+                      />
+                    </td>
+                  )}
+                  {showChannel && (
+                    <td className="px-2 py-2 align-top">
+                      <Input
+                        className="h-8 w-full min-w-0 px-2 text-xs"
+                        value={row.channel ?? ""}
+                        onChange={(event) => patchText(idx, "channel", event.target.value)}
+                        aria-label={`${row.mpn} 渠道或供应商`}
+                      />
+                    </td>
+                  )}
+                  {showWarehouse && (
+                    <td className="px-2 py-2 align-top">
                       <NativeSelect
                         className="h-8 w-full min-w-0 px-1 text-xs"
                         value={row.warehouse ?? ""}
@@ -1835,46 +1712,80 @@ function ImportReviewTable({
                           </option>
                         ))}
                       </NativeSelect>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="px-2 py-2 align-top">
-                    <Input
-                      className="h-8 w-full min-w-0 px-2 text-xs"
-                      value={
-                        isStock
-                          ? row.costAmount == null
-                            ? ""
-                            : String(row.costAmount)
-                          : row.priceAmount == null
-                            ? ""
-                            : String(row.priceAmount)
-                      }
-                      onChange={(event) =>
-                        onPatch(
-                          idx,
-                          isStock
-                            ? {
-                                costAmount:
-                                  event.target.value.trim() === ""
-                                    ? null
-                                    : Number(event.target.value),
-                                selected: false,
-                              }
-                            : {
-                                priceAmount:
-                                  event.target.value.trim() === ""
-                                    ? null
-                                    : Number(event.target.value),
-                                selected: false,
-                              },
-                        )
-                      }
-                      aria-label={`${row.mpn} 价格或成本`}
-                      placeholder={isStock ? "成本" : "价格"}
-                    />
-                  </td>
+                    </td>
+                  )}
+                  {showMoney && (
+                    <td className="px-2 py-2 align-top">
+                      <div className="grid grid-cols-[minmax(0,1fr)_68px] gap-1">
+                        <Input
+                          className="h-8 min-w-0 px-2 text-xs"
+                          value={
+                            showCost
+                              ? row.costAmount == null
+                                ? ""
+                                : String(row.costAmount)
+                              : row.priceAmount == null
+                                ? ""
+                                : String(row.priceAmount)
+                          }
+                          onChange={(event) =>
+                            onPatch(
+                              idx,
+                              showCost
+                                ? {
+                                    costAmount:
+                                      event.target.value.trim() === ""
+                                        ? null
+                                        : Number(event.target.value),
+                                    selected: false,
+                                  }
+                                : {
+                                    priceAmount:
+                                      event.target.value.trim() === ""
+                                        ? null
+                                        : Number(event.target.value),
+                                    selected: false,
+                                  },
+                            )
+                          }
+                          aria-label={`${row.mpn} ${showCost ? "成本" : "报价"}`}
+                        />
+                        <NativeSelect
+                          className="h-8 px-1 text-xs"
+                          value={(showCost ? row.costCurrency : row.priceCurrency) ?? ""}
+                          onChange={(event) =>
+                            onPatch(
+                              idx,
+                              showCost
+                                ? {
+                                    costCurrency: (event.target.value || null) as Currency | null,
+                                    selected: false,
+                                  }
+                                : {
+                                    priceCurrency: (event.target.value || null) as Currency | null,
+                                    selected: false,
+                                  },
+                            )
+                          }
+                          aria-label={`${row.mpn} 币种`}
+                        >
+                          <option value="">—</option>
+                          <option value="CNY">CNY</option>
+                          <option value="USD">USD</option>
+                        </NativeSelect>
+                      </div>
+                    </td>
+                  )}
+                  {showEta && (
+                    <td className="px-2 py-2 align-top">
+                      <Input
+                        className="h-8 w-full min-w-0 px-2 text-xs"
+                        value={row.etaText ?? ""}
+                        onChange={(event) => patchText(idx, "etaText", event.target.value)}
+                        aria-label={`${row.mpn} 预计到货`}
+                      />
+                    </td>
+                  )}
                   <td className="px-2 py-2 align-top">
                     <details>
                       <summary
@@ -1920,7 +1831,6 @@ function ImportReviewTable({
         {visibleRows.map(({ row, idx }) => {
           const blocking = rowBlockingReason(row);
           const status = shortStatus(row, blocking);
-          const isStock = rowKind(row) === "stock";
           return (
             <article
               key={row.id}
@@ -1963,40 +1873,35 @@ function ImportReviewTable({
                         onChange={(event) => patchText(idx, "brand", event.target.value)}
                       />
                     </label>
-                    <label className="min-w-0">
-                      <span className="text-[10px] text-muted-foreground">数量</span>
-                      {quantityCell(row, idx)}
-                    </label>
-                    <label className="min-w-0">
-                      <span className="text-[10px] text-muted-foreground">DC</span>
-                      <Input
-                        className="mt-0.5 h-8 px-2 text-xs"
-                        value={row.dateCode ?? ""}
-                        onChange={(event) => patchText(idx, "dateCode", event.target.value)}
-                      />
-                    </label>
-                    <label className="min-w-0">
-                      <span className="text-[10px] text-muted-foreground">
-                        {isStock ? "供应商" : "渠道"}
-                      </span>
-                      <Input
-                        className="mt-0.5 h-8 px-2 text-xs"
-                        value={row.channel ?? ""}
-                        onChange={(event) => patchText(idx, "channel", event.target.value)}
-                      />
-                    </label>
-                    {rowKind(row) === "inquiry" && (
+                    {showQty && (
                       <label className="min-w-0">
-                        <span className="text-[10px] text-muted-foreground">客户</span>
+                        <span className="text-[10px] text-muted-foreground">数量</span>
+                        {quantityCell(row, idx)}
+                      </label>
+                    )}
+                    {showDc && (
+                      <label className="min-w-0">
+                        <span className="text-[10px] text-muted-foreground">DC</span>
                         <Input
                           className="mt-0.5 h-8 px-2 text-xs"
-                          value={row.customer ?? ""}
-                          onChange={(event) => patchText(idx, "customer", event.target.value)}
-                          aria-label={`${row.mpn} 客户`}
+                          value={row.dateCode ?? ""}
+                          onChange={(event) => patchText(idx, "dateCode", event.target.value)}
                         />
                       </label>
                     )}
-                    {isStock && (
+                    {showChannel && (
+                      <label className="min-w-0">
+                        <span className="text-[10px] text-muted-foreground">
+                          {previewFields.has("supplier") ? "供应商 / 来源" : "渠道"}
+                        </span>
+                        <Input
+                          className="mt-0.5 h-8 px-2 text-xs"
+                          value={row.channel ?? ""}
+                          onChange={(event) => patchText(idx, "channel", event.target.value)}
+                        />
+                      </label>
+                    )}
+                    {showWarehouse && (
                       <label className="min-w-0">
                         <span className="text-[10px] text-muted-foreground">仓库</span>
                         <NativeSelect
@@ -2015,45 +1920,56 @@ function ImportReviewTable({
                         </NativeSelect>
                       </label>
                     )}
-                    <label className="min-w-0">
-                      <span className="text-[10px] text-muted-foreground">
-                        {isStock ? "成本" : "价格"}
-                      </span>
-                      <Input
-                        className="mt-0.5 h-8 px-2 text-xs"
-                        value={
-                          isStock
-                            ? row.costAmount == null
-                              ? ""
-                              : String(row.costAmount)
-                            : row.priceAmount == null
-                              ? ""
-                              : String(row.priceAmount)
-                        }
-                        onChange={(event) =>
-                          onPatch(
-                            idx,
-                            isStock
-                              ? {
-                                  costAmount:
-                                    event.target.value.trim() === ""
-                                      ? null
-                                      : Number(event.target.value),
-                                  selected: false,
-                                }
-                              : {
-                                  priceAmount:
-                                    event.target.value.trim() === ""
-                                      ? null
-                                      : Number(event.target.value),
-                                  selected: false,
-                                },
-                          )
-                        }
-                      />
-                    </label>
+                    {showMoney && (
+                      <label className="min-w-0">
+                        <span className="text-[10px] text-muted-foreground">
+                          {showCost ? "成本" : "报价"}
+                        </span>
+                        <Input
+                          className="mt-0.5 h-8 px-2 text-xs"
+                          value={
+                            showCost
+                              ? row.costAmount == null
+                                ? ""
+                                : String(row.costAmount)
+                              : row.priceAmount == null
+                                ? ""
+                                : String(row.priceAmount)
+                          }
+                          onChange={(event) =>
+                            onPatch(
+                              idx,
+                              showCost
+                                ? {
+                                    costAmount:
+                                      event.target.value.trim() === ""
+                                        ? null
+                                        : Number(event.target.value),
+                                    selected: false,
+                                  }
+                                : {
+                                    priceAmount:
+                                      event.target.value.trim() === ""
+                                        ? null
+                                        : Number(event.target.value),
+                                    selected: false,
+                                  },
+                            )
+                          }
+                        />
+                      </label>
+                    )}
+                    {showEta && (
+                      <label className="min-w-0">
+                        <span className="text-[10px] text-muted-foreground">预计到货</span>
+                        <Input
+                          className="mt-0.5 h-8 px-2 text-xs"
+                          value={row.etaText ?? ""}
+                          onChange={(event) => patchText(idx, "etaText", event.target.value)}
+                        />
+                      </label>
+                    )}
                   </div>
-                  {kind === "mixed" && <div className="mt-2">{businessKindCell(row, idx)}</div>}
                   {status.detail && (
                     <p className="mt-2 rounded-md bg-secondary/50 px-2 py-1.5 text-[11px] leading-5">
                       {status.detail}
@@ -2095,7 +2011,6 @@ function InquiryReviewTable({
   onToggleAll,
   onClearSelection,
   selectedCount,
-  blockingCount,
   importStatus,
   confirmPending,
   confirmDisabled,
@@ -2111,7 +2026,6 @@ function InquiryReviewTable({
   onToggleAll: (next: boolean) => void;
   onClearSelection: () => void;
   selectedCount: number;
-  blockingCount: number;
   importStatus: "draft" | "preview" | "writing" | "success" | "failed";
   confirmPending: boolean;
   confirmDisabled: boolean;
@@ -2232,8 +2146,6 @@ function InquiryReviewTable({
             aria-label={`${row.mpn} 品牌`}
           />
         );
-      case "kind":
-        return <span className="text-muted-foreground">客户询价</span>;
       case "customer":
         return (
           <Input
@@ -2281,10 +2193,6 @@ function InquiryReviewTable({
         >
           {allVisibleSelected ? "取消选择当前筛选结果" : "选择当前筛选结果"}
         </Button>
-        <span className="text-muted-foreground">
-          已选 {selectedCount} 行 · 需修改 {blockingCount} 行
-          {someVisibleSelected ? " · 当前筛选为部分选中" : ""}
-        </span>
         <Button size="sm" variant="ghost" disabled={selectedCount === 0} onClick={onClearSelection}>
           清除全部选择
         </Button>
@@ -2323,13 +2231,7 @@ function InquiryReviewTable({
               return (
                 <tr key={row.id} className="border-b border-border last:border-b-0">
                   {INQUIRY_TABLE_COLUMNS.map((column) => (
-                    <td
-                      key={column.key}
-                      className={cn(
-                        INQUIRY_TABLE_CELL_CLASS,
-                        column.key === "kind" && "text-muted-foreground",
-                      )}
-                    >
+                    <td key={column.key} className={INQUIRY_TABLE_CELL_CLASS}>
                       {cellContent(column.key, row, idx, blocking, status)}
                     </td>
                   ))}
@@ -2406,12 +2308,6 @@ function InquiryReviewTable({
                       />
                     </label>
                     <label className="min-w-0">
-                      <span className="text-[10px] text-muted-foreground">业务类型</span>
-                      <div className="mt-0.5 flex h-8 items-center text-xs text-muted-foreground">
-                        客户询价
-                      </div>
-                    </label>
-                    <label className="min-w-0">
                       <span className="text-[10px] text-muted-foreground">客户</span>
                       <Input
                         className="mt-0.5 h-8 px-2 text-xs"
@@ -2480,15 +2376,6 @@ function Mini({
         className="mt-0.5 h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
       />
     </label>
-  );
-}
-
-function ReviewStat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-md border border-border bg-background px-2 py-1.5">
-      <div className="text-[10px] text-muted-foreground">{label}</div>
-      <div className="font-mono text-sm tabular">{value}</div>
-    </div>
   );
 }
 
@@ -2621,11 +2508,6 @@ function MobileRowEditor({
           )
         )}
       </div>
-      <p className="text-[11px] text-muted-foreground">
-        {row.kind === "potential"
-          ? "确认后只加入当前登录用户的潜力型号关注池。"
-          : "修改后默认取消勾选，请重新核对并勾选；保存按钮只保存当前草稿，不会写入业务数据。"}
-      </p>
     </div>
   );
 }
