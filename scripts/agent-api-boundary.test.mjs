@@ -79,3 +79,20 @@ test("Radar context provider is read-only and excludes sensitive business detail
   assert.doesNotMatch(src, /customer_name|cost_amount|lot_id|channel_name/i);
   assert.doesNotMatch(src, /Harness|@deepseek-ai|defineTool/);
 });
+
+test("型号主档「带入分析资料」只读已保存的分析记录，不重抓、不写分析记录", () => {
+  const ui = readFileSync(join(root, "src/routes/parts.$partId.tsx"), "utf8");
+  const dialog = ui.slice(
+    ui.indexOf("function CorrectPartDialog"),
+    ui.indexOf("function StockOpDialog"),
+  );
+  assert.ok(dialog.length > 0, "CorrectPartDialog 必须存在");
+  assert.match(dialog, /getPartAnalysis/);
+  assert.match(dialog, /带入分析资料/);
+  // 旧假功能：按钮文案与重抓外网的分析动作都不得回潮。
+  assert.doesNotMatch(dialog, /analyzePartMpn/);
+  assert.doesNotMatch(dialog, /一键填写/);
+  // 回填逻辑必须是无外部依赖的纯函数。
+  const fill = readFileSync(join(root, "src/lib/part-profile-fill.ts"), "utf8");
+  assert.doesNotMatch(fill, /lookupHqb|lookup\.full|saveAnalysis|fetch\(/);
+});

@@ -20,6 +20,7 @@ import {
   submitPartReview,
 } from "@/lib/server/knowledge";
 import type { PartKnowledgeAnalysis } from "@/lib/server/knowledge";
+import { buildProfileFill } from "@/lib/part-profile-fill";
 import {
   formatCost,
   formatEtaLabel,
@@ -659,6 +660,7 @@ function PartDetail() {
           onClose={() => setFixOpen(false)}
           partId={partId}
           current={{ mpn: d.part.mpn, brand: d.part.brandCode ?? "" }}
+          canReadAnalysis={access.can("analysis.read")}
           onDone={() => {
             qc.invalidateQueries();
             setFixOpen(false);
@@ -852,46 +854,59 @@ function CorrectPartDialog({
   onClose,
   partId,
   current,
+  canReadAnalysis,
   onDone,
 }: {
   open: boolean;
   onClose: () => void;
   partId: string;
   current: { mpn: string; brand: string };
+  canReadAnalysis: boolean;
   onDone: () => void;
 }) {
-  const [mpn, setMpn] = useState("");
+  const [mpn, setMpn] = useState(current.mpn);
   const [brand, setBrand] = useState("");
   const [category, setCategory] = useState("");
   const [pkg, setPkg] = useState("");
-  const [fetched, setFetched] = useState(false);
+  const [filled, setFilled] = useState(false);
 
+  // 打开即带当前型号（此前会被重置成空，导致必须先手输完整型号，"一键"名不副实）。
   useEffect(() => {
     if (!open) return;
-    setMpn("");
+    setMpn(current.mpn);
     setBrand("");
     setCategory("");
     setPkg("");
-    setFetched(false);
-    const resetRestoredValue = window.setTimeout(() => setMpn(""), 50);
-    return () => window.clearTimeout(resetRestoredValue);
+    setFilled(false);
   }, [open, current.mpn]);
 
-  const analyzeMut = useMutation({
-    mutationFn: () => analyzePartMpn({ data: { mpn: mpn.trim() } }),
-    onSuccess: (r) => {
-      if (!r.ok) {
-        toast.error(r.error ?? "分析失败");
+  // 数据源＝该型号**已有**的型号分析记录。只读，不抓外网、不写分析记录。
+  const stored = useQuery({
+    queryKey: ["part-analysis", current.mpn],
+    queryFn: () => getPartAnalysis({ data: { mpn: current.mpn } }),
+    enabled: open && canReadAnalysis && Boolean(current.mpn),
+    staleTime: 60_000,
+  });
+  const fill = buildProfileFill(stored.data?.analysis ?? null);
+
+  const applyMut = useMutation({
+    mutationFn: () => getPartAnalysis({ data: { mpn: current.mpn } }),
+    onSuccess: (fresh) => {
+      const outcome = buildProfileFill(fresh?.analysis ?? null);
+      if (!outcome.ok) {
+        // 查不到记录或无可带入字段：只报失败原因，绝不说"已带入"。
+        toast.error(outcome.message);
         return;
       }
-      // 只做资料带入，不保存；最终仍需人工确认后点击保存。
-      if (r.resolvedMpn) setMpn(r.resolvedMpn);
-      if (r.resolvedBrand) setBrand(r.resolvedBrand.split(/[（(]/)[0].trim());
-      if (r.resolvedCategory) setCategory(r.resolvedCategory);
-      if (r.resolvedPackage) setPkg(r.resolvedPackage);
-      setFetched(true);
-      toast.success("已带入资料，请人工检查后保存");
+      // 只填表单，不保存。人工改完自己点「保存」才写主档。
+      if (outcome.fill.mpn) setMpn(outcome.fill.mpn);
+      if (outcome.fill.brand) setBrand(outcome.fill.brand);
+      if (outcome.fill.category) setCategory(outcome.fill.category);
+      if (outcome.fill.package) setPkg(outcome.fill.package);
+      setFilled(true);
+      toast.success("已带入分析资料，请人工检查后保存");
     },
+    onError: (e: Error) => toast.error(`读取分析记录失败：${e.message || "接口返回异常"}`),
   });
 
   const saveMut = useMutation({
@@ -911,6 +926,38 @@ function CorrectPartDialog({
     },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  const canApply =
+    canReadAnalysis &&
+    Boolean(current.mpn) &&
+    fill.ok &&
+    !stored.isPending &&
+    !stored.isError &&
+    !applyMut.isPending;
+
+  // 按钮旁一行小字：把"为什么不能点"讲清楚，不留无声失败。
+  const hint = !canReadAnalysis
+    ? { tone: "warn", text: "当前账号没有「查看型号分析」权限，无法带入分析资料" }
+    : !current.mpn
+      ? { tone: "warn", text: "该型号为空，无法读取分析记录" }
+      : stored.isPending
+        ? { tone: "muted", text: "正在读取该型号的分析记录…" }
+        : stored.isError
+          ? {
+              tone: "error",
+              text: `读取分析记录失败：${stored.error instanceof Error && stored.error.message ? stored.error.message : "接口返回异常"}`,
+            }
+          : !fill.ok
+            ? { tone: "warn", text: fill.message }
+            : filled
+              ? null
+              : { tone: "muted", text: "已找到该型号的分析记录，可一键带入" };
+  const hintClass =
+    hint?.tone === "error"
+      ? "bg-destructive/10 text-destructive"
+      : hint?.tone === "warn"
+        ? "bg-amber-50 text-amber-900"
+        : "text-muted-foreground";
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -938,14 +985,17 @@ function CorrectPartDialog({
               <Button
                 variant="outline"
                 className="shrink-0"
-                disabled={!mpn.trim() || analyzeMut.isPending}
-                onClick={() => analyzeMut.mutate()}
+                disabled={!canApply}
+                onClick={() => applyMut.mutate()}
               >
-                {analyzeMut.isPending ? "查询中…" : "一键填写"}
+                {applyMut.isPending ? "读取中…" : "带入分析资料"}
               </Button>
             </div>
+            {hint && (
+              <p className={`mt-1.5 rounded-md px-2 py-1 text-[11px] ${hintClass}`}>{hint.text}</p>
+            )}
           </div>
-          {fetched && (
+          {filled && (
             <p className="rounded-md bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-700">
               已带入资料，仍可人工检查后保存
             </p>
