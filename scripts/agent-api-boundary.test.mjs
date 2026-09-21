@@ -45,29 +45,16 @@ test("Radar analysis degrades provider and Platform failures into a safe HQB fal
   assert.match(flow, /lookupFallback/);
 });
 
-test("Radar human review is persisted locally and never sent to the platform", () => {
+test("Radar manual review feature is fully removed", () => {
   const knowledge = readFileSync(join(root, "src/lib/server/knowledge.ts"), "utf8");
   const analysisDb = readFileSync(join(root, "src/lib/server/analysis-db.ts"), "utf8");
   const ui = readFileSync(join(root, "src/routes/parts.$partId.tsx"), "utf8");
-  const migration = readFileSync(join(root, "migrations/0004_part_analysis_review.sql"), "utf8");
   const client = readFileSync(join(root, "src/lib/server/agent-platform.ts"), "utf8");
 
-  assert.match(knowledge, /export const submitPartReview/);
-  assert.match(knowledge, /修正需要 correctedJson/);
-  assert.match(knowledge, /saveAnalysisReview/);
-  assert.match(analysisDb, /insert into part_analysis_reviews/);
-  assert.match(migration, /corrected_json/);
-  assert.match(migration, /check \(decision in \('accept', 'reject', 'corrected'\)\)/);
-  assert.match(ui, /submitPartReview/);
-  assert.match(ui, /提交修正/);
-  assert.match(ui, /correctedJson/);
+  assert.doesNotMatch(knowledge, /submitPartReview|getPartReview|PartReviewInput|PartReviewOutcome|PartReviewLoaded|saveAnalysisReview|getAnalysisReview/);
+  assert.doesNotMatch(analysisDb, /part_analysis_reviews|saveReview|getReview|ReviewRecord|ReviewRow/);
+  assert.doesNotMatch(ui, /submitPartReview|getPartReview|人工校准|correctedJson/);
   assert.doesNotMatch(client, /part_analysis_reviews|submitPartReview|corrected_json/);
-  const fn = knowledge.slice(
-    knowledge.indexOf("export const submitPartReview"),
-    knowledge.indexOf("export const getPartReview"),
-  );
-  assert.match(fn, /saveAnalysisReview/);
-  assert.doesNotMatch(fn, /researchPartViaPlatform|AGENT_API_URL|lookup\.full/);
 });
 
 test("Radar context provider is read-only and excludes sensitive business details", () => {
