@@ -36,6 +36,34 @@
 
 ---
 
+## 2026-09-22 PR31
+
+| 字段 | 值 |
+| --- | --- |
+| 部署时间 | 2026-09-22 13:14（本地 CST，取 release 目录 mtime） |
+| PR | [PR31](https://github.com/mewmind-chen/xinghao-radar/pull/31)：feat(parts) 删除「人工校准」功能，保留型号分析展示 |
+| 合并时间 | 2026-09-22 01:02（CST；GitHub `mergedAt` 2026-09-21T17:02:15Z） |
+| 部署前 SHA | `866916a27aaa351826061f53df2774edae11632e` |
+| 部署后 SHA（= `main`） | `ae47acc1785567d52cc993163066458d230bc094` |
+| 生产 release | `20260922-051328-main-ae47acc17855` |
+| 操作者 | **人工放行**（用户在本机终端执行 `AUTO_DEPLOY_ALLOW_MIGRATIONS=true AUTO_DEPLOY_RUN_TESTS=true node scripts/auto-deploy.mjs`；原因见备注 2） |
+| 数据库 migration | **有**：`0011_drop_part_analysis_review.sql`（`drop table if exists part_analysis_reviews`）。执行前目标表 3 行（全 `accept`，最新 2026-09-14）；`applied_at` 2026-09-22T05:14:13Z |
+| 构建 | 成功（changed=6；隔离 worktree 内 typecheck + test + build） |
+| 服务重启 | 是（13:01–13:14 期间服务处于停止状态） |
+| 验证结果 | 本地与公网 `/healthz` 均返回新 release；`importReady=3`、链路 `command-code,deepseek-api,openrouter`；库副本核对 `_migrations` 含 0011 且 `part_analysis_reviews` 已不存在，业务表完好（`parts` 18 行 / `part_analyses` 14 行）；生产仓库 HEAD = `ae47acc` 且工作树干净 |
+| 回滚点 | 上一 release `20260921-135042-main-866916a27aaa`；plist 备份 `backups/launchd-2026-09-22T05-14-07-446Z.plist`；库备份 `backups/pr31-pre-migration-20260922-125223`、`backups/pr31-pre-deploy-20260922-125650`（各 1105 文件 / 40M） |
+
+**备注**
+
+1. **迁移护栏挡了约 12 小时**：PR31 携带 `migrations/0011`，自动部署按设计拒绝执行（`auto-deploy.err.log` 中该条拒绝出现 279 次），必须人工放行。放行前先核查目标表数据量（3 行，随迁移删除，已存两份额外备份）。
+2. **⚠️ 放行部署不得在 WorkBuddy 进程内执行**：本机 launchd 域写入对 WorkBuddy 受限——`launchctl bootstrap` / `load` 一律报 `5: Input/output error`，而 **legacy `load` 失败时仍返回退出码 0**，`scripts/auto-deploy.mjs` 的 `startService` 据退出码判定为成功。后果链：`unload` 生效（服务被停）→ `load` 静默失败 → `waitForHealth` 45 次全失败 → 回滚的 `load` 同样静默失败 → 服务彻底不在 launchd 域内。**本次因此在 13:01–13:14 造成约 13 分钟公网 502**；随后改用用户终端执行（先 `launchctl load` 恢复站点，再跑放行部署）一次通过。
+3. **待修（代码级根因）**：`startService` 未校验 legacy `load` 的真实结果，应补 `isServiceLoaded` 复查，否则同类事故会重演。
+4. **数据完整性**：迁移前的两份完整 PGlite 备份均保留；`part_analysis_reviews` 的 3 行记录现仅存在于备份中。
+5. 本次过程中另产生两个同提交的孤儿 release 目录（`20260922-045331-main-ae47acc17855`、`20260922-050001-main-ae47acc17855`，均未启用、未被 plist 引用），**当前保留未清理**。
+6. 已知文档缺口（本次未处理）：`DEPLOY_LOG.md` 中 PR29（2026-09-14）、PR30（2026-09-21）两条部署记录缺失，导致 PR31 的「部署前 SHA」在本文档内无对应条目。
+
+---
+
 ## 2026-09-11 PR27
 
 | 字段 | 值 |
