@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createAnalysisRepository } from "../src/lib/server/analysis-db.ts";
 
-function fakeSql() {
+function fakeSql({ concurrentTargetOnMove = false } = {}) {
   const rows = new Map();
   const calls = [];
   return {
@@ -27,8 +27,18 @@ function fakeSql() {
       if (text.startsWith("with source as materialized")) {
         const [toKey, toMpn, fromKey] = params;
         const source = rows.get(fromKey);
-        const target = rows.get(toKey);
-        const moved = Boolean(source && !target);
+        const targetBefore = rows.get(toKey);
+        if (concurrentTargetOnMove && source && !targetBefore) {
+          rows.set(toKey, {
+            mpn_key: toKey,
+            mpn: toMpn,
+            analyzed_at: "2026-09-22T09:00:00.000Z",
+            source_url: null,
+            analysis: JSON.stringify({ source: "concurrent-target" }),
+          });
+        }
+        const targetAfter = rows.get(toKey);
+        const moved = Boolean(source && !targetAfter);
         if (moved) {
           const row = source;
           rows.set(toKey, { ...row, mpn_key: toKey, mpn: toMpn });
@@ -36,7 +46,7 @@ function fakeSql() {
         }
         return [{
           source_exists: Boolean(source),
-          target_exists: Boolean(target),
+          target_exists: Boolean(targetBefore),
           moved,
         }];
       }
@@ -136,4 +146,22 @@ test("规范化后型号未变化时不访问数据库", async () => {
 
   assert.equal(result, "unchanged");
   assert.equal(store.calls.length, 0);
+});
+
+test("迁移并发撞上新目标分析时仍记为 target-preserved", async () => {
+  const store = fakeSql({ concurrentTargetOnMove: true });
+  const repo = createAnalysisRepository(store);
+  await repo.saveAnalysisFull("OLD-MPN", {
+    analyzedAt: "2026-09-20T09:00:00.000Z",
+    json: JSON.stringify({ source: "old" }),
+  });
+
+  const result = await repo.moveAnalysisKey("OLD-MPN", "NEW-MPN");
+
+  assert.equal(result, "target-preserved");
+  assert.equal(JSON.parse((await repo.getAnalysis("OLD-MPN")).analysis).source, "old");
+  assert.equal(
+    JSON.parse((await repo.getAnalysis("NEW-MPN")).analysis).source,
+    "concurrent-target",
+  );
 });

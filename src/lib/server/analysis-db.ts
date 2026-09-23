@@ -110,8 +110,7 @@ export async function moveAnalysisKeyPreservingTargetWithSql(
   const state = rows[0];
   if (state?.moved) return "moved";
   if (!state?.source_exists) return "source-missing";
-  if (state.target_exists) return "target-preserved";
-  return "source-missing";
+  return "target-preserved";
 }
 
 /** @deprecated Use moveAnalysisKeyPreservingTargetWithSql for explicit semantics. */
