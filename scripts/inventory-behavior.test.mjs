@@ -231,23 +231,98 @@ test("inventory operations run against real PGlite with transactional and lineag
     });
     const identityPart = (await sql.query("select id from parts where mpn = 'BEHAVIOR-IDENTITY-OLD'"))[0];
     const identityMovement = (await sql.query("select id from stock_movements where lot_id = $1 and type = 'in'", [identitySource.id]))[0];
+    await sql.query(
+      "insert into part_analyses (mpn_key, mpn, analyzed_at, analysis) values ($1, $2, $3, $4), ($5, $6, $7, $8)",
+      [
+        "BEHAVIOR-IDENTITY-OLD",
+        "BEHAVIOR-IDENTITY-OLD",
+        "2026-09-20T09:00:00.000Z",
+        JSON.stringify({ source: "old" }),
+        "BEHAVIOR-IDENTITY-NEW",
+        "BEHAVIOR-IDENTITY-NEW",
+        "2026-09-21T09:00:00.000Z",
+        JSON.stringify({ source: "target" }),
+      ],
+    );
+    await expectFailure(
+      () => invoke(parts.updatePartIdentity_createServerFn_handler, {
+        id: identityPart.id,
+        mpn: "BEHAVIOR-IDENTITY-NEW",
+        reason: "   ",
+      }),
+      /修正原因不能为空/,
+    );
+    const identityPreview = await invoke(
+      parts.previewPartIdentityCorrection_createServerFn_handler,
+      {
+        id: identityPart.id,
+        mpn: "BEHAVIOR-IDENTITY-NEW",
+      },
+    );
+    assert.equal(identityPreview.currentMpn, "BEHAVIOR-IDENTITY-OLD");
+    assert.equal(identityPreview.targetMpn, "BEHAVIOR-IDENTITY-NEW");
+    assert.equal(identityPreview.targetPartId, null);
+    assert.equal(identityPreview.counts.stockLots, 1);
+    assert.equal(identityPreview.counts.stockMovements, 1);
+    assert.equal(identityPreview.sourceAnalysisExists, true);
+    assert.equal(identityPreview.targetAnalysisExists, true);
+    const identityReason = "人工核对原始标签后修正完整型号";
     await invoke(parts.updatePartIdentity_createServerFn_handler, {
       id: identityPart.id,
       mpn: "BEHAVIOR-IDENTITY-NEW",
+      reason: identityReason,
     });
     const identityAfter = (await sql.query("select id, mpn from parts where id = $1", [identityPart.id]))[0];
     assert.equal(identityAfter.id, identityPart.id);
     assert.equal(identityAfter.mpn, "BEHAVIOR-IDENTITY-NEW");
     assert.equal((await sql.query("select part_id from stock_lots where id = $1", [identitySource.id]))[0].part_id, identityPart.id);
     assert.equal((await sql.query("select part_id from stock_movements where id = $1", [identityMovement.id]))[0].part_id, identityPart.id);
+    const preservedAnalyses = await sql.query(
+      "select mpn_key, analysis from part_analyses where mpn_key in ($1, $2) order by mpn_key",
+      ["BEHAVIOR-IDENTITY-OLD", "BEHAVIOR-IDENTITY-NEW"],
+    );
+    assert.equal(preservedAnalyses.length, 2);
+    assert.equal(
+      JSON.parse(preservedAnalyses.find((row) => row.mpn_key === "BEHAVIOR-IDENTITY-OLD").analysis).source,
+      "old",
+    );
+    assert.equal(
+      JSON.parse(preservedAnalyses.find((row) => row.mpn_key === "BEHAVIOR-IDENTITY-NEW").analysis).source,
+      "target",
+    );
+    const identityAudit = (await sql.query(
+      "select detail, after_json from op_logs where action = 'correct' and entity_type = 'part' and entity_id = $1 order by created_at desc limit 1",
+      [identityPart.id],
+    ))[0];
+    assert.equal(identityAudit.detail, identityReason);
+    const identityAuditAfter = JSON.parse(identityAudit.after_json);
+    assert.equal(identityAuditAfter.impact.stockLots, 1);
+    assert.equal(identityAuditAfter.impact.stockMovements, 1);
+    assert.equal(identityAuditAfter.analysisAction, "target-preserved");
     await invoke(stock.stockInbound_createServerFn_handler, {
       mpn: "BEHAVIOR-IDENTITY-CLASH",
       warehouseId: "wh_hk",
       qty: 1,
     });
+    const clashPart = (await sql.query(
+      "select id from parts where mpn = 'BEHAVIOR-IDENTITY-CLASH'",
+    ))[0];
+    const clashPreview = await invoke(
+      parts.previewPartIdentityCorrection_createServerFn_handler,
+      { id: identityPart.id, mpn: "BEHAVIOR-IDENTITY-CLASH" },
+    );
+    assert.equal(clashPreview.targetPartId, clashPart.id);
     await expectFailure(
-      () => invoke(parts.updatePartIdentity_createServerFn_handler, { id: identityPart.id, mpn: "BEHAVIOR-IDENTITY-CLASH" }),
+      () => invoke(parts.updatePartIdentity_createServerFn_handler, {
+        id: identityPart.id,
+        mpn: "BEHAVIOR-IDENTITY-CLASH",
+        reason: "测试独立主档冲突",
+      }),
       /同型号已存在/,
+    );
+    assert.equal(
+      (await sql.query("select mpn from parts where id = $1", [identityPart.id]))[0].mpn,
+      "BEHAVIOR-IDENTITY-NEW",
     );
 
     const duplicateSeed = await invoke(stock.stockInbound_createServerFn_handler, {

@@ -9,8 +9,9 @@ import { ensureSeed } from "./seed";
 import { ensurePart, getSettings, mapPart, matchFlagsForParts, sqlClient } from "./helpers";
 import { displayMpn, formatInventoryQty, formatStockLine, iso, normalizeMpn } from "@/lib/domain";
 import { cleanBrand } from "./part-identity";
-import { listAnalysisTimes, moveAnalysisKeyWithSql } from "./analysis-db";
+import { listAnalysisTimes, moveAnalysisKeyPreservingTargetWithSql } from "./analysis-db";
 import { withTransaction, logOp } from "./helpers";
+import type { Sql } from "@/lib/db";
 import type { MatchFlags, Part } from "@/lib/types";
 
 export type PartListItem = Part & {
@@ -20,6 +21,65 @@ export type PartListItem = Part & {
   /** 最近型号分析时间（part_analyses），无则 null。 */
   analysisAt: string | null;
 };
+
+export type PartIdentityImpactCounts = {
+  stockLots: number;
+  stockMovements: number;
+  channelOffers: number;
+  customerInquiries: number;
+  potentialModels: number;
+  legacyWatchlist: number;
+};
+
+export type PartIdentityCorrectionPreview = {
+  currentMpn: string;
+  targetMpn: string;
+  targetPartId: string | null;
+  counts: PartIdentityImpactCounts;
+  sourceAnalysisExists: boolean;
+  targetAnalysisExists: boolean;
+};
+
+async function countPartIdentityImpact(
+  sql: Sql,
+  partId: string,
+): Promise<PartIdentityImpactCounts> {
+  const rows = await sql.query<Record<string, unknown>>(
+    `select
+      (select count(*)::int from stock_lots where part_id = $1 and deleted_at is null) as stock_lots,
+      (select count(*)::int from stock_movements where part_id = $1 and deleted_at is null) as stock_movements,
+      (select count(*)::int from channel_offers where part_id = $1 and deleted_at is null) as channel_offers,
+      (select count(*)::int from customer_inquiries where part_id = $1 and deleted_at is null) as customer_inquiries,
+      (select count(*)::int from potential_models where part_id = $1) as potential_models,
+      (select count(*)::int from watchlist where part_id = $1) as legacy_watchlist`,
+    [partId],
+  );
+  const row = rows[0] ?? {};
+  return {
+    stockLots: Number(row.stock_lots ?? 0),
+    stockMovements: Number(row.stock_movements ?? 0),
+    channelOffers: Number(row.channel_offers ?? 0),
+    customerInquiries: Number(row.customer_inquiries ?? 0),
+    potentialModels: Number(row.potential_models ?? 0),
+    legacyWatchlist: Number(row.legacy_watchlist ?? 0),
+  };
+}
+
+async function readAnalysisPresence(sql: Sql, sourceKey: string, targetKey: string) {
+  const rows = await sql.query<{
+    source_analysis_exists: boolean;
+    target_analysis_exists: boolean;
+  }>(
+    `select
+      exists(select 1 from part_analyses where mpn_key = $1) as source_analysis_exists,
+      exists(select 1 from part_analyses where mpn_key = $2) as target_analysis_exists`,
+    [sourceKey, targetKey],
+  );
+  return {
+    sourceAnalysisExists: Boolean(rows[0]?.source_analysis_exists),
+    targetAnalysisExists: Boolean(rows[0]?.target_analysis_exists),
+  };
+}
 
 export const bootstrap = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -258,13 +318,46 @@ export const createPart = createServerFn({ method: "POST" })
     return part;
   });
 
+export const previewPartIdentityCorrection = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: { id: string; mpn: string }) => input)
+  .handler(async ({ data, context }): Promise<PartIdentityCorrectionPreview> => {
+    requireRole(await getCurrentPrincipal(context.bearerToken), "model.write");
+    const sql = await sqlClient();
+    const targetMpn = displayMpn(data.mpn ?? "");
+    if (!targetMpn) throw new Error("型号不能为空");
+    const targetKey = normalizeMpn(targetMpn);
+
+    const current = await sql.query<{ mpn: string; mpn_key: string }>(
+      "select mpn, mpn_key from parts where id = $1 limit 1",
+      [data.id],
+    );
+    if (!current[0]) throw new Error("型号不存在");
+    const target = await sql.query<{ id: string }>(
+      "select id from parts where mpn_key = $1 and id <> $2 limit 1",
+      [targetKey, data.id],
+    );
+    const [counts, analysisPresence] = await Promise.all([
+      countPartIdentityImpact(sql, data.id),
+      readAnalysisPresence(sql, current[0].mpn_key, targetKey),
+    ]);
+
+    return {
+      currentMpn: current[0].mpn,
+      targetMpn,
+      targetPartId: target[0]?.id ?? null,
+      counts,
+      ...analysisPresence,
+    };
+  });
+
 /**
  * 修正型号主档（录入/识别错误时的人工修正入口）。
  * - 主档唯一：新 mpn_key 与其它主档冲突时报错；本档 partId 不变，
  *   库存/渠道/询价/流水等历史事件全部保留。
  * - 可选字段（category/package/description/params）用于带入分析结果，
  *   只覆盖旧值为空或显式传入的列；brand 经 cleanBrand 归一。
- * - 已保存的型号分析记录随新 key 迁移（保留时间戳）。
+ * - 目标 key 没有分析时迁移旧分析；目标已有分析时保留双方记录。
  */
 export const updatePartIdentity = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -277,6 +370,7 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
       package?: string;
       description?: string;
       params?: string;
+      reason: string;
     }) => input,
   )
   .handler(async ({ data, context }) => {
@@ -286,18 +380,18 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
     if (!mpn) throw new Error("型号不能为空");
     const key = normalizeMpn(data.mpn);
     const id = data.id;
-    const current = await sql`select mpn, mpn_key from parts where id = ${id} limit 1`;
-    if (!current[0]) throw new Error("型号不存在");
-    const oldKey = String(current[0].mpn_key);
-
-    const clash = await sql`
-      select id from parts where mpn_key = ${key} and id <> ${id} limit 1
-    `;
-    if (clash[0]) throw new Error("同型号已存在于另一主档，请直接使用该档");
+    const reason = typeof data.reason === "string" ? data.reason.trim() : "";
+    if (!reason) throw new Error("修正原因不能为空");
 
     const brand = data.brand ? cleanBrand(data.brand) : null;
-    await withTransaction(sql, async (tx) => {
+    const result = await withTransaction(sql, async (tx) => {
       const before = await tx`select * from parts where id = ${id} for update`;
+      if (!before[0]) throw new Error("型号不存在");
+      const clash = await tx`
+        select id from parts where mpn_key = ${key} and id <> ${id} limit 1 for update
+      `;
+      if (clash[0]) throw new Error("同型号已存在于另一主档，请直接使用该档");
+      const counts = await countPartIdentityImpact(tx, id);
       await tx`
         update parts set
           mpn = ${mpn},
@@ -310,12 +404,18 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
           updated_at = now()
         where id = ${id}
       `;
-      await moveAnalysisKeyWithSql(tx, oldKey, mpn);
+      const analysisAction = await moveAnalysisKeyPreservingTargetWithSql(
+        tx,
+        String(before[0].mpn_key),
+        mpn,
+      );
       await logOp(tx, "correct", "part", id, {
         principal,
+        detail: reason,
         before: before[0],
-        after: { id, mpn, mpnKey: key },
+        after: { id, mpn, mpnKey: key, impact: counts, analysisAction },
       });
+      return { counts, analysisAction };
     });
-    return { ok: true as const };
+    return { ok: true as const, impact: result.counts, analysisAction: result.analysisAction };
   });
