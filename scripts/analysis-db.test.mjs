@@ -24,14 +24,21 @@ function fakeSql() {
       if (text.startsWith("select mpn_key, analyzed_at")) {
         return [...rows.values()].map(({ mpn_key, analyzed_at }) => ({ mpn_key, analyzed_at }));
       }
-      if (text.startsWith("with moved as")) {
+      if (text.startsWith("with source as materialized")) {
         const [toKey, toMpn, fromKey] = params;
-        const row = rows.get(fromKey);
-        if (row) {
+        const source = rows.get(fromKey);
+        const target = rows.get(toKey);
+        const moved = Boolean(source && !target);
+        if (moved) {
+          const row = source;
           rows.set(toKey, { ...row, mpn_key: toKey, mpn: toMpn });
           rows.delete(fromKey);
         }
-        return [];
+        return [{
+          source_exists: Boolean(source),
+          target_exists: Boolean(target),
+          moved,
+        }];
       }
       throw new Error(`unexpected SQL: ${text}`);
     },
@@ -79,10 +86,54 @@ test("moveAnalysisKey 原子地移动记录且保留时间", async () => {
   const store = fakeSql();
   const repo = createAnalysisRepository(store);
   await repo.saveAnalysisFull("OLD-MPN", { analyzedAt: "2026-08-23T09:00:00.000Z", json: "{}" });
-  await repo.moveAnalysisKey("OLD-MPN", "NEW-MPN");
+  const result = await repo.moveAnalysisKey("OLD-MPN", "NEW-MPN");
+  assert.equal(result, "moved");
   assert.equal(await repo.getAnalysis("OLD-MPN"), null);
   assert.equal((await repo.getAnalysis("new-mpn")).analyzed_at, "2026-08-23T09:00:00.000Z");
-  const move = store.calls.find((call) => call.text.startsWith("with moved as"));
+  const move = store.calls.find((call) => call.text.startsWith("with source as materialized"));
   assert.ok(move);
-  assert.match(move.text, /on conflict \(mpn_key\)/i);
+  assert.match(move.text, /on conflict \(mpn_key\) do nothing/i);
+});
+
+test("目标分析已存在时保留双方记录且不覆盖", async () => {
+  const store = fakeSql();
+  const repo = createAnalysisRepository(store);
+  await repo.saveAnalysisFull("OLD-MPN", {
+    analyzedAt: "2026-09-20T09:00:00.000Z",
+    json: JSON.stringify({ source: "old" }),
+  });
+  await repo.saveAnalysisFull("NEW-MPN", {
+    analyzedAt: "2026-09-21T09:00:00.000Z",
+    json: JSON.stringify({ source: "target" }),
+  });
+
+  const result = await repo.moveAnalysisKey("OLD-MPN", "NEW-MPN");
+
+  assert.equal(result, "target-preserved");
+  assert.equal(JSON.parse((await repo.getAnalysis("OLD-MPN")).analysis).source, "old");
+  assert.equal(JSON.parse((await repo.getAnalysis("NEW-MPN")).analysis).source, "target");
+});
+
+test("源分析不存在时返回 source-missing 且不改目标", async () => {
+  const store = fakeSql();
+  const repo = createAnalysisRepository(store);
+  await repo.saveAnalysisFull("NEW-MPN", {
+    analyzedAt: "2026-09-21T09:00:00.000Z",
+    json: JSON.stringify({ source: "target" }),
+  });
+
+  const result = await repo.moveAnalysisKey("MISSING-MPN", "NEW-MPN");
+
+  assert.equal(result, "source-missing");
+  assert.equal(JSON.parse((await repo.getAnalysis("NEW-MPN")).analysis).source, "target");
+});
+
+test("规范化后型号未变化时不访问数据库", async () => {
+  const store = fakeSql();
+  const repo = createAnalysisRepository(store);
+
+  const result = await repo.moveAnalysisKey(" old-mpn ", "OLD-MPN");
+
+  assert.equal(result, "unchanged");
+  assert.equal(store.calls.length, 0);
 });
