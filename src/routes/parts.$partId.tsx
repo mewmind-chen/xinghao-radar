@@ -1,9 +1,14 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { ArrowLeft, PenLine, Star } from "lucide-react";
-import { getPartDetail, searchParts } from "@/lib/server/parts";
-import { updatePartIdentity } from "@/lib/server/parts";
+import {
+  getPartDetail,
+  previewPartIdentityCorrection,
+  searchParts,
+  updatePartIdentity,
+} from "@/lib/server/parts";
+import type { PartIdentityCorrectionPreview } from "@/lib/server/parts";
 import { listStock } from "@/lib/server/stock";
 import {
   receiveTransit,
@@ -28,6 +33,7 @@ import {
   formatOfferLine,
   formatQty,
   formatWhen,
+  normalizeMpn,
   PACK_STATE_LABEL,
   parseQty,
 } from "@/lib/domain";
@@ -37,6 +43,7 @@ import { Badge } from "@/components/ui/badge";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { toast } from "sonner";
@@ -783,7 +790,10 @@ function CorrectPartDialog({
   const [brand, setBrand] = useState("");
   const [category, setCategory] = useState("");
   const [pkg, setPkg] = useState("");
-  const [filled, setFilled] = useState(false);
+  const [reason, setReason] = useState("");
+  const [filled, setFilled] = useState<"current" | "target" | null>(null);
+  const [preview, setPreview] = useState<PartIdentityCorrectionPreview | null>(null);
+  const [previewFingerprint, setPreviewFingerprint] = useState("");
 
   // 打开即带当前型号（此前会被重置成空，导致必须先手输完整型号，"一键"名不副实）。
   useEffect(() => {
@@ -792,8 +802,26 @@ function CorrectPartDialog({
     setBrand("");
     setCategory("");
     setPkg("");
-    setFilled(false);
+    setReason("");
+    setFilled(null);
+    setPreview(null);
+    setPreviewFingerprint("");
   }, [open, current.mpn]);
+
+  const formFingerprint = JSON.stringify([
+    mpn.trim(),
+    brand.trim(),
+    category.trim(),
+    pkg.trim(),
+    reason.trim(),
+  ]);
+
+  // 预检后任何字段发生变化，旧预检立即失效，不能继续确认。
+  useEffect(() => {
+    if (!previewFingerprint || previewFingerprint === formFingerprint) return;
+    setPreview(null);
+    setPreviewFingerprint("");
+  }, [formFingerprint, previewFingerprint]);
 
   // 数据源＝该型号**已有**的型号分析记录。只读，不抓外网、不写分析记录。
   const stored = useQuery({
@@ -803,10 +831,26 @@ function CorrectPartDialog({
     staleTime: 60_000,
   });
   const fill = buildProfileFill(stored.data?.analysis ?? null);
+  const deferredTargetMpn = useDeferredValue(mpn.trim());
+  const targetDiffers =
+    Boolean(deferredTargetMpn) && normalizeMpn(deferredTargetMpn) !== normalizeMpn(current.mpn);
+  const targetStored = useQuery({
+    queryKey: ["part-analysis", deferredTargetMpn],
+    queryFn: () => getPartAnalysis({ data: { mpn: deferredTargetMpn } }),
+    enabled: open && canReadAnalysis && targetDiffers,
+    staleTime: 60_000,
+  });
+  const targetFill = buildProfileFill(targetStored.data?.analysis ?? null);
+
+  const invalidatePreview = () => {
+    setPreview(null);
+    setPreviewFingerprint("");
+  };
 
   const applyMut = useMutation({
-    mutationFn: () => getPartAnalysis({ data: { mpn: current.mpn } }),
-    onSuccess: (fresh) => {
+    mutationFn: ({ sourceMpn }: { sourceMpn: string; source: "current" | "target" }) =>
+      getPartAnalysis({ data: { mpn: sourceMpn } }),
+    onSuccess: (fresh, request) => {
       const outcome = buildProfileFill(fresh?.analysis ?? null);
       if (!outcome.ok) {
         // 查不到记录或无可带入字段：只报失败原因，绝不说"已带入"。
@@ -818,10 +862,21 @@ function CorrectPartDialog({
       if (outcome.fill.brand) setBrand(outcome.fill.brand);
       if (outcome.fill.category) setCategory(outcome.fill.category);
       if (outcome.fill.package) setPkg(outcome.fill.package);
-      setFilled(true);
+      invalidatePreview();
+      setFilled(request.source);
       toast.success("已带入分析资料，请人工检查后保存");
     },
     onError: (e: Error) => toast.error(`读取分析记录失败：${e.message || "接口返回异常"}`),
+  });
+
+  const previewMut = useMutation({
+    mutationFn: ({ targetMpn }: { targetMpn: string; fingerprint: string }) =>
+      previewPartIdentityCorrection({ data: { id: partId, mpn: targetMpn } }),
+    onSuccess: (result, request) => {
+      setPreview(result);
+      setPreviewFingerprint(request.fingerprint);
+    },
+    onError: (e: Error) => toast.error(e.message || "检查影响失败"),
   });
 
   const saveMut = useMutation({
@@ -833,6 +888,7 @@ function CorrectPartDialog({
           brand: brand.trim() || undefined,
           category: category.trim() || undefined,
           package: pkg.trim() || undefined,
+          reason: reason.trim(),
         },
       }),
     onSuccess: () => {
@@ -842,13 +898,22 @@ function CorrectPartDialog({
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const canApply =
+  const canApplyCurrent =
     canReadAnalysis &&
     Boolean(current.mpn) &&
     fill.ok &&
     !stored.isPending &&
     !stored.isError &&
     !applyMut.isPending;
+  const canApplyTarget =
+    canReadAnalysis &&
+    targetDiffers &&
+    targetFill.ok &&
+    !targetStored.isPending &&
+    !targetStored.isError &&
+    !applyMut.isPending;
+  const previewIsCurrent = Boolean(preview && previewFingerprint === formFingerprint);
+  const isProcessing = previewMut.isPending || saveMut.isPending;
 
   // 按钮旁一行小字：把"为什么不能点"讲清楚，不留无声失败。
   const hint = !canReadAnalysis
@@ -866,7 +931,7 @@ function CorrectPartDialog({
             ? { tone: "warn", text: fill.message }
             : filled
               ? null
-              : { tone: "muted", text: "已找到该型号的分析记录，可一键带入" };
+              : { tone: "muted", text: "已有分析资料，是否一键填写？" };
   const hintClass =
     hint?.tone === "error"
       ? "bg-destructive/10 text-destructive"
@@ -876,7 +941,7 @@ function CorrectPartDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>修正型号主档</DialogTitle>
         </DialogHeader>
@@ -888,7 +953,7 @@ function CorrectPartDialog({
           </p>
           <div>
             <Label>完整型号</Label>
-            <div className="flex gap-1.5">
+            <div className="flex flex-col gap-1.5 sm:flex-row">
               <Input
                 value={mpn}
                 onChange={(e) => setMpn(e.target.value)}
@@ -899,9 +964,11 @@ function CorrectPartDialog({
               />
               <Button
                 variant="outline"
-                className="shrink-0"
-                disabled={!canApply}
-                onClick={() => applyMut.mutate()}
+                className="shrink-0 sm:w-auto"
+                disabled={!canApplyCurrent || isProcessing}
+                onClick={() =>
+                  applyMut.mutate({ sourceMpn: current.mpn, source: "current" })
+                }
               >
                 {applyMut.isPending ? "读取中…" : "带入分析资料"}
               </Button>
@@ -910,9 +977,29 @@ function CorrectPartDialog({
               <p className={`mt-1.5 rounded-md px-2 py-1 text-[11px] ${hintClass}`}>{hint.text}</p>
             )}
           </div>
+          {targetDiffers && canReadAnalysis && targetStored.isPending && (
+            <p className="text-[11px] text-muted-foreground">正在检查目标型号的已有分析资料…</p>
+          )}
+          {targetDiffers && canReadAnalysis && targetStored.data?.analysis && (
+            <div className="flex flex-col gap-2 rounded-md bg-sky-500/10 px-2.5 py-2 text-xs text-sky-900 sm:flex-row sm:items-center sm:justify-between">
+              <span>目标型号已有分析资料，可带入目标资料。</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="shrink-0"
+                disabled={!canApplyTarget || isProcessing}
+                onClick={() =>
+                  applyMut.mutate({ sourceMpn: deferredTargetMpn, source: "target" })
+                }
+              >
+                {applyMut.isPending ? "读取中…" : "带入目标资料"}
+              </Button>
+            </div>
+          )}
           {filled && (
             <p className="rounded-md bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-700">
-              已带入资料，仍可人工检查后保存
+              已带入{filled === "target" ? "目标" : "当前"}分析资料，仍可人工修改
             </p>
           )}
           <div>
@@ -933,9 +1020,75 @@ function CorrectPartDialog({
               <Input value={pkg} onChange={(e) => setPkg(e.target.value)} placeholder="如 SOIC-8" />
             </div>
           </div>
-          <Button disabled={!mpn.trim() || saveMut.isPending} onClick={() => saveMut.mutate()}>
-            {saveMut.isPending ? "保存中…" : "保存"}
-          </Button>
+          <div>
+            <Label htmlFor="correction-reason">修正原因（必填）</Label>
+            <Textarea
+              id="correction-reason"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="例如：已核对原始标签，补全后缀"
+              className="min-h-20 resize-y"
+            />
+          </div>
+
+          {previewIsCurrent && preview && (
+            <div className="space-y-2 rounded-lg border border-border bg-secondary/30 p-3 text-xs">
+              <p className="break-all font-medium">
+                <span className="font-mono">{preview.currentMpn}</span>
+                <span className="mx-2 text-muted-foreground">→</span>
+                <span className="font-mono">{preview.targetMpn}</span>
+              </p>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-muted-foreground sm:grid-cols-3">
+                <span>库存批次 {preview.counts.stockLots}</span>
+                <span>库存流水 {preview.counts.stockMovements}</span>
+                <span>渠道推货 {preview.counts.channelOffers}</span>
+                <span>客户询价 {preview.counts.customerInquiries}</span>
+                <span>潜力关注 {preview.counts.potentialModels}</span>
+                <span>旧关注 {preview.counts.legacyWatchlist}</span>
+              </div>
+              <p className="text-muted-foreground">
+                {preview.targetAnalysisExists
+                  ? `目标分析将保留${preview.sourceAnalysisExists ? "，旧分析也会保留" : ""}`
+                  : preview.sourceAnalysisExists
+                    ? "旧分析将迁移到目标型号"
+                    : "当前型号没有分析资料需要处理"}
+              </p>
+              {preview.targetPartId && (
+                <p className="rounded-md bg-destructive/10 px-2 py-1.5 text-destructive">
+                  目标型号已经属于另一主档，不能在这里自动合并。{" "}
+                  <Link
+                    to="/parts/$partId"
+                    params={{ partId: preview.targetPartId }}
+                    search={{ from: "parts", filter: "all" }}
+                    className="font-medium underline underline-offset-2"
+                  >
+                    查看目标型号
+                  </Link>
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!mpn.trim() || !reason.trim() || isProcessing}
+              onClick={() =>
+                previewMut.mutate({ targetMpn: mpn.trim(), fingerprint: formFingerprint })
+              }
+            >
+              {previewMut.isPending ? "检查中…" : "检查影响"}
+            </Button>
+            {previewIsCurrent && preview && !preview.targetPartId && (
+              <Button type="button" disabled={isProcessing} onClick={() => saveMut.mutate()}>
+                {saveMut.isPending ? "修正中…" : "确认修正"}
+              </Button>
+            )}
+          </div>
+          {!reason.trim() && (
+            <p className="text-[11px] text-muted-foreground">填写修正原因后才能检查影响。</p>
+          )}
         </div>
       </DialogContent>
     </Dialog>
