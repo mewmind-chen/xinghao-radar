@@ -325,6 +325,54 @@ test("inventory operations run against real PGlite with transactional and lineag
       "BEHAVIOR-IDENTITY-NEW",
     );
 
+    await sql.query(`
+      create or replace function radar_test_reject_identity_audit()
+      returns trigger as $$
+      begin
+        if new.detail = '强制审计失败' then
+          raise exception 'forced identity audit failure';
+        end if;
+        return new;
+      end;
+      $$ language plpgsql
+    `);
+    await sql.query(`
+      create trigger radar_test_reject_identity_audit_trigger
+      before insert on op_logs
+      for each row execute function radar_test_reject_identity_audit()
+    `);
+    try {
+      await expectFailure(
+        () => invoke(parts.updatePartIdentity_createServerFn_handler, {
+          id: identityPart.id,
+          mpn: "BEHAVIOR-IDENTITY-ROLLBACK",
+          reason: "强制审计失败",
+        }),
+        /forced identity audit failure/,
+      );
+    } finally {
+      await sql.query("drop trigger if exists radar_test_reject_identity_audit_trigger on op_logs");
+      await sql.query("drop function if exists radar_test_reject_identity_audit()");
+    }
+    assert.equal(
+      (await sql.query("select mpn from parts where id = $1", [identityPart.id]))[0].mpn,
+      "BEHAVIOR-IDENTITY-NEW",
+    );
+    assert.equal(
+      Number((await sql.query(
+        "select count(*)::int as n from part_analyses where mpn_key = $1",
+        ["BEHAVIOR-IDENTITY-NEW"],
+      ))[0].n),
+      1,
+    );
+    assert.equal(
+      Number((await sql.query(
+        "select count(*)::int as n from part_analyses where mpn_key = $1",
+        ["BEHAVIOR-IDENTITY-ROLLBACK"],
+      ))[0].n),
+      0,
+    );
+
     const duplicateSeed = await invoke(stock.stockInbound_createServerFn_handler, {
       mpn: "BEHAVIOR-DUPLICATE",
       warehouseId: "wh_hk",
