@@ -2,16 +2,22 @@
 // parameterized Sql surface over Postgres or local PGLite; no node:sqlite path.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { PGlite } from "@electric-sql/pglite";
 import { createAnalysisRepository } from "../src/lib/server/analysis-db.ts";
 
 function fakeSql({ concurrentTargetOnMove = false } = {}) {
   const rows = new Map();
   const calls = [];
-  return {
+  const sql = {
     calls,
     rows,
+    async transaction(fn) {
+      calls.push({ text: "begin", params: [] });
+      return fn(sql);
+    },
     async query(text, params = []) {
       calls.push({ text, params });
+      if (text.startsWith("select pg_advisory_xact_lock")) return [];
       if (text.startsWith("insert into part_analyses")) {
         const [mpn_key, mpn, analyzed_at, source_url, analysis] = params;
         rows.set(mpn_key, { mpn_key, mpn, analyzed_at, source_url, analysis });
@@ -53,7 +59,73 @@ function fakeSql({ concurrentTargetOnMove = false } = {}) {
       throw new Error(`unexpected SQL: ${text}`);
     },
   };
+  return sql;
 }
+
+test("分析保存和迁移进入同一套事务级键锁", async () => {
+  const store = fakeSql();
+  const repo = createAnalysisRepository(store);
+
+  await repo.saveAnalysisFull("OLD-MPN", {
+    analyzedAt: "2026-09-20T09:00:00.000Z",
+    json: JSON.stringify({ source: "old" }),
+  });
+  await repo.moveAnalysisKey("OLD-MPN", "NEW-MPN");
+
+  const locks = store.calls.filter((call) =>
+    call.text.startsWith("select pg_advisory_xact_lock"),
+  );
+  assert.deepEqual(
+    locks.map((call) => call.params[0]),
+    ["OLD-MPN", "NEW-MPN", "OLD-MPN"],
+  );
+});
+
+test("真实 PGlite 并发保存与迁移不会丢失最新分析", async () => {
+  const pg = new PGlite();
+  await pg.waitReady;
+  await pg.exec(`
+    create table part_analyses (
+      mpn_key text primary key,
+      mpn text not null,
+      analyzed_at timestamptz not null,
+      source_url text,
+      analysis text not null
+    )
+  `);
+  const transactionSql = (tx) => ({
+    query: async (text, params = []) => (await tx.query(text, params)).rows,
+  });
+  const sql = {
+    query: async (text, params = []) => (await pg.query(text, params)).rows,
+    transaction: (fn) => pg.transaction((tx) => fn(transactionSql(tx))),
+  };
+  const repo = createAnalysisRepository(sql);
+
+  try {
+    await repo.saveAnalysisFull("OLD-MPN", {
+      analyzedAt: "2026-09-20T09:00:00.000Z",
+      json: JSON.stringify({ version: 1 }),
+    });
+
+    await Promise.all([
+      repo.moveAnalysisKey("OLD-MPN", "NEW-MPN"),
+      repo.saveAnalysisFull("OLD-MPN", {
+        analyzedAt: "2026-09-21T09:00:00.000Z",
+        json: JSON.stringify({ version: 2 }),
+      }),
+    ]);
+
+    const records = await pg.query(
+      "select mpn_key, analysis from part_analyses where mpn_key in ($1, $2) order by mpn_key",
+      ["OLD-MPN", "NEW-MPN"],
+    );
+    const versions = records.rows.map((row) => JSON.parse(row.analysis).version);
+    assert.ok(versions.includes(2), "并发完成后必须保留最新分析内容");
+  } finally {
+    await pg.close();
+  }
+});
 
 test("保存后再读: 异步往返、大小写归一与参数化 SQL", async () => {
   const store = fakeSql();

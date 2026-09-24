@@ -11,7 +11,11 @@ import { ensureSeed } from "./seed";
 import { ensurePart, getSettings, mapPart, matchFlagsForParts, sqlClient } from "./helpers";
 import { displayMpn, formatInventoryQty, formatStockLine, iso, normalizeMpn } from "@/lib/domain";
 import { cleanBrand } from "./part-identity";
-import { listAnalysisTimes, moveAnalysisKeyPreservingTargetWithSql } from "./analysis-db";
+import {
+  listAnalysisTimes,
+  lockAnalysisKeysWithSql,
+  moveAnalysisKeyPreservingTargetWithSql,
+} from "./analysis-db";
 import { withTransaction, logOp } from "./helpers";
 import type { Sql } from "@/lib/db";
 import type { MatchFlags, Part } from "@/lib/types";
@@ -450,6 +454,7 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
       `;
       if (clash[0]) throw new Error("同型号已存在于另一主档，请直接使用该档");
       const counts = await countPartIdentityImpact(tx, id, principal);
+      await lockAnalysisKeysWithSql(tx, [String(before[0].mpn_key), key]);
       const analysisPresence = await readAnalysisPresence(
         tx,
         String(before[0].mpn_key),

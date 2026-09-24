@@ -97,6 +97,7 @@ test("型号修正必须预检、填写原因并保护目标分析", () => {
   assert.match(partsSource, /修正原因不能为空/);
   assert.match(moveSource, /on conflict \(mpn_key\) do nothing/i);
   assert.match(moveSource, /order by mpn_key for update/i);
+  assert.match(analysisDbSource, /pg_advisory_xact_lock/);
   assert.doesNotMatch(moveSource, /on conflict \(mpn_key\) do update/i);
   assert.match(partsSource, /previewRevision/);
   assert.match(partsSource, /型号资料已变化，请重新检查影响/);

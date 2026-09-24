@@ -39,16 +39,40 @@ export type AnalysisRepository = {
   moveAnalysisKey(fromMpn: string, toMpn: string): Promise<AnalysisMoveResult>;
 };
 
+/**
+ * Serialize writes for analysis keys, including keys that do not have rows yet.
+ * Call this inside a transaction; sorted acquisition prevents A→B / B→A deadlocks.
+ */
+export async function lockAnalysisKeysWithSql(sql: Sql, mpns: string[]): Promise<void> {
+  const keys = [...new Set(mpns.map(analysisKey).filter(Boolean))].sort();
+  for (const key of keys) {
+    await sql.query(
+      "select pg_advisory_xact_lock(hashtextextended('radar:part-analysis:' || $1, 0))",
+      [key],
+    );
+  }
+}
+
+async function inTransactionIfAvailable<T>(
+  sql: Sql,
+  fn: (tx: Sql) => Promise<T>,
+): Promise<T> {
+  return sql.transaction ? sql.transaction(fn) : fn(sql);
+}
+
 /** Build a repository over either deployed Postgres or local PGLite. */
 export function createAnalysisRepository(sql: Sql): AnalysisRepository {
   return {
     async saveAnalysisFull(mpn, record) {
-      await sql.query(
-        "insert into part_analyses (mpn_key, mpn, analyzed_at, source_url, analysis) values ($1, $2, $3, $4, $5) " +
-          "on conflict (mpn_key) do update set mpn = excluded.mpn, analyzed_at = excluded.analyzed_at, " +
-          "source_url = excluded.source_url, analysis = excluded.analysis",
-        [analysisKey(mpn), mpn.trim(), record.analyzedAt, record.sourceUrl ?? null, record.json],
-      );
+      await inTransactionIfAvailable(sql, async (tx) => {
+        await lockAnalysisKeysWithSql(tx, [mpn]);
+        await tx.query(
+          "insert into part_analyses (mpn_key, mpn, analyzed_at, source_url, analysis) values ($1, $2, $3, $4, $5) " +
+            "on conflict (mpn_key) do update set mpn = excluded.mpn, analyzed_at = excluded.analyzed_at, " +
+            "source_url = excluded.source_url, analysis = excluded.analysis",
+          [analysisKey(mpn), mpn.trim(), record.analyzedAt, record.sourceUrl ?? null, record.json],
+        );
+      });
     },
 
     async getAnalysis(mpn) {
@@ -67,7 +91,10 @@ export function createAnalysisRepository(sql: Sql): AnalysisRepository {
     },
 
     async moveAnalysisKey(fromMpn, toMpn) {
-      return moveAnalysisKeyPreservingTargetWithSql(sql, fromMpn, toMpn);
+      if (analysisKey(fromMpn) === analysisKey(toMpn)) return "unchanged";
+      return inTransactionIfAvailable(sql, (tx) =>
+        moveAnalysisKeyPreservingTargetWithSql(tx, fromMpn, toMpn),
+      );
     },
   };
 }
@@ -84,6 +111,8 @@ export async function moveAnalysisKeyPreservingTargetWithSql(
   const fromKey = analysisKey(fromMpn);
   const toKey = analysisKey(toMpn);
   if (fromKey === toKey || !fromKey || !toKey) return "unchanged";
+
+  await lockAnalysisKeysWithSql(sql, [fromKey, toKey]);
 
   const rows = await sql.query<{
     source_exists: boolean;
