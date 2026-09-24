@@ -231,23 +231,222 @@ test("inventory operations run against real PGlite with transactional and lineag
     });
     const identityPart = (await sql.query("select id from parts where mpn = 'BEHAVIOR-IDENTITY-OLD'"))[0];
     const identityMovement = (await sql.query("select id from stock_movements where lot_id = $1 and type = 'in'", [identitySource.id]))[0];
+    await sql.query(
+      "insert into part_analyses (mpn_key, mpn, analyzed_at, analysis) values ($1, $2, $3, $4), ($5, $6, $7, $8)",
+      [
+        "BEHAVIOR-IDENTITY-OLD",
+        "BEHAVIOR-IDENTITY-OLD",
+        "2026-09-20T09:00:00.000Z",
+        JSON.stringify({ source: "old" }),
+        "BEHAVIOR-IDENTITY-NEW",
+        "BEHAVIOR-IDENTITY-NEW",
+        "2026-09-21T09:00:00.000Z",
+        JSON.stringify({ source: "target" }),
+      ],
+    );
+    await expectFailure(
+      () => invoke(parts.updatePartIdentity_createServerFn_handler, {
+        id: identityPart.id,
+        mpn: "BEHAVIOR-IDENTITY-NEW",
+        reason: "   ",
+      }),
+      /修正原因不能为空/,
+    );
+    const identityPreview = await invoke(
+      parts.previewPartIdentityCorrection_createServerFn_handler,
+      {
+        id: identityPart.id,
+        mpn: "BEHAVIOR-IDENTITY-NEW",
+      },
+    );
+    assert.equal(identityPreview.currentMpn, "BEHAVIOR-IDENTITY-OLD");
+    assert.equal(identityPreview.targetMpn, "BEHAVIOR-IDENTITY-NEW");
+    assert.equal(identityPreview.targetPartId, null);
+    assert.equal(identityPreview.counts.stockLots, 1);
+    assert.equal(identityPreview.counts.stockMovements, 1);
+    assert.equal(identityPreview.sourceAnalysisExists, true);
+    assert.equal(identityPreview.targetAnalysisExists, true);
+    assert.equal(typeof identityPreview.revision, "string");
+    assert.ok(identityPreview.revision.length > 0);
+    const identityReason = "人工核对原始标签后修正完整型号";
+    await expectFailure(
+      () => invoke(parts.updatePartIdentity_createServerFn_handler, {
+        id: identityPart.id,
+        mpn: "BEHAVIOR-IDENTITY-NEW",
+        reason: identityReason,
+      }),
+      /请先检查影响/,
+    );
     await invoke(parts.updatePartIdentity_createServerFn_handler, {
       id: identityPart.id,
       mpn: "BEHAVIOR-IDENTITY-NEW",
+      brand: "ADI",
+      category: "电源管理",
+      package: "SOIC-8",
+      reason: identityReason,
+      previewRevision: identityPreview.revision,
     });
     const identityAfter = (await sql.query("select id, mpn from parts where id = $1", [identityPart.id]))[0];
     assert.equal(identityAfter.id, identityPart.id);
     assert.equal(identityAfter.mpn, "BEHAVIOR-IDENTITY-NEW");
     assert.equal((await sql.query("select part_id from stock_lots where id = $1", [identitySource.id]))[0].part_id, identityPart.id);
     assert.equal((await sql.query("select part_id from stock_movements where id = $1", [identityMovement.id]))[0].part_id, identityPart.id);
+    const preservedAnalyses = await sql.query(
+      "select mpn_key, analysis from part_analyses where mpn_key in ($1, $2) order by mpn_key",
+      ["BEHAVIOR-IDENTITY-OLD", "BEHAVIOR-IDENTITY-NEW"],
+    );
+    assert.equal(preservedAnalyses.length, 2);
+    assert.equal(
+      JSON.parse(preservedAnalyses.find((row) => row.mpn_key === "BEHAVIOR-IDENTITY-OLD").analysis).source,
+      "old",
+    );
+    assert.equal(
+      JSON.parse(preservedAnalyses.find((row) => row.mpn_key === "BEHAVIOR-IDENTITY-NEW").analysis).source,
+      "target",
+    );
+    const identityAudit = (await sql.query(
+      "select detail, after_json from op_logs where action = 'correct' and entity_type = 'part' and entity_id = $1 order by created_at desc limit 1",
+      [identityPart.id],
+    ))[0];
+    assert.equal(identityAudit.detail, identityReason);
+    const identityAuditAfter = JSON.parse(identityAudit.after_json);
+    assert.equal(identityAuditAfter.impact.stockLots, 1);
+    assert.equal(identityAuditAfter.impact.stockMovements, 1);
+    assert.equal(identityAuditAfter.analysisAction, "target-preserved");
+    assert.equal(identityAuditAfter.brand_code, "ADI");
+    assert.equal(identityAuditAfter.category, "电源管理");
+    assert.equal(identityAuditAfter.package, "SOIC-8");
+
+    const staleIdentityPreview = await invoke(
+      parts.previewPartIdentityCorrection_createServerFn_handler,
+      { id: identityPart.id, mpn: "BEHAVIOR-IDENTITY-STALE" },
+    );
+    await sql.query(
+      "update parts set brand_code = $1, updated_at = now() + interval '1 second' where id = $2",
+      ["STALE-INTERVENING", identityPart.id],
+    );
+    await expectFailure(
+      () => invoke(parts.updatePartIdentity_createServerFn_handler, {
+        id: identityPart.id,
+        mpn: "BEHAVIOR-IDENTITY-STALE",
+        reason: "验证陈旧预检必须失效",
+        previewRevision: staleIdentityPreview.revision,
+      }),
+      /型号资料已变化，请重新检查影响/,
+    );
+    assert.equal(
+      (await sql.query("select mpn from parts where id = $1", [identityPart.id]))[0].mpn,
+      "BEHAVIOR-IDENTITY-NEW",
+    );
+
+    const restrictedUser = await authContext.internalAdapter.createUser({
+      email: "identity-writer@local.test",
+      name: "型号修正测试员",
+      image: null,
+      emailVerified: false,
+    });
+    await sql`
+      insert into app_users (user_id, email, display_name, role, status)
+      values (${restrictedUser.id}, ${restrictedUser.email}, ${restrictedUser.name}, '跟进人', 'active')
+    `;
+    await sql.query(
+      "update permission_groups set permissions = array['model.read', 'model.write']::text[] where role_key = 'follower'",
+    );
+    const ownerToken = bearerToken;
+    bearerToken = (await authContext.internalAdapter.createSession(restrictedUser.id)).token;
+    try {
+      const restrictedPreview = await invoke(
+        parts.previewPartIdentityCorrection_createServerFn_handler,
+        { id: identityPart.id, mpn: "BEHAVIOR-IDENTITY-PERMISSION" },
+      );
+      assert.equal(restrictedPreview.counts.stockLots, null);
+      assert.equal(restrictedPreview.counts.stockMovements, null);
+      assert.equal(restrictedPreview.counts.channelOffers, null);
+      assert.equal(restrictedPreview.counts.customerInquiries, null);
+      assert.equal(restrictedPreview.counts.potentialModels, null);
+      assert.equal(restrictedPreview.counts.legacyWatchlist, null);
+    } finally {
+      bearerToken = ownerToken;
+    }
+
     await invoke(stock.stockInbound_createServerFn_handler, {
       mpn: "BEHAVIOR-IDENTITY-CLASH",
       warehouseId: "wh_hk",
       qty: 1,
     });
+    const clashPart = (await sql.query(
+      "select id from parts where mpn = 'BEHAVIOR-IDENTITY-CLASH'",
+    ))[0];
+    const clashPreview = await invoke(
+      parts.previewPartIdentityCorrection_createServerFn_handler,
+      { id: identityPart.id, mpn: "BEHAVIOR-IDENTITY-CLASH" },
+    );
+    assert.equal(clashPreview.targetPartId, clashPart.id);
     await expectFailure(
-      () => invoke(parts.updatePartIdentity_createServerFn_handler, { id: identityPart.id, mpn: "BEHAVIOR-IDENTITY-CLASH" }),
+      () => invoke(parts.updatePartIdentity_createServerFn_handler, {
+        id: identityPart.id,
+        mpn: "BEHAVIOR-IDENTITY-CLASH",
+        reason: "测试独立主档冲突",
+        previewRevision: clashPreview.revision,
+      }),
       /同型号已存在/,
+    );
+    assert.equal(
+      (await sql.query("select mpn from parts where id = $1", [identityPart.id]))[0].mpn,
+      "BEHAVIOR-IDENTITY-NEW",
+    );
+
+    await sql.query(`
+      create or replace function radar_test_reject_identity_audit()
+      returns trigger as $$
+      begin
+        if new.detail = '强制审计失败' then
+          raise exception 'forced identity audit failure';
+        end if;
+        return new;
+      end;
+      $$ language plpgsql
+    `);
+    await sql.query(`
+      create trigger radar_test_reject_identity_audit_trigger
+      before insert on op_logs
+      for each row execute function radar_test_reject_identity_audit()
+    `);
+    try {
+      const rollbackPreview = await invoke(
+        parts.previewPartIdentityCorrection_createServerFn_handler,
+        { id: identityPart.id, mpn: "BEHAVIOR-IDENTITY-ROLLBACK" },
+      );
+      await expectFailure(
+        () => invoke(parts.updatePartIdentity_createServerFn_handler, {
+          id: identityPart.id,
+          mpn: "BEHAVIOR-IDENTITY-ROLLBACK",
+          reason: "强制审计失败",
+          previewRevision: rollbackPreview.revision,
+        }),
+        /forced identity audit failure/,
+      );
+    } finally {
+      await sql.query("drop trigger if exists radar_test_reject_identity_audit_trigger on op_logs");
+      await sql.query("drop function if exists radar_test_reject_identity_audit()");
+    }
+    assert.equal(
+      (await sql.query("select mpn from parts where id = $1", [identityPart.id]))[0].mpn,
+      "BEHAVIOR-IDENTITY-NEW",
+    );
+    assert.equal(
+      Number((await sql.query(
+        "select count(*)::int as n from part_analyses where mpn_key = $1",
+        ["BEHAVIOR-IDENTITY-NEW"],
+      ))[0].n),
+      1,
+    );
+    assert.equal(
+      Number((await sql.query(
+        "select count(*)::int as n from part_analyses where mpn_key = $1",
+        ["BEHAVIOR-IDENTITY-ROLLBACK"],
+      ))[0].n),
+      0,
     );
 
     const duplicateSeed = await invoke(stock.stockInbound_createServerFn_handler, {

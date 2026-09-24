@@ -26,23 +26,53 @@ export type AnalysisRecord = {
   json: string;
 };
 
+export type AnalysisMoveResult =
+  | "unchanged"
+  | "moved"
+  | "target-preserved"
+  | "source-missing";
+
 export type AnalysisRepository = {
   saveAnalysisFull(mpn: string, record: AnalysisRecord): Promise<void>;
   getAnalysis(mpn: string): Promise<StoredRow | null>;
   listAnalysisTimes(): Promise<Record<string, string>>;
-  moveAnalysisKey(fromMpn: string, toMpn: string): Promise<void>;
+  moveAnalysisKey(fromMpn: string, toMpn: string): Promise<AnalysisMoveResult>;
 };
+
+/**
+ * Serialize writes for analysis keys, including keys that do not have rows yet.
+ * Call this inside a transaction; sorted acquisition prevents A→B / B→A deadlocks.
+ */
+export async function lockAnalysisKeysWithSql(sql: Sql, mpns: string[]): Promise<void> {
+  const keys = [...new Set(mpns.map(analysisKey).filter(Boolean))].sort();
+  for (const key of keys) {
+    await sql.query(
+      "select pg_advisory_xact_lock(hashtextextended('radar:part-analysis:' || $1, 0))",
+      [key],
+    );
+  }
+}
+
+async function inTransactionIfAvailable<T>(
+  sql: Sql,
+  fn: (tx: Sql) => Promise<T>,
+): Promise<T> {
+  return sql.transaction ? sql.transaction(fn) : fn(sql);
+}
 
 /** Build a repository over either deployed Postgres or local PGLite. */
 export function createAnalysisRepository(sql: Sql): AnalysisRepository {
   return {
     async saveAnalysisFull(mpn, record) {
-      await sql.query(
-        "insert into part_analyses (mpn_key, mpn, analyzed_at, source_url, analysis) values ($1, $2, $3, $4, $5) " +
-          "on conflict (mpn_key) do update set mpn = excluded.mpn, analyzed_at = excluded.analyzed_at, " +
-          "source_url = excluded.source_url, analysis = excluded.analysis",
-        [analysisKey(mpn), mpn.trim(), record.analyzedAt, record.sourceUrl ?? null, record.json],
-      );
+      await inTransactionIfAvailable(sql, async (tx) => {
+        await lockAnalysisKeysWithSql(tx, [mpn]);
+        await tx.query(
+          "insert into part_analyses (mpn_key, mpn, analyzed_at, source_url, analysis) values ($1, $2, $3, $4, $5) " +
+            "on conflict (mpn_key) do update set mpn = excluded.mpn, analyzed_at = excluded.analyzed_at, " +
+            "source_url = excluded.source_url, analysis = excluded.analysis",
+          [analysisKey(mpn), mpn.trim(), record.analyzedAt, record.sourceUrl ?? null, record.json],
+        );
+      });
     },
 
     async getAnalysis(mpn) {
@@ -61,41 +91,62 @@ export function createAnalysisRepository(sql: Sql): AnalysisRepository {
     },
 
     async moveAnalysisKey(fromMpn, toMpn) {
-      const fromKey = analysisKey(fromMpn);
-      const toKey = analysisKey(toMpn);
-      if (fromKey === toKey || !fromKey || !toKey) return;
-      // One statement prevents a cold-start/process interruption from deleting
-      // the old record after a failed copy. All values stay parameterized.
-      await sql.query(
-        "with moved as (" +
-          "insert into part_analyses (mpn_key, mpn, analyzed_at, source_url, analysis) " +
-          "select $1, $2, analyzed_at, source_url, analysis from part_analyses where mpn_key = $3 " +
-          "on conflict (mpn_key) do update set mpn = excluded.mpn, analyzed_at = excluded.analyzed_at, " +
-          "source_url = excluded.source_url, analysis = excluded.analysis " +
-          "returning mpn_key" +
-          ") delete from part_analyses where mpn_key = $3 and exists (select 1 from moved)",
-        [toKey, toMpn.trim(), fromKey],
+      if (analysisKey(fromMpn) === analysisKey(toMpn)) return "unchanged";
+      return inTransactionIfAvailable(sql, (tx) =>
+        moveAnalysisKeyPreservingTargetWithSql(tx, fromMpn, toMpn),
       );
     },
   };
 }
 
-/** Move an analysis key using the caller's transaction connection. */
-export async function moveAnalysisKeyWithSql(sql: Sql, fromMpn: string, toMpn: string): Promise<void> {
+/**
+ * Move an analysis key using the caller's transaction connection without ever
+ * replacing an analysis already stored under the target key.
+ */
+export async function moveAnalysisKeyPreservingTargetWithSql(
+  sql: Sql,
+  fromMpn: string,
+  toMpn: string,
+): Promise<AnalysisMoveResult> {
   const fromKey = analysisKey(fromMpn);
   const toKey = analysisKey(toMpn);
-  if (fromKey === toKey || !fromKey || !toKey) return;
-  await sql.query(
-    "with moved as (" +
+  if (fromKey === toKey || !fromKey || !toKey) return "unchanged";
+
+  await lockAnalysisKeysWithSql(sql, [fromKey, toKey]);
+
+  const rows = await sql.query<{
+    source_exists: boolean;
+    target_exists: boolean;
+    moved: boolean;
+  }>(
+    "with locked as materialized (" +
+      "select mpn_key, analyzed_at, source_url, analysis from part_analyses " +
+      "where mpn_key in ($1, $3) order by mpn_key for update" +
+      "), source as materialized (" +
+      "select mpn_key, analyzed_at, source_url, analysis from locked where mpn_key = $3" +
+      "), target_before as materialized (" +
+      "select mpn_key from locked where mpn_key = $1" +
+      "), moved as (" +
       "insert into part_analyses (mpn_key, mpn, analyzed_at, source_url, analysis) " +
-      "select $1, $2, analyzed_at, source_url, analysis from part_analyses where mpn_key = $3 " +
-      "on conflict (mpn_key) do update set mpn = excluded.mpn, analyzed_at = excluded.analyzed_at, " +
-      "source_url = excluded.source_url, analysis = excluded.analysis " +
-      "returning mpn_key" +
-      ") delete from part_analyses where mpn_key = $3 and exists (select 1 from moved)",
+      "select $1, $2, analyzed_at, source_url, analysis from source " +
+      "where not exists (select 1 from target_before) " +
+      "on conflict (mpn_key) do nothing returning mpn_key" +
+      "), deleted as (" +
+      "delete from part_analyses where mpn_key = $3 and exists (select 1 from moved) returning mpn_key" +
+      ") select exists(select 1 from source) as source_exists, " +
+      "exists(select 1 from target_before) as target_exists, " +
+      "exists(select 1 from moved) as moved",
     [toKey, toMpn.trim(), fromKey],
   );
+
+  const state = rows[0];
+  if (state?.moved) return "moved";
+  if (!state?.source_exists) return "source-missing";
+  return "target-preserved";
 }
+
+/** @deprecated Use moveAnalysisKeyPreservingTargetWithSql for explicit semantics. */
+export const moveAnalysisKeyWithSql = moveAnalysisKeyPreservingTargetWithSql;
 
 async function repository(): Promise<AnalysisRepository> {
   const { getSql } = await import("../db");
@@ -116,7 +167,10 @@ export async function listAnalysisTimes(): Promise<Record<string, string>> {
   return (await repository()).listAnalysisTimes();
 }
 
-/** 主档修正后，把旧 mpn_key 的分析记录迁移到新 key（保留时间戳）。 */
-export async function moveAnalysisKey(fromMpn: string, toMpn: string): Promise<void> {
-  await moveAnalysisKeyWithSql(await (await import("../db")).getSql(), fromMpn, toMpn);
+/** 主档修正后安全处理分析键；目标分析存在时保留双方记录。 */
+export async function moveAnalysisKey(
+  fromMpn: string,
+  toMpn: string,
+): Promise<AnalysisMoveResult> {
+  return (await repository()).moveAnalysisKey(fromMpn, toMpn);
 }

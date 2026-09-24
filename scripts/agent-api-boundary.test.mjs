@@ -78,8 +78,32 @@ test("型号主档「带入分析资料」只读已保存的分析记录，不�
   assert.match(dialog, /带入分析资料/);
   // 旧假功能：按钮文案与重抓外网的分析动作都不得回潮。
   assert.doesNotMatch(dialog, /analyzePartMpn/);
-  assert.doesNotMatch(dialog, /一键填写/);
+  assert.match(dialog, /已有分析资料，是否一键填写？/);
   // 回填逻辑必须是无外部依赖的纯函数。
   const fill = readFileSync(join(root, "src/lib/part-profile-fill.ts"), "utf8");
   assert.doesNotMatch(fill, /lookupHqb|lookup\.full|saveAnalysis|fetch\(/);
+});
+
+test("型号修正必须预检、填写原因并保护目标分析", () => {
+  const partsSource = readFileSync(join(root, "src/lib/server/parts.ts"), "utf8");
+  const analysisDbSource = readFileSync(join(root, "src/lib/server/analysis-db.ts"), "utf8");
+  const partRouteSource = readFileSync(join(root, "src/routes/parts.$partId.tsx"), "utf8");
+  const moveSource = analysisDbSource.slice(
+    analysisDbSource.indexOf("export async function moveAnalysisKeyPreservingTargetWithSql"),
+    analysisDbSource.indexOf("/** @deprecated"),
+  );
+
+  assert.match(partsSource, /previewPartIdentityCorrection/);
+  assert.match(partsSource, /修正原因不能为空/);
+  assert.match(moveSource, /on conflict \(mpn_key\) do nothing/i);
+  assert.match(moveSource, /order by mpn_key for update/i);
+  assert.match(analysisDbSource, /pg_advisory_xact_lock/);
+  assert.match(analysisDbSource, /return \(await repository\(\)\)\.moveAnalysisKey\(fromMpn, toMpn\)/);
+  assert.doesNotMatch(moveSource, /on conflict \(mpn_key\) do update/i);
+  assert.match(partsSource, /previewRevision/);
+  assert.match(partsSource, /型号资料已变化，请重新检查影响/);
+  assert.match(partRouteSource, /检查影响/);
+  assert.match(partRouteSource, /确认修正/);
+  assert.match(partRouteSource, /无权查看/);
+  assert.match(partRouteSource, /deferredTargetMpn === mpn\.trim\(\)/);
 });
