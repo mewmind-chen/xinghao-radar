@@ -832,8 +832,11 @@ function CorrectPartDialog({
   });
   const fill = buildProfileFill(stored.data?.analysis ?? null);
   const deferredTargetMpn = useDeferredValue(mpn.trim());
+  const targetQueryIsCurrent = deferredTargetMpn === mpn.trim();
   const targetDiffers =
-    Boolean(deferredTargetMpn) && normalizeMpn(deferredTargetMpn) !== normalizeMpn(current.mpn);
+    targetQueryIsCurrent &&
+    Boolean(deferredTargetMpn) &&
+    normalizeMpn(deferredTargetMpn) !== normalizeMpn(current.mpn);
   const targetStored = useQuery({
     queryKey: ["part-analysis", deferredTargetMpn],
     queryFn: () => getPartAnalysis({ data: { mpn: deferredTargetMpn } }),
@@ -889,6 +892,7 @@ function CorrectPartDialog({
           category: category.trim() || undefined,
           package: pkg.trim() || undefined,
           reason: reason.trim(),
+          previewRevision: preview?.revision ?? "",
         },
       }),
     onSuccess: () => {
@@ -914,6 +918,7 @@ function CorrectPartDialog({
     !applyMut.isPending;
   const previewIsCurrent = Boolean(preview && previewFingerprint === formFingerprint);
   const isProcessing = previewMut.isPending || saveMut.isPending;
+  const impactCount = (value: number | null) => value ?? "无权查看";
 
   // 按钮旁一行小字：把"为什么不能点"讲清楚，不留无声失败。
   const hint = !canReadAnalysis
@@ -1039,12 +1044,12 @@ function CorrectPartDialog({
                 <span className="font-mono">{preview.targetMpn}</span>
               </p>
               <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-muted-foreground sm:grid-cols-3">
-                <span>库存批次 {preview.counts.stockLots}</span>
-                <span>库存流水 {preview.counts.stockMovements}</span>
-                <span>渠道推货 {preview.counts.channelOffers}</span>
-                <span>客户询价 {preview.counts.customerInquiries}</span>
-                <span>潜力关注 {preview.counts.potentialModels}</span>
-                <span>旧关注 {preview.counts.legacyWatchlist}</span>
+                <span>库存批次 {impactCount(preview.counts.stockLots)}</span>
+                <span>库存流水 {impactCount(preview.counts.stockMovements)}</span>
+                <span>渠道推货 {impactCount(preview.counts.channelOffers)}</span>
+                <span>客户询价 {impactCount(preview.counts.customerInquiries)}</span>
+                <span>潜力关注 {impactCount(preview.counts.potentialModels)}</span>
+                <span>旧关注 {impactCount(preview.counts.legacyWatchlist)}</span>
               </div>
               <p className="text-muted-foreground">
                 {preview.targetAnalysisExists

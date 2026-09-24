@@ -266,11 +266,25 @@ test("inventory operations run against real PGlite with transactional and lineag
     assert.equal(identityPreview.counts.stockMovements, 1);
     assert.equal(identityPreview.sourceAnalysisExists, true);
     assert.equal(identityPreview.targetAnalysisExists, true);
+    assert.equal(typeof identityPreview.revision, "string");
+    assert.ok(identityPreview.revision.length > 0);
     const identityReason = "人工核对原始标签后修正完整型号";
+    await expectFailure(
+      () => invoke(parts.updatePartIdentity_createServerFn_handler, {
+        id: identityPart.id,
+        mpn: "BEHAVIOR-IDENTITY-NEW",
+        reason: identityReason,
+      }),
+      /请先检查影响/,
+    );
     await invoke(parts.updatePartIdentity_createServerFn_handler, {
       id: identityPart.id,
       mpn: "BEHAVIOR-IDENTITY-NEW",
+      brand: "ADI",
+      category: "电源管理",
+      package: "SOIC-8",
       reason: identityReason,
+      previewRevision: identityPreview.revision,
     });
     const identityAfter = (await sql.query("select id, mpn from parts where id = $1", [identityPart.id]))[0];
     assert.equal(identityAfter.id, identityPart.id);
@@ -299,6 +313,62 @@ test("inventory operations run against real PGlite with transactional and lineag
     assert.equal(identityAuditAfter.impact.stockLots, 1);
     assert.equal(identityAuditAfter.impact.stockMovements, 1);
     assert.equal(identityAuditAfter.analysisAction, "target-preserved");
+    assert.equal(identityAuditAfter.brand_code, "ADI");
+    assert.equal(identityAuditAfter.category, "电源管理");
+    assert.equal(identityAuditAfter.package, "SOIC-8");
+
+    const staleIdentityPreview = await invoke(
+      parts.previewPartIdentityCorrection_createServerFn_handler,
+      { id: identityPart.id, mpn: "BEHAVIOR-IDENTITY-STALE" },
+    );
+    await sql.query(
+      "update parts set brand_code = $1, updated_at = now() + interval '1 second' where id = $2",
+      ["STALE-INTERVENING", identityPart.id],
+    );
+    await expectFailure(
+      () => invoke(parts.updatePartIdentity_createServerFn_handler, {
+        id: identityPart.id,
+        mpn: "BEHAVIOR-IDENTITY-STALE",
+        reason: "验证陈旧预检必须失效",
+        previewRevision: staleIdentityPreview.revision,
+      }),
+      /型号资料已变化，请重新检查影响/,
+    );
+    assert.equal(
+      (await sql.query("select mpn from parts where id = $1", [identityPart.id]))[0].mpn,
+      "BEHAVIOR-IDENTITY-NEW",
+    );
+
+    const restrictedUser = await authContext.internalAdapter.createUser({
+      email: "identity-writer@local.test",
+      name: "型号修正测试员",
+      image: null,
+      emailVerified: false,
+    });
+    await sql`
+      insert into app_users (user_id, email, display_name, role, status)
+      values (${restrictedUser.id}, ${restrictedUser.email}, ${restrictedUser.name}, '跟进人', 'active')
+    `;
+    await sql.query(
+      "update permission_groups set permissions = array['model.read', 'model.write']::text[] where role_key = 'follower'",
+    );
+    const ownerToken = bearerToken;
+    bearerToken = (await authContext.internalAdapter.createSession(restrictedUser.id)).token;
+    try {
+      const restrictedPreview = await invoke(
+        parts.previewPartIdentityCorrection_createServerFn_handler,
+        { id: identityPart.id, mpn: "BEHAVIOR-IDENTITY-PERMISSION" },
+      );
+      assert.equal(restrictedPreview.counts.stockLots, null);
+      assert.equal(restrictedPreview.counts.stockMovements, null);
+      assert.equal(restrictedPreview.counts.channelOffers, null);
+      assert.equal(restrictedPreview.counts.customerInquiries, null);
+      assert.equal(restrictedPreview.counts.potentialModels, null);
+      assert.equal(restrictedPreview.counts.legacyWatchlist, null);
+    } finally {
+      bearerToken = ownerToken;
+    }
+
     await invoke(stock.stockInbound_createServerFn_handler, {
       mpn: "BEHAVIOR-IDENTITY-CLASH",
       warehouseId: "wh_hk",
@@ -317,6 +387,7 @@ test("inventory operations run against real PGlite with transactional and lineag
         id: identityPart.id,
         mpn: "BEHAVIOR-IDENTITY-CLASH",
         reason: "测试独立主档冲突",
+        previewRevision: clashPreview.revision,
       }),
       /同型号已存在/,
     );
@@ -342,11 +413,16 @@ test("inventory operations run against real PGlite with transactional and lineag
       for each row execute function radar_test_reject_identity_audit()
     `);
     try {
+      const rollbackPreview = await invoke(
+        parts.previewPartIdentityCorrection_createServerFn_handler,
+        { id: identityPart.id, mpn: "BEHAVIOR-IDENTITY-ROLLBACK" },
+      );
       await expectFailure(
         () => invoke(parts.updatePartIdentity_createServerFn_handler, {
           id: identityPart.id,
           mpn: "BEHAVIOR-IDENTITY-ROLLBACK",
           reason: "强制审计失败",
+          previewRevision: rollbackPreview.revision,
         }),
         /forced identity audit failure/,
       );

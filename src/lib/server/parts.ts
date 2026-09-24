@@ -1,10 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
+import { createHash } from "node:crypto";
 import { authMiddleware } from "@/lib/auth/middleware";
 import {
   getCurrentPrincipal,
   potentialScopeFor,
   requireRole,
 } from "@/lib/auth/authorization.server";
+import type { AppPrincipal } from "@/lib/auth/authorization.server";
 import { ensureSeed } from "./seed";
 import { ensurePart, getSettings, mapPart, matchFlagsForParts, sqlClient } from "./helpers";
 import { displayMpn, formatInventoryQty, formatStockLine, iso, normalizeMpn } from "@/lib/domain";
@@ -23,12 +25,12 @@ export type PartListItem = Part & {
 };
 
 export type PartIdentityImpactCounts = {
-  stockLots: number;
-  stockMovements: number;
-  channelOffers: number;
-  customerInquiries: number;
-  potentialModels: number;
-  legacyWatchlist: number;
+  stockLots: number | null;
+  stockMovements: number | null;
+  channelOffers: number | null;
+  customerInquiries: number | null;
+  potentialModels: number | null;
+  legacyWatchlist: number | null;
 };
 
 export type PartIdentityCorrectionPreview = {
@@ -38,30 +40,61 @@ export type PartIdentityCorrectionPreview = {
   counts: PartIdentityImpactCounts;
   sourceAnalysisExists: boolean;
   targetAnalysisExists: boolean;
+  revision: string;
 };
+
+type PartIdentityCorrectionState = Omit<PartIdentityCorrectionPreview, "revision"> & {
+  currentKey: string;
+  currentUpdatedAt: string;
+};
+
+function partIdentityCorrectionRevision(state: PartIdentityCorrectionState): string {
+  return createHash("sha256")
+    .update(JSON.stringify(state))
+    .digest("base64url");
+}
 
 async function countPartIdentityImpact(
   sql: Sql,
   partId: string,
+  principal: AppPrincipal,
 ): Promise<PartIdentityImpactCounts> {
+  const canReadStock = principal.permissions.includes("stock.read");
+  const canReadMarket = principal.permissions.includes("market.read");
+  const potentialScope = potentialScopeFor(principal);
   const rows = await sql.query<Record<string, unknown>>(
     `select
-      (select count(*)::int from stock_lots where part_id = $1 and deleted_at is null) as stock_lots,
-      (select count(*)::int from stock_movements where part_id = $1 and deleted_at is null) as stock_movements,
-      (select count(*)::int from channel_offers where part_id = $1 and deleted_at is null) as channel_offers,
-      (select count(*)::int from customer_inquiries where part_id = $1 and deleted_at is null) as customer_inquiries,
-      (select count(*)::int from potential_models where part_id = $1) as potential_models,
-      (select count(*)::int from watchlist where part_id = $1) as legacy_watchlist`,
-    [partId],
+      case when $2::boolean then
+        (select count(*)::int from stock_lots where part_id = $1 and deleted_at is null)
+      end as stock_lots,
+      case when $2::boolean then
+        (select count(*)::int from stock_movements where part_id = $1 and deleted_at is null)
+      end as stock_movements,
+      case when $3::boolean then
+        (select count(*)::int from channel_offers where part_id = $1 and deleted_at is null)
+      end as channel_offers,
+      case when $3::boolean then
+        (select count(*)::int from customer_inquiries where part_id = $1 and deleted_at is null)
+      end as customer_inquiries,
+      case
+        when $4::text = 'all' then
+          (select count(*)::int from potential_models where part_id = $1)
+        when $4::text = 'own' then
+          (select count(*)::int from potential_models where part_id = $1 and user_id = $5)
+      end as potential_models,
+      case when $4::text = 'all' then
+        (select count(*)::int from watchlist where part_id = $1)
+      end as legacy_watchlist`,
+    [partId, canReadStock, canReadMarket, potentialScope, principal.userId],
   );
   const row = rows[0] ?? {};
   return {
-    stockLots: Number(row.stock_lots ?? 0),
-    stockMovements: Number(row.stock_movements ?? 0),
-    channelOffers: Number(row.channel_offers ?? 0),
-    customerInquiries: Number(row.customer_inquiries ?? 0),
-    potentialModels: Number(row.potential_models ?? 0),
-    legacyWatchlist: Number(row.legacy_watchlist ?? 0),
+    stockLots: row.stock_lots == null ? null : Number(row.stock_lots),
+    stockMovements: row.stock_movements == null ? null : Number(row.stock_movements),
+    channelOffers: row.channel_offers == null ? null : Number(row.channel_offers),
+    customerInquiries: row.customer_inquiries == null ? null : Number(row.customer_inquiries),
+    potentialModels: row.potential_models == null ? null : Number(row.potential_models),
+    legacyWatchlist: row.legacy_watchlist == null ? null : Number(row.legacy_watchlist),
   };
 }
 
@@ -322,14 +355,21 @@ export const previewPartIdentityCorrection = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: { id: string; mpn: string }) => input)
   .handler(async ({ data, context }): Promise<PartIdentityCorrectionPreview> => {
-    requireRole(await getCurrentPrincipal(context.bearerToken), "model.write");
+    const principal = requireRole(
+      await getCurrentPrincipal(context.bearerToken),
+      "model.write",
+    );
     const sql = await sqlClient();
     const targetMpn = displayMpn(data.mpn ?? "");
     if (!targetMpn) throw new Error("型号不能为空");
     const targetKey = normalizeMpn(targetMpn);
 
-    const current = await sql.query<{ mpn: string; mpn_key: string }>(
-      "select mpn, mpn_key from parts where id = $1 limit 1",
+    const current = await sql.query<{
+      mpn: string;
+      mpn_key: string;
+      updated_at_token: string;
+    }>(
+      "select mpn, mpn_key, updated_at::text as updated_at_token from parts where id = $1 limit 1",
       [data.id],
     );
     if (!current[0]) throw new Error("型号不存在");
@@ -338,16 +378,27 @@ export const previewPartIdentityCorrection = createServerFn({ method: "POST" })
       [targetKey, data.id],
     );
     const [counts, analysisPresence] = await Promise.all([
-      countPartIdentityImpact(sql, data.id),
+      countPartIdentityImpact(sql, data.id, principal),
       readAnalysisPresence(sql, current[0].mpn_key, targetKey),
     ]);
 
-    return {
+    const state: PartIdentityCorrectionState = {
       currentMpn: current[0].mpn,
+      currentKey: current[0].mpn_key,
+      currentUpdatedAt: current[0].updated_at_token,
       targetMpn,
       targetPartId: target[0]?.id ?? null,
       counts,
       ...analysisPresence,
+    };
+    return {
+      currentMpn: state.currentMpn,
+      targetMpn: state.targetMpn,
+      targetPartId: state.targetPartId,
+      counts: state.counts,
+      sourceAnalysisExists: state.sourceAnalysisExists,
+      targetAnalysisExists: state.targetAnalysisExists,
+      revision: partIdentityCorrectionRevision(state),
     };
   });
 
@@ -371,6 +422,7 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
       description?: string;
       params?: string;
       reason: string;
+      previewRevision: string;
     }) => input,
   )
   .handler(async ({ data, context }) => {
@@ -382,17 +434,40 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
     const id = data.id;
     const reason = typeof data.reason === "string" ? data.reason.trim() : "";
     if (!reason) throw new Error("修正原因不能为空");
+    const previewRevision =
+      typeof data.previewRevision === "string" ? data.previewRevision.trim() : "";
+    if (!previewRevision) throw new Error("请先检查影响，再确认修正");
 
     const brand = data.brand ? cleanBrand(data.brand) : null;
     const result = await withTransaction(sql, async (tx) => {
-      const before = await tx`select * from parts where id = ${id} for update`;
+      const before = await tx`
+        select *, updated_at::text as updated_at_token
+        from parts where id = ${id} for update
+      `;
       if (!before[0]) throw new Error("型号不存在");
       const clash = await tx`
         select id from parts where mpn_key = ${key} and id <> ${id} limit 1 for update
       `;
       if (clash[0]) throw new Error("同型号已存在于另一主档，请直接使用该档");
-      const counts = await countPartIdentityImpact(tx, id);
-      await tx`
+      const counts = await countPartIdentityImpact(tx, id, principal);
+      const analysisPresence = await readAnalysisPresence(
+        tx,
+        String(before[0].mpn_key),
+        key,
+      );
+      const currentRevision = partIdentityCorrectionRevision({
+        currentMpn: String(before[0].mpn),
+        currentKey: String(before[0].mpn_key),
+        currentUpdatedAt: String(before[0].updated_at_token),
+        targetMpn: mpn,
+        targetPartId: null,
+        counts,
+        ...analysisPresence,
+      });
+      if (currentRevision !== previewRevision) {
+        throw new Error("型号资料已变化，请重新检查影响后再确认");
+      }
+      const updated = await tx`
         update parts set
           mpn = ${mpn},
           mpn_key = ${key},
@@ -403,6 +478,7 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
           params = coalesce(${data.params ?? null}, params),
           updated_at = now()
         where id = ${id}
+        returning *
       `;
       const analysisAction = await moveAnalysisKeyPreservingTargetWithSql(
         tx,
@@ -413,7 +489,7 @@ export const updatePartIdentity = createServerFn({ method: "POST" })
         principal,
         detail: reason,
         before: before[0],
-        after: { id, mpn, mpnKey: key, impact: counts, analysisAction },
+        after: { ...updated[0], impact: counts, analysisAction },
       });
       return { counts, analysisAction };
     });

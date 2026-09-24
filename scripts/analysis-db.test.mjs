@@ -24,7 +24,7 @@ function fakeSql({ concurrentTargetOnMove = false } = {}) {
       if (text.startsWith("select mpn_key, analyzed_at")) {
         return [...rows.values()].map(({ mpn_key, analyzed_at }) => ({ mpn_key, analyzed_at }));
       }
-      if (text.startsWith("with source as materialized")) {
+      if (text.startsWith("with locked as materialized")) {
         const [toKey, toMpn, fromKey] = params;
         const source = rows.get(fromKey);
         const targetBefore = rows.get(toKey);
@@ -100,9 +100,10 @@ test("moveAnalysisKey 原子地移动记录且保留时间", async () => {
   assert.equal(result, "moved");
   assert.equal(await repo.getAnalysis("OLD-MPN"), null);
   assert.equal((await repo.getAnalysis("new-mpn")).analyzed_at, "2026-08-23T09:00:00.000Z");
-  const move = store.calls.find((call) => call.text.startsWith("with source as materialized"));
+  const move = store.calls.find((call) => call.text.startsWith("with locked as materialized"));
   assert.ok(move);
   assert.match(move.text, /on conflict \(mpn_key\) do nothing/i);
+  assert.match(move.text, /order by mpn_key for update/i);
 });
 
 test("目标分析已存在时保留双方记录且不覆盖", async () => {

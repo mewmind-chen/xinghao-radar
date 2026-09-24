@@ -96,7 +96,12 @@ test("型号修正必须预检、填写原因并保护目标分析", () => {
   assert.match(partsSource, /previewPartIdentityCorrection/);
   assert.match(partsSource, /修正原因不能为空/);
   assert.match(moveSource, /on conflict \(mpn_key\) do nothing/i);
+  assert.match(moveSource, /order by mpn_key for update/i);
   assert.doesNotMatch(moveSource, /on conflict \(mpn_key\) do update/i);
+  assert.match(partsSource, /previewRevision/);
+  assert.match(partsSource, /型号资料已变化，请重新检查影响/);
   assert.match(partRouteSource, /检查影响/);
   assert.match(partRouteSource, /确认修正/);
+  assert.match(partRouteSource, /无权查看/);
+  assert.match(partRouteSource, /deferredTargetMpn === mpn\.trim\(\)/);
 });

@@ -90,10 +90,13 @@ export async function moveAnalysisKeyPreservingTargetWithSql(
     target_exists: boolean;
     moved: boolean;
   }>(
-    "with source as materialized (" +
-      "select mpn_key, analyzed_at, source_url, analysis from part_analyses where mpn_key = $3" +
+    "with locked as materialized (" +
+      "select mpn_key, analyzed_at, source_url, analysis from part_analyses " +
+      "where mpn_key in ($1, $3) order by mpn_key for update" +
+      "), source as materialized (" +
+      "select mpn_key, analyzed_at, source_url, analysis from locked where mpn_key = $3" +
       "), target_before as materialized (" +
-      "select mpn_key from part_analyses where mpn_key = $1" +
+      "select mpn_key from locked where mpn_key = $1" +
       "), moved as (" +
       "insert into part_analyses (mpn_key, mpn, analyzed_at, source_url, analysis) " +
       "select $1, $2, analyzed_at, source_url, analysis from source " +
