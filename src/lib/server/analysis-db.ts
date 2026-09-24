@@ -172,9 +172,5 @@ export async function moveAnalysisKey(
   fromMpn: string,
   toMpn: string,
 ): Promise<AnalysisMoveResult> {
-  return moveAnalysisKeyPreservingTargetWithSql(
-    await (await import("../db")).getSql(),
-    fromMpn,
-    toMpn,
-  );
+  return (await repository()).moveAnalysisKey(fromMpn, toMpn);
 }
